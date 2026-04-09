@@ -2,6 +2,13 @@ find_package(Eigen3 CONFIG REQUIRED)
 find_package(TIFF REQUIRED)
 find_package(OpenMP REQUIRED)
 
+if (SIRIUS_ENABLE_GUI)
+    find_package(imgui CONFIG REQUIRED)
+    find_package(SDL3 CONFIG REQUIRED)
+    find_package(OpenGL REQUIRED)
+endif()
+
+
 if (SIRIUS_ENABLE_MPI)
     find_package(MPI REQUIRED)
 endif()

@@ -1,5 +1,6 @@
 option(SIRIUS_ENABLE_MPI "Enable MPI" OFF)
 option(SIRIUS_ENABLE_CUDA "Enable CUDA" OFF)
+option(SIRIUS_ENABLE_GUI "Enable GUI" OFF)
 
 # Development related options
 option(SIRIUS_ENABLE_TESTS "Enable tests" OFF)

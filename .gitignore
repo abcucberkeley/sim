@@ -1,4 +1,6 @@
 build/
+compile_commands.json
+imgui.ini
 
 # Prerequisites
 *.d

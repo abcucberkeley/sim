@@ -19,23 +19,26 @@ namespace {
 
     // Write a tiled TIFF directly via libtiff to exercise the tiled reader code path.
     // The sirius write API only produces scanline TIFFs, so we need raw libtiff here.
+    struct TiffDeleter { void operator()(TIFF* t) const { TIFFClose(t); } };
+    using TiffPtr = std::unique_ptr<TIFF, TiffDeleter>;
+
     void writeTiledTiffRaw(const std::string& path, const Image<float>& img,
                            uint32_t tileW, uint32_t tileH) {
-        TIFF* tif = TIFFOpen(path.c_str(), "w");
+        TiffPtr tif(TIFFOpen(path.c_str(), "w"));
         if (!tif) throw std::runtime_error("Failed to create tiled TIFF: " + path);
 
         const auto rows = static_cast<uint32_t>(img.rows());
         const auto cols = static_cast<uint32_t>(img.cols());
 
-        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH,      cols);
-        TIFFSetField(tif, TIFFTAG_IMAGELENGTH,     rows);
-        TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE,   32);
-        TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
-        TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT,    SAMPLEFORMAT_IEEEFP);
-        TIFFSetField(tif, TIFFTAG_PHOTOMETRIC,     PHOTOMETRIC_MINISBLACK);
-        TIFFSetField(tif, TIFFTAG_PLANARCONFIG,    PLANARCONFIG_CONTIG);
-        TIFFSetField(tif, TIFFTAG_TILEWIDTH,       tileW);
-        TIFFSetField(tif, TIFFTAG_TILELENGTH,      tileH);
+        TIFFSetField(tif.get(), TIFFTAG_IMAGEWIDTH,      cols);
+        TIFFSetField(tif.get(), TIFFTAG_IMAGELENGTH,     rows);
+        TIFFSetField(tif.get(), TIFFTAG_BITSPERSAMPLE,   32);
+        TIFFSetField(tif.get(), TIFFTAG_SAMPLESPERPIXEL, 1);
+        TIFFSetField(tif.get(), TIFFTAG_SAMPLEFORMAT,    SAMPLEFORMAT_IEEEFP);
+        TIFFSetField(tif.get(), TIFFTAG_PHOTOMETRIC,     PHOTOMETRIC_MINISBLACK);
+        TIFFSetField(tif.get(), TIFFTAG_PLANARCONFIG,    PLANARCONFIG_CONTIG);
+        TIFFSetField(tif.get(), TIFFTAG_TILEWIDTH,       tileW);
+        TIFFSetField(tif.get(), TIFFTAG_TILELENGTH,      tileH);
 
         std::vector<float> tile(static_cast<size_t>(tileW) * tileH, 0.0f);
         for (uint32_t r = 0; r < rows; r += tileH) {
@@ -45,10 +48,9 @@ namespace {
                         const uint32_t ir = r + tr, ic = c + tc;
                         tile[tr * tileW + tc] = (ir < rows && ic < cols) ? img(ir, ic) : 0.0f;
                     }
-                TIFFWriteTile(tif, tile.data(), c, r, 0, 0);
+                TIFFWriteTile(tif.get(), tile.data(), c, r, 0, 0);
             }
         }
-        TIFFClose(tif);
     }
 }
 
@@ -58,6 +60,12 @@ struct TempFile {
     explicit TempFile(std::string p) : path(std::move(p)) {}
     ~TempFile() { std::remove(path.c_str()); }
 };
+
+// Returns a unique temp path with the given suffix, safe for parallel test runs
+inline std::string uniqueTempPath(const char* suffix) {
+    static int counter = 0;
+    return std::string("sirius_test_") + std::to_string(counter++) + suffix;
+}
 
 // -----------------------------------------------------------------------
 // ImageStack — memory layout and in-memory operations
@@ -130,7 +138,7 @@ TEST_CASE("Single image round-trip — all compression modes", "[tiff][io]") {
     );
     INFO("Compression: " << static_cast<int>(compression));
 
-    TempFile f("test_roundtrip.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(32, 32);
     original.setRandom();
 
@@ -144,7 +152,7 @@ TEST_CASE("Single image round-trip — all compression modes", "[tiff][io]") {
 
 TEST_CASE("Single image round-trip — all supported pixel types", "[tiff][io]") {
     SECTION("uint8") {
-        TempFile f("test_uint8.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<uint8_t> img(16, 16);
         img << 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240,
@@ -167,7 +175,7 @@ TEST_CASE("Single image round-trip — all supported pixel types", "[tiff][io]")
     }
 
     SECTION("uint16") {
-        TempFile f("test_uint16.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<uint16_t> img(8, 8);
         img.setZero();
         img(0, 0) = 0; img(0, 1) = 1000; img(0, 2) = 65535;
@@ -176,7 +184,7 @@ TEST_CASE("Single image round-trip — all supported pixel types", "[tiff][io]")
     }
 
     SECTION("double") {
-        TempFile f("test_double.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<double> img(8, 8);
         img.setRandom();
         writeTiff(f.path, img);
@@ -185,7 +193,7 @@ TEST_CASE("Single image round-trip — all supported pixel types", "[tiff][io]")
 }
 
 TEST_CASE("Reading a TIFF as a different type converts pixels", "[tiff][io][conversion]") {
-    TempFile f("test_conversion.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
 
     // write uint16, read back as float
     Image<uint16_t> original(4, 4);
@@ -211,7 +219,7 @@ TEST_CASE("Image dimensions are preserved exactly", "[tiff][io]") {
     }));
     INFO("Dimensions: " << r << "x" << c);
 
-    TempFile f("test_dims.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
     Image<uint16_t> img(r, c);
     img.setRandom();
     writeTiff(f.path, img);
@@ -227,7 +235,7 @@ TEST_CASE("Image dimensions are preserved exactly", "[tiff][io]") {
 // -----------------------------------------------------------------------
 
 TEST_CASE("Stack round-trip preserves all pages", "[tiff][io][stack]") {
-    TempFile f("test_stack.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
 
     const Eigen::Index depth = 5, rows = 16, cols = 16;
     ImageStack<uint16_t> original(depth, rows, cols);
@@ -253,7 +261,7 @@ TEST_CASE("Stack round-trip — compression modes", "[tiff][io][stack]") {
     );
     INFO("Compression: " << static_cast<int>(compression));
 
-    TempFile f("test_stack_compression.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
     ImageStack<float> original(3, 32, 32);
     for (Eigen::Index z = 0; z < 3; ++z)
         original.slice(z).setRandom();
@@ -267,7 +275,7 @@ TEST_CASE("Stack round-trip — compression modes", "[tiff][io][stack]") {
 }
 
 TEST_CASE("Stack pages are independent — writing one page does not corrupt others", "[tiff][io][stack]") {
-    TempFile f("test_stack_pages.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
 
     ImageStack<uint16_t> original(4, 8, 8);
     for (Eigen::Index z = 0; z < 4; ++z)
@@ -290,7 +298,7 @@ TEST_CASE("Stack pages are independent — writing one page does not corrupt oth
 
 TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][io]") {
     SECTION("int8 — min, zero, max") {
-        TempFile f("test_int8.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<int8_t> img(8, 8);
         img.setZero();
         img(0, 0) = -128; img(0, 1) = 0; img(0, 2) = 127;
@@ -299,7 +307,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
     }
 
     SECTION("int16 — min, zero, max") {
-        TempFile f("test_int16.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<int16_t> img(8, 8);
         img.setZero();
         img(0, 0) = -32768; img(0, 1) = 0; img(0, 2) = 32767;
@@ -308,7 +316,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
     }
 
     SECTION("uint32 — zero, mid, max") {
-        TempFile f("test_uint32.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<uint32_t> img(8, 8);
         img.setZero();
         img(0, 0) = 0; img(0, 1) = 65536; img(0, 2) = 0xFFFF'FFFFu;
@@ -317,7 +325,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
     }
 
     SECTION("int32 — min, zero, max") {
-        TempFile f("test_int32.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         Image<int32_t> img(8, 8);
         img.setZero();
         img(0, 0) = -2'147'483'647 - 1; img(0, 1) = 0; img(0, 2) = 2'147'483'647;
@@ -328,7 +336,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
 
 TEST_CASE("Stack round-trip — signed and wider integer types", "[tiff][io][stack]") {
     SECTION("int16") {
-        TempFile f("test_stack_int16.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         ImageStack<int16_t> original(3, 8, 8);
         for (Eigen::Index z = 0; z < 3; ++z)
             original.slice(z).fill(static_cast<int16_t>((z - 1) * 1000));
@@ -340,7 +348,7 @@ TEST_CASE("Stack round-trip — signed and wider integer types", "[tiff][io][sta
     }
 
     SECTION("int32") {
-        TempFile f("test_stack_int32.tiff");
+        TempFile f(uniqueTempPath(".tiff"));
         ImageStack<int32_t> original(3, 8, 8);
         for (Eigen::Index z = 0; z < 3; ++z)
             original.slice(z).fill(static_cast<int32_t>(z * 100'000));
@@ -358,7 +366,7 @@ TEST_CASE("Stack round-trip — signed and wider integer types", "[tiff][io][sta
 
 TEST_CASE("Tiled TIFF round-trip — tile-aligned dimensions", "[tiff][io][tiled]") {
     // 64x64 image with 16x16 tiles: every tile is fully populated, no edge clamping needed
-    TempFile f("test_tiled_aligned.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(64, 64);
     original.setRandom();
 
@@ -380,7 +388,7 @@ TEST_CASE("Tiled TIFF round-trip — non-tile-aligned dimensions (edge clamping)
     }));
     INFO("Image " << rows << "x" << cols);
 
-    TempFile f("test_tiled_edge.tiff");
+    TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(rows, cols);
     original.setRandom();
 

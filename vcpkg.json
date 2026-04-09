@@ -1,7 +1,27 @@
 {
+  "version-string": "0.1.0",
+  "description": "Structured Illumination Reconstruction and Image Utility Suite",
   "dependencies": [
     "eigen3",
-    "catch2",
-    "tiff"
-  ]
+    "tiff",
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "opengl3-binding",
+        "sdl3-binding"
+      ]
+    },
+    {
+      "name": "sdl3",
+      "features": ["dbus"],
+      "platform": "linux"
+    }
+  ],
+  "features": {
+    "testing": {
+      "description": "Build and run tests",
+      "dependencies": ["catch2"]
+    }
+  }
 }

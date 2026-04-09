@@ -3,6 +3,7 @@
 
 #include <Eigen/Core>
 #include <cassert>
+#include <stdexcept>
 #include <string>
 #include <memory>
 
@@ -36,13 +37,14 @@ namespace sirius {
         ImageStack(ImageStack&&) noexcept = default;
         ImageStack& operator=(ImageStack&&) noexcept = default;
 
-        ImageStack(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols)
-        : data_(std::make_unique<T[]>(
-            (assert(depth > 0 && rows > 0 && cols > 0),
-            static_cast<size_t>(depth * rows * cols))
-        )),
-        size_(static_cast<size_t>(depth * rows * cols)),
-        depth_(depth), rows_(rows), cols_(cols), stride_(rows * cols) {}
+        ImageStack(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols) {
+            if (depth <= 0 || rows <= 0 || cols <= 0)
+                throw std::invalid_argument("ImageStack dimensions must be positive");
+            depth_ = depth; rows_ = rows; cols_ = cols;
+            stride_ = rows * cols;
+            size_ = static_cast<size_t>(depth * rows * cols);
+            data_ = std::make_unique<T[]>(size_);
+        }
 
         T& operator()(Eigen::Index z, Eigen::Index r, Eigen::Index c) noexcept {
             assert(z >= 0 && z < depth_ && r >= 0 && r < rows_ && c >= 0 && c < cols_);
@@ -70,8 +72,8 @@ namespace sirius {
             rows_ = rows;
             cols_ = cols;
             stride_ = rows * cols;
-            size_ = static_cast<size_t> (depth * stride_);
-            data_.reset(new T[size_]);
+            size_ = static_cast<size_t>(depth * stride_);
+            data_ = std::make_unique<T[]>(size_);
         }
 
         T* data() noexcept { return data_.get(); }
@@ -82,7 +84,7 @@ namespace sirius {
         Eigen::Index stride() const noexcept { return stride_; }
         size_t size() const noexcept { return size_; }
         size_t sizeBytes() const noexcept { return size_ * sizeof(T); }
-        bool empty() const noexcept { return !data_; }
+        bool empty() const noexcept { return size_ == 0; }
     };
 
     template <typename T>

@@ -38,10 +38,14 @@ namespace sirius {
 
         TiffPageInfo getPageInfo(TIFF* tif) {
             TiffPageInfo info{};
-            TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &info.width);
-            TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &info.height);
-            TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &info.bps);
-            TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &info.spp);
+            if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH,      &info.width))
+                throw std::runtime_error("TIFF missing required tag: IMAGEWIDTH");
+            if (!TIFFGetField(tif, TIFFTAG_IMAGELENGTH,     &info.height))
+                throw std::runtime_error("TIFF missing required tag: IMAGELENGTH");
+            if (!TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE,   &info.bps))
+                throw std::runtime_error("TIFF missing required tag: BITSPERSAMPLE");
+            if (!TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &info.spp))
+                throw std::runtime_error("TIFF missing required tag: SAMPLESPERPIXEL");
             TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &info.fmt);
 
             if (info.spp != 1)
@@ -219,7 +223,7 @@ namespace sirius {
                 TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_PAGE);
 
             for (uint32_t row = 0; row < height; ++row) {
-                if (TIFFWriteScanline(tif, const_cast<void*>(static_cast<const void*>(src + row * width)), row) < 0)
+                if (TIFFWriteScanline(tif, static_cast<void*>(const_cast<T*>(src + row * width)), row) < 0)
                     throw std::runtime_error("Failed to write scanline " + std::to_string(row));
             }
         }
@@ -295,6 +299,13 @@ namespace sirius {
                 auto localTif = openTiff(path, "r");
                 TIFFSetSubDirectory(localTif.get(), offset[z]);
                 auto info = getPageInfo(localTif.get());
+                if (static_cast<Eigen::Index>(info.height) != rows ||
+                    static_cast<Eigen::Index>(info.width)  != cols)
+                    throw std::runtime_error(
+                        "TIFF stack page " + std::to_string(z) +
+                        " dimensions (" + std::to_string(info.width) + "x" +
+                        std::to_string(info.height) + ") do not match page 0 (" +
+                        std::to_string(cols) + "x" + std::to_string(rows) + ")");
                 T* dst = stack.data() + z * stack.stride();
                 if (tiled) readTiledPage<T>(localTif.get(), dst, info);
                 else       readScanlinePage<T>(localTif.get(), dst, info);

@@ -2,6 +2,8 @@ if(SIRIUS_ENABLE_CLANG_TIDY)
   find_program(CLANG_TIDY_EXE NAMES clang-tidy)
   if(CLANG_TIDY_EXE)
     set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")
+  else()
+    message(WARNING "SIRIUS_ENABLE_CLANG_TIDY is ON but clang-tidy was not found — static analysis will not run")
   endif()
 endif()
 
@@ -10,6 +12,8 @@ if(SIRIUS_ENABLE_CPPCHECK)
   if(CPPCHECK_EXE)
     set(CMAKE_CXX_CPPCHECK
       "${CPPCHECK_EXE};--enable=warning,performance,portability;--inline-suppr")
+  else()
+    message(WARNING "SIRIUS_ENABLE_CPPCHECK is ON but cppcheck was not found — static analysis will not run")
   endif()
 endif()
 
