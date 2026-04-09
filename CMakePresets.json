@@ -1,0 +1,177 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "dev",
+      "hidden": true,
+      "inherits": ["base"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SIRIUS_ENABLE_TESTS": "ON",
+        "SIRIUS_ENABLE_WARNINGS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "hidden": true,
+      "inherits": ["base"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+
+    {
+      "name": "win-msvc-dev",
+      "displayName": "Windows (MSVC) Dev",
+      "inherits": ["dev"],
+      "generator": "Visual Studio 18 2026",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "win-msvc-release",
+      "displayName": "Windows (MSVC) Release",
+      "inherits": ["release"],
+      "generator": "Visual Studio 18 2026",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-gcc-dev",
+      "displayName": "Linux (GCC) Dev",
+      "inherits": ["dev"],
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "displayName": "Linux (GCC) Release",
+      "inherits": ["release"],
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-clang-dev",
+      "displayName": "Linux (Clang) Dev",
+      "inherits": ["dev"],
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux (Clang) Release",
+      "inherits": ["release"],
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "base-build",
+      "hidden": true,
+      "jobs": 0
+    },
+    {
+      "name": "win-msvc-dev",
+      "inherits": ["base-build"],
+      "configurePreset": "win-msvc-dev",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-msvc-release",
+      "inherits": ["base-build"],
+      "configurePreset": "win-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc-dev",
+      "inherits": ["base-build"],
+      "configurePreset": "linux-gcc-dev"
+    },
+    {
+      "name": "linux-gcc-release",
+      "inherits": ["base-build"],
+      "configurePreset": "linux-gcc-release"
+    },
+    {
+      "name": "linux-clang-dev",
+      "inherits": ["base-build"],
+      "configurePreset": "linux-clang-dev"
+    },
+    {
+      "name": "linux-clang-release",
+      "inherits": ["base-build"],
+      "configurePreset": "linux-clang-release"
+    }
+  ],
+
+  "testPresets": [
+    {
+      "name": "base-test",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "win-msvc-dev",
+      "inherits": ["base-test"],
+      "configurePreset": "win-msvc-dev",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-gcc-dev",
+      "inherits": ["base-test"],
+      "configurePreset": "linux-gcc-dev"
+    },
+    {
+      "name": "linux-clang-dev",
+      "inherits": ["base-test"],
+      "configurePreset": "linux-clang-dev"
+    }
+  ]
+}
