@@ -3,6 +3,10 @@
         {
             "name": "Linux",
             "compileCommands": "${workspaceFolder}/build/linux-gcc-dev/compile_commands.json"
+        },
+        {
+            "name": "Windows",
+            "compileCommands": "${workspaceFolder}/build/win-msvc-dev/compile_commands.json"
         }
     ],
     "version": 4

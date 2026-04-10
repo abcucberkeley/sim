@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Tests",
+            "name": "Debug Tests (Linux)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/linux-gcc-dev/tests/sirius_tests",
@@ -22,7 +22,7 @@
             "preLaunchTask": "Build (linux-gcc-dev)"
         },
         {
-            "name": "Debug Single Test",
+            "name": "Debug Single Test (Linux)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/linux-gcc-dev/tests/sirius_tests",
@@ -40,6 +40,30 @@
                 }
             ],
             "preLaunchTask": "Build (linux-gcc-dev)"
+        },
+        {
+            "name": "Debug Tests (Windows)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/win-msvc-dev/tests/Debug/sirius_tests.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "preLaunchTask": "Build (win-msvc-dev)"
+        },
+        {
+            "name": "Debug Single Test (Windows)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/win-msvc-dev/tests/Debug/sirius_tests.exe",
+            "args": ["${input:testFilter}"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "preLaunchTask": "Build (win-msvc-dev)"
         }
     ],
     "inputs": [
