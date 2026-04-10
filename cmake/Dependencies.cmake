@@ -1,6 +1,7 @@
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(TIFF REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(FFTW3 CONFIG REQUIRED)
 
 if (SIRIUS_ENABLE_GUI)
     find_package(imgui CONFIG REQUIRED)

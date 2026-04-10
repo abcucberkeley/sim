@@ -63,8 +63,8 @@ struct TempFile {
 
 // Returns a unique temp path with the given suffix, safe for parallel test runs
 inline std::string uniqueTempPath(const char* suffix) {
-    static int counter = 0;
-    return std::string("sirius_test_") + std::to_string(counter++) + suffix;
+    static std::atomic<int> counter{0};
+    return std::string("sirius_test_") + std::to_string(counter.fetch_add(1)) + suffix;
 }
 
 // -----------------------------------------------------------------------

@@ -15,8 +15,10 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include
         FILES
             ${PROJECT_SOURCE_DIR}/include/sirius/tiff_io.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/fft.hpp
     PRIVATE
         tiff_io.cpp
+        fft.cpp
 )
 
 target_link_libraries(sirius
@@ -25,6 +27,7 @@ target_link_libraries(sirius
     PRIVATE
         TIFF::TIFF
         OpenMP::OpenMP_CXX
+        FFTW3::fftw3
 )
 
 if(SIRIUS_ENABLE_WARNINGS)

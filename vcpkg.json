@@ -4,6 +4,7 @@
   "dependencies": [
     "eigen3",
     "tiff",
+    "fftw3",
     {
       "name": "imgui",
       "features": [
