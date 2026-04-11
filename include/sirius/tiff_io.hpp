@@ -84,7 +84,7 @@ namespace sirius {
         Eigen::Index stride() const noexcept { return stride_; }
         size_t size() const noexcept { return size_; }
         size_t sizeBytes() const noexcept { return size_ * sizeof(T); }
-        bool empty() const noexcept { return size_ == 0; }
+        bool empty() const noexcept { return data_ == nullptr; }
     };
 
     template <typename T>
