@@ -72,8 +72,8 @@ namespace sirius {
         unsigned int flags = toFFTWFlag(rigor);
 
         std::lock_guard<std::mutex> lock(s_planner_mutex);
-        impl_->forward_plan = PlanPtr(fftw_plan_dft_1d(n, in_buf.data(), out_buf.data(), FFTW_FORWARD,  flags));
-        impl_->inverse_plan = PlanPtr(fftw_plan_dft_1d(n, in_buf.data(), out_buf.data(), FFTW_BACKWARD, flags));
+        impl_->forward_plan = PlanPtr(fftw_plan_dft_1d(static_cast<int>(n), in_buf.data(), out_buf.data(), FFTW_FORWARD,  flags));
+        impl_->inverse_plan = PlanPtr(fftw_plan_dft_1d(static_cast<int>(n), in_buf.data(), out_buf.data(), FFTW_BACKWARD, flags));
         impl_->n = n;
         impl_->alignment = fftw_alignment_of(reinterpret_cast<double*>(in_buf.data()));
 
