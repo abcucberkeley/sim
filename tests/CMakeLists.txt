@@ -3,6 +3,7 @@ add_executable(sirius_tests)
 target_sources(sirius_tests
     PRIVATE
         test_tiff_io.cpp
+        test_fft1d.cpp
 )
 
 target_link_libraries(sirius_tests
@@ -10,6 +11,7 @@ target_link_libraries(sirius_tests
         sirius
         Catch2::Catch2WithMain
         TIFF::TIFF
+        FFTW3::fftw3
 )
 
 include(Catch)

@@ -9,7 +9,7 @@
 
 using namespace sirius;
 
-// suppress libtiff's stderr messages — they're noise when we intentionally test error paths
+// suppress libtiff's stderr messages - they're noise when we intentionally test error paths
 namespace {
     const int silenceTiff = []() {
         TIFFSetErrorHandler(nullptr);
@@ -54,7 +54,7 @@ namespace {
     }
 }
 
-// RAII helper — deletes a file when it goes out of scope
+// RAII helper - deletes a file when it goes out of scope
 struct TempFile {
     std::string path;
     explicit TempFile(std::string p) : path(std::move(p)) {}
@@ -68,7 +68,7 @@ inline std::string uniqueTempPath(const char* suffix) {
 }
 
 // -----------------------------------------------------------------------
-// ImageStack — memory layout and in-memory operations
+// ImageStack - memory layout and in-memory operations
 // -----------------------------------------------------------------------
 
 TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
@@ -130,7 +130,7 @@ TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
 // Single image round-trips
 // -----------------------------------------------------------------------
 
-TEST_CASE("Single image round-trip — all compression modes", "[tiff][io]") {
+TEST_CASE("Single image round-trip - all compression modes", "[tiff][io]") {
     auto compression = GENERATE(
         TiffCompression::None,
         TiffCompression::Lzw,
@@ -150,7 +150,7 @@ TEST_CASE("Single image round-trip — all compression modes", "[tiff][io]") {
     REQUIRE(loaded.isApprox(original));
 }
 
-TEST_CASE("Single image round-trip — all supported pixel types", "[tiff][io]") {
+TEST_CASE("Single image round-trip - all supported pixel types", "[tiff][io]") {
     SECTION("uint8") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<uint8_t> img(16, 16);
@@ -253,7 +253,7 @@ TEST_CASE("Stack round-trip preserves all pages", "[tiff][io][stack]") {
         REQUIRE(loaded.slice(z).isApprox(original.slice(z)));
 }
 
-TEST_CASE("Stack round-trip — compression modes", "[tiff][io][stack]") {
+TEST_CASE("Stack round-trip - compression modes", "[tiff][io][stack]") {
     auto compression = GENERATE(
         TiffCompression::None,
         TiffCompression::Lzw,
@@ -274,7 +274,7 @@ TEST_CASE("Stack round-trip — compression modes", "[tiff][io][stack]") {
         REQUIRE(loaded.slice(z).isApprox(original.slice(z)));
 }
 
-TEST_CASE("Stack pages are independent — writing one page does not corrupt others", "[tiff][io][stack]") {
+TEST_CASE("Stack pages are independent - writing one page does not corrupt others", "[tiff][io][stack]") {
     TempFile f(uniqueTempPath(".tiff"));
 
     ImageStack<uint16_t> original(4, 8, 8);
@@ -296,8 +296,8 @@ TEST_CASE("Stack pages are independent — writing one page does not corrupt oth
 // Missing integer type round-trips (int8, int16, int32, uint32)
 // -----------------------------------------------------------------------
 
-TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][io]") {
-    SECTION("int8 — min, zero, max") {
+TEST_CASE("Single image round-trip - signed and wider integer types", "[tiff][io]") {
+    SECTION("int8 - min, zero, max") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<int8_t> img(8, 8);
         img.setZero();
@@ -306,7 +306,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
         REQUIRE(readTiff<int8_t>(f.path) == img);
     }
 
-    SECTION("int16 — min, zero, max") {
+    SECTION("int16 - min, zero, max") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<int16_t> img(8, 8);
         img.setZero();
@@ -315,7 +315,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
         REQUIRE(readTiff<int16_t>(f.path) == img);
     }
 
-    SECTION("uint32 — zero, mid, max") {
+    SECTION("uint32 - zero, mid, max") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<uint32_t> img(8, 8);
         img.setZero();
@@ -324,7 +324,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
         REQUIRE(readTiff<uint32_t>(f.path) == img);
     }
 
-    SECTION("int32 — min, zero, max") {
+    SECTION("int32 - min, zero, max") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<int32_t> img(8, 8);
         img.setZero();
@@ -334,7 +334,7 @@ TEST_CASE("Single image round-trip — signed and wider integer types", "[tiff][
     }
 }
 
-TEST_CASE("Stack round-trip — signed and wider integer types", "[tiff][io][stack]") {
+TEST_CASE("Stack round-trip - signed and wider integer types", "[tiff][io][stack]") {
     SECTION("int16") {
         TempFile f(uniqueTempPath(".tiff"));
         ImageStack<int16_t> original(3, 8, 8);
@@ -361,10 +361,10 @@ TEST_CASE("Stack round-trip — signed and wider integer types", "[tiff][io][sta
 }
 
 // -----------------------------------------------------------------------
-// Tiled TIFF reading — exercises the tiled reader code path
+// Tiled TIFF reading - exercises the tiled reader code path
 // -----------------------------------------------------------------------
 
-TEST_CASE("Tiled TIFF round-trip — tile-aligned dimensions", "[tiff][io][tiled]") {
+TEST_CASE("Tiled TIFF round-trip - tile-aligned dimensions", "[tiff][io][tiled]") {
     // 64x64 image with 16x16 tiles: every tile is fully populated, no edge clamping needed
     TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(64, 64);
@@ -378,7 +378,7 @@ TEST_CASE("Tiled TIFF round-trip — tile-aligned dimensions", "[tiff][io][tiled
     REQUIRE(loaded.isApprox(original));
 }
 
-TEST_CASE("Tiled TIFF round-trip — non-tile-aligned dimensions (edge clamping)", "[tiff][io][tiled]") {
+TEST_CASE("Tiled TIFF round-trip - non-tile-aligned dimensions (edge clamping)", "[tiff][io][tiled]") {
     // 50x50 with 16x16 tiles: right and bottom edge tiles are partially filled
     auto [rows, cols] = GENERATE(table<int, int>({
         {50,  50},   // partial tiles on both axes
