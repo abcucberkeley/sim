@@ -4,14 +4,13 @@ target_sources(sirius_tests
     PRIVATE
         test_tiff_io.cpp
         test_fft1d.cpp
+        test_fft_buffers.cpp
 )
 
 target_link_libraries(sirius_tests
     PRIVATE
         sirius
         Catch2::Catch2WithMain
-        TIFF::TIFF
-        FFTW3::fftw3
 )
 
 include(Catch)

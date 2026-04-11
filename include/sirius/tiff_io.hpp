@@ -67,7 +67,8 @@ namespace sirius {
         }
 
         void resize(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols) {
-            assert(depth > 0 && rows > 0 && cols > 0);
+            if (depth <= 0 || rows <= 0 || cols <= 0)
+                throw std::invalid_argument("ImageStack dimensions must be positive");
             depth_ = depth;
             rows_ = rows;
             cols_ = cols;

@@ -1,10 +1,10 @@
 #include "sirius/fft.hpp"
 #include "sirius/fft_buffers.hpp"
-#include <Eigen/Core>
-#include <fftw3.h>
 #include <mutex>
 #include <memory>
 #include <stdexcept>
+#include <Eigen/Core>
+#include <fftw3.h>
 
 namespace sirius {
     namespace {
@@ -64,7 +64,8 @@ namespace sirius {
         int alignment; // fftw_alignment_of at plan creating time
     };
 
-    FFT1D::FFT1D(Eigen::Index n, PlanRigor rigor) : impl_(std::make_unique<Impl>()) {
+    FFT1D::FFT1D(Eigen::Index n, PlanRigor rigor, bool normalize)
+    : impl_(std::make_unique<Impl>()), normalize_(normalize) {
         // Always allocate temp buffers — passing nullptr is only valid with FFTW_ESTIMATE,
         // but conditioning on rigor is fragile.
         FFTWBuffer1D in_buf(n);
@@ -87,13 +88,27 @@ namespace sirius {
     FFT1D::FFT1D(FFT1D&&) noexcept = default;
     FFT1D& FFT1D::operator=(FFT1D&&) noexcept = default;
 
+    // Forwards and inverse transforms
     void FFT1D::forward(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const {
         if (in.size() != impl_->n || out.size() != impl_->n) throw std::invalid_argument("Buffer size mismatch.");
         execute_safe(impl_->forward_plan.get(), impl_->alignment, in, out);
     }
-
+    
     void FFT1D::inverse(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const {
         if (in.size() != impl_->n || out.size() != impl_->n) throw std::invalid_argument("Buffer size mismatch.");
         execute_safe(impl_->inverse_plan.get(), impl_->alignment, in, out);
+        if (normalize_) out /= (double) impl_->n;
+    }
+
+    // Save/load fft wisdom
+    void FFT1D::loadWisdom(const std::string& path) {
+        std::lock_guard<std::mutex> lock(s_planner_mutex);
+        fftw_import_wisdom_from_filename(path.c_str()); // returns 0 on failure, silently ok
+    }
+
+    void FFT1D::saveWisdom(const std::string& path) {
+        std::lock_guard<std::mutex> lock(s_planner_mutex);
+        if (!fftw_export_wisdom_to_filename(path.c_str()))
+            throw std::runtime_error("Failed to save FFTW wisdom to: " + path);
     }
 }

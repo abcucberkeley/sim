@@ -1,11 +1,11 @@
 #include "sirius/tiff_io.hpp"
-#include <tiffio.h>
 #include <cstring>
 #include <type_traits>
 #include <stdexcept>
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <tiffio.h>
 
 namespace sirius {
 

@@ -3,6 +3,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <Eigen/Core>
 #include <cmath>
+#include <cstdio>
 #include "sirius/fft.hpp"
 
 using namespace sirius;
@@ -351,4 +352,98 @@ TEST_CASE("FFT1D plan can be reused across multiple calls", "[fft1d]") {
         REQUIRE_THAT(std::abs(out[iter]),
             Catch::Matchers::WithinAbs(static_cast<double>(n), kTol * n));
     }
+}
+
+// -----------------------------------------------------------------------
+// Normalization flag
+// -----------------------------------------------------------------------
+
+TEST_CASE("FFT1D normalize=true: IFFT(FFT(x)) == x without manual scaling", "[fft1d][normalize]") {
+    auto n = GENERATE(16, 64, 256);
+    INFO("N = " << n);
+
+    FFT1D fft(n, PlanRigor::Measure, true);
+    Eigen::VectorXcd original = Eigen::VectorXcd::Random(n);
+
+    Eigen::VectorXcd freq_domain(n), recovered(n);
+    fft.forward(original, freq_domain);
+    fft.inverse(freq_domain, recovered);
+
+    REQUIRE(max_abs_error(recovered, original) < kTol);
+}
+
+TEST_CASE("FFT1D normalize=false (default): inverse is unnormalized", "[fft1d][normalize]") {
+    // With normalize=false, IFFT(FFT(x)) = N*x — the raw FFTW convention.
+    const Eigen::Index n = 64;
+    FFT1D fft(n); // normalize defaults to false
+
+    Eigen::VectorXcd original = Eigen::VectorXcd::Random(n);
+    Eigen::VectorXcd freq_domain(n), recovered(n);
+    fft.forward(original, freq_domain);
+    fft.inverse(freq_domain, recovered);
+
+    // recovered should equal N * original, not original
+    REQUIRE(max_abs_error(recovered, static_cast<double>(n) * original) < kTol);
+}
+
+TEST_CASE("FFT1D normalize flag does not affect forward transform", "[fft1d][normalize]") {
+    // forward output should be identical regardless of the normalize flag
+    const Eigen::Index n = 64;
+    FFT1D fft_raw(n, PlanRigor::Measure, false);
+    FFT1D fft_norm(n, PlanRigor::Measure, true);
+
+    Eigen::VectorXcd in = Eigen::VectorXcd::Random(n);
+    Eigen::VectorXcd out_raw(n), out_norm(n);
+    fft_raw.forward(in, out_raw);
+    fft_norm.forward(in, out_norm);
+
+    REQUIRE(max_abs_error(out_raw, out_norm) < kTol);
+}
+
+// -----------------------------------------------------------------------
+// Wisdom save / load
+// -----------------------------------------------------------------------
+
+namespace {
+    // Use a fixed temp path; clean up in the test.
+    const char* kWisdomPath = "/tmp/sirius_test_wisdom.fftw";
+}
+
+TEST_CASE("FFT1D saveWisdom writes a file and loadWisdom reads it back", "[fft1d][wisdom]") {
+    std::remove(kWisdomPath);
+
+    // Plan and save
+    FFT1D fft(128);
+    REQUIRE_NOTHROW(FFT1D::saveWisdom(kWisdomPath));
+
+    // File must exist after saving
+    FILE* f = std::fopen(kWisdomPath, "r");
+    REQUIRE(f != nullptr);
+    if (f) std::fclose(f);
+
+    // Load and verify a subsequent plan still produces correct results
+    REQUIRE_NOTHROW(FFT1D::loadWisdom(kWisdomPath));
+
+    FFT1D fft2(128);
+    Eigen::VectorXcd in = Eigen::VectorXcd::Zero(128);
+    in[0] = 1.0;
+    Eigen::VectorXcd out(128);
+    fft2.forward(in, out);
+
+    // delta input -> flat spectrum with magnitude 1
+    for (Eigen::Index f = 0; f < 128; ++f)
+        REQUIRE_THAT(std::abs(out[f]), Catch::Matchers::WithinAbs(1.0, kTol));
+
+    std::remove(kWisdomPath);
+}
+
+TEST_CASE("FFT1D loadWisdom on missing file does not throw", "[fft1d][wisdom]") {
+    REQUIRE_NOTHROW(FFT1D::loadWisdom("/tmp/sirius_nonexistent_wisdom.fftw"));
+}
+
+TEST_CASE("FFT1D saveWisdom to invalid path throws", "[fft1d][wisdom]") {
+    REQUIRE_THROWS_AS(
+        FFT1D::saveWisdom("/nonexistent_dir/wisdom.fftw"),
+        std::runtime_error
+    );
 }
