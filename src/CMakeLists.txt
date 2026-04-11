@@ -16,6 +16,7 @@ target_sources(sirius
         FILES
             ${PROJECT_SOURCE_DIR}/include/sirius/tiff_io.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/fft.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/fft_buffers.hpp
     PRIVATE
         tiff_io.cpp
         fft.cpp

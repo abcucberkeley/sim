@@ -280,11 +280,6 @@ namespace sirius {
             } while (TIFFReadDirectory(tif.get()));
         }
 
-        if (pageCount > 65535) {
-            // Note: Technically BigTIFF allows more, but standard TIFF caps at 65535.
-            throw std::runtime_error("TIFF stack exceeds expected maximum directory count.");
-        }
-
         // Allocate the contiguous memory block once
         ImageStack<T> stack(pageCount, rows, cols);
 
