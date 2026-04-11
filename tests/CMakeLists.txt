@@ -4,6 +4,7 @@ target_sources(sirius_tests
     PRIVATE
         test_tiff_io.cpp
         test_fft1d.cpp
+        test_fft2d.cpp
         test_fft_buffers.cpp
 )
 

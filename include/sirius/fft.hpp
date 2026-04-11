@@ -7,6 +7,11 @@
 
 namespace sirius {
 
+    // Row-major complex matrix — matches FFTW's expected C-order layout for 2D plans.
+    // Prefer this over Eigen::MatrixXcd when calling FFT2D for zero-copy execution.
+    using RowMatrixXcd = Eigen::Matrix<std::complex<double>,
+                                       Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+
     // Planning rigor controls the time FFTW spends searching for an optimal plan.
     // Higher rigor = better runtime FFT performance, but longer one-time planning cost.
     // Use Estimate for exploratory work; Measure or Patient for production runs on
@@ -48,6 +53,40 @@ namespace sirius {
         std::unique_ptr<Impl> impl_;
         bool normalize_ = false;
     };
+
+    class FFT2D {
+    public:
+        explicit FFT2D(Eigen::Index rows, Eigen::Index cols,
+                       PlanRigor rigor = PlanRigor::Measure, bool normalize = false);
+        ~FFT2D();
+
+        // delete copy constructors
+        FFT2D(const FFT2D&) = delete;
+        FFT2D& operator=(const FFT2D&) = delete;
+
+        // move ops defined in .cpp for the same reason as the destructor
+        FFT2D(FFT2D&&) noexcept;
+        FFT2D& operator=(FFT2D&&) noexcept;
+
+        // Zero-copy path: RowMatrixXcd matches FFTW's C-order layout.
+        // Executes directly when aligned; falls back to scratch buffers when not.
+        void forward(const RowMatrixXcd& in, RowMatrixXcd& out) const;
+        void inverse(const RowMatrixXcd& in, RowMatrixXcd& out) const;
+
+        // Column-major convenience overloads — always copies due to layout conversion.
+        void forward(const Eigen::MatrixXcd& in, Eigen::MatrixXcd& out) const;
+        void inverse(const Eigen::MatrixXcd& in, Eigen::MatrixXcd& out) const;
+
+        // Wisdom is global FFTW state — these are equivalent to FFT1D::loadWisdom/saveWisdom.
+        static void loadWisdom(const std::string& path);
+        static void saveWisdom(const std::string& path);
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        bool normalize_ = false;
+    };
+
 } // namespace sirius
 
 #endif // SIRIUS_FFT_HPP
