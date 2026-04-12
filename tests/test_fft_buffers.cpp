@@ -303,6 +303,49 @@ TEST_CASE("FFTWBuffer3D accessors", "[fft_buffers][3d]") {
 }
 
 // -----------------------------------------------------------------------
+// FFTWBuffer3D — operator()(z, r, c)
+// -----------------------------------------------------------------------
+
+TEST_CASE("FFTWBuffer3D operator() element access", "[fft_buffers][3d]") {
+    FFTWBuffer3D buf(3, 4, 5);
+
+    SECTION("write via operator() is visible at correct raw offset") {
+        buf(1, 2, 3) = std::complex<double>(7.0, -3.0);
+        auto* raw = reinterpret_cast<std::complex<double>*>(buf.data());
+        // z=1, r=2, c=3 → flat offset = 1*4*5 + 2*5 + 3 = 33
+        REQUIRE(raw[1 * 4 * 5 + 2 * 5 + 3] == std::complex<double>(7.0, -3.0));
+    }
+
+    SECTION("write via raw pointer is visible through operator()") {
+        auto* raw = reinterpret_cast<std::complex<double>*>(buf.data());
+        raw[0 * 4 * 5 + 3 * 5 + 4] = std::complex<double>(1.5, 2.5); // z=0, r=3, c=4
+        REQUIRE(buf(0, 3, 4) == std::complex<double>(1.5, 2.5));
+    }
+
+    SECTION("operator() is consistent with slice()(r, c)") {
+        buf(2, 1, 3) = std::complex<double>(4.0, -1.0);
+        REQUIRE(buf.slice(2)(1, 3) == std::complex<double>(4.0, -1.0));
+    }
+
+    SECTION("independent writes to different elements do not interfere") {
+        buf(0, 0, 0) = std::complex<double>(1.0, 0.0);
+        buf(1, 2, 3) = std::complex<double>(2.0, 0.0);
+        buf(2, 3, 4) = std::complex<double>(3.0, 0.0);
+
+        REQUIRE(buf(0, 0, 0) == std::complex<double>(1.0, 0.0));
+        REQUIRE(buf(1, 2, 3) == std::complex<double>(2.0, 0.0));
+        REQUIRE(buf(2, 3, 4) == std::complex<double>(3.0, 0.0));
+    }
+
+    SECTION("first and last elements are accessible") {
+        buf(0, 0, 0)         = std::complex<double>(10.0, 0.0);
+        buf(2, 3, 4)         = std::complex<double>(20.0, 0.0);
+        REQUIRE(buf(0, 0, 0) == std::complex<double>(10.0, 0.0));
+        REQUIRE(buf(2, 3, 4) == std::complex<double>(20.0, 0.0));
+    }
+}
+
+// -----------------------------------------------------------------------
 // FFTWBuffer3D — slice()
 // -----------------------------------------------------------------------
 

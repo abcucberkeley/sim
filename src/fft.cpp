@@ -1,5 +1,5 @@
 #include "sirius/fft.hpp"
-#include "sirius/fft_buffers.hpp"
+#include <cstring>
 #include <mutex>
 #include <memory>
 #include <stdexcept>
@@ -218,4 +218,89 @@ namespace sirius {
 
     void FFT2D::loadWisdom(const std::string& path) { loadWisdomImpl(path); }
     void FFT2D::saveWisdom(const std::string& path) { saveWisdomImpl(path); }
+
+    // -----------------------------------------------------------------------
+    // FFT3D
+    // -----------------------------------------------------------------------
+
+    struct FFT3D::Impl {
+        PlanPtr forward_plan;
+        PlanPtr inverse_plan;
+        Eigen::Index depth;
+        Eigen::Index rows;
+        Eigen::Index cols;
+        int alignment;
+    };
+
+    FFT3D::FFT3D(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols,
+                 PlanRigor rigor, bool normalize)
+    : impl_(std::make_unique<Impl>()), normalize_(normalize) {
+        FFTWBuffer3D in_buf(depth, rows, cols);
+        FFTWBuffer3D out_buf(depth, rows, cols);
+        unsigned int flags = toFFTWFlag(rigor);
+
+        std::lock_guard<std::mutex> lock(s_planner_mutex);
+        impl_->forward_plan = PlanPtr(fftw_plan_dft_3d(
+            static_cast<int>(depth), static_cast<int>(rows), static_cast<int>(cols),
+            in_buf.data(), out_buf.data(), FFTW_FORWARD, flags));
+        impl_->inverse_plan = PlanPtr(fftw_plan_dft_3d(
+            static_cast<int>(depth), static_cast<int>(rows), static_cast<int>(cols),
+            in_buf.data(), out_buf.data(), FFTW_BACKWARD, flags));
+        impl_->depth = depth;
+        impl_->rows  = rows;
+        impl_->cols  = cols;
+        impl_->alignment = fftw_alignment_of(reinterpret_cast<double*>(in_buf.data()));
+
+        if (!impl_->forward_plan || !impl_->inverse_plan)
+            throw std::runtime_error("FFTW failed to create 3D plan.");
+    }
+
+    FFT3D::~FFT3D() = default;
+    FFT3D::FFT3D(FFT3D&&) noexcept = default;
+    FFT3D& FFT3D::operator=(FFT3D&&) noexcept = default;
+
+    // FFTWBuffer3D always uses fftw_alloc_complex so alignment matches the plan.
+    // The check + scratch fallback mirrors 1D/2D for consistency in case a buffer
+    // is ever constructed from non-FFTW memory in future.
+    static void execute_safe_3d(fftw_plan plan, int plan_alignment,
+        const FFTWBuffer3D& in, FFTWBuffer3D& out) {
+            auto* in_ptr  = const_cast<fftw_complex*>(in.data());
+            auto* out_ptr = out.data();
+
+            bool aligned = fftw_alignment_of(reinterpret_cast<double*>(in_ptr))  == plan_alignment
+                        && fftw_alignment_of(reinterpret_cast<double*>(out_ptr)) == plan_alignment;
+
+            if (aligned) {
+                fftw_execute_dft(plan, in_ptr, out_ptr);
+            } else {
+                FFTWBuffer3D tmp_in(in.depth(), in.rows(), in.cols());
+                FFTWBuffer3D tmp_out(in.depth(), in.rows(), in.cols());
+                std::memcpy(tmp_in.data(), in.data(), in.size() * sizeof(fftw_complex));
+                fftw_execute_dft(plan, tmp_in.data(), tmp_out.data());
+                std::memcpy(out.data(), tmp_out.data(), out.size() * sizeof(fftw_complex));
+            }
+    }
+
+    void FFT3D::forward(const FFTWBuffer3D& in, FFTWBuffer3D& out) const {
+        if (in.depth() != impl_->depth || in.rows() != impl_->rows || in.cols() != impl_->cols ||
+            out.depth() != impl_->depth || out.rows() != impl_->rows || out.cols() != impl_->cols)
+            throw std::invalid_argument("Buffer dimensions do not match the 3D plan.");
+        execute_safe_3d(impl_->forward_plan.get(), impl_->alignment, in, out);
+    }
+
+    void FFT3D::inverse(const FFTWBuffer3D& in, FFTWBuffer3D& out) const {
+        if (in.depth() != impl_->depth || in.rows() != impl_->rows || in.cols() != impl_->cols ||
+            out.depth() != impl_->depth || out.rows() != impl_->rows || out.cols() != impl_->cols)
+            throw std::invalid_argument("Buffer dimensions do not match the 3D plan.");
+        execute_safe_3d(impl_->inverse_plan.get(), impl_->alignment, in, out);
+        if (normalize_) {
+            auto* p = reinterpret_cast<std::complex<double>*>(out.data());
+            double N = static_cast<double>(impl_->depth * impl_->rows * impl_->cols);
+            for (Eigen::Index i = 0; i < out.size(); ++i)
+                p[i] /= N;
+        }
+    }
+
+    void FFT3D::loadWisdom(const std::string& path) { loadWisdomImpl(path); }
+    void FFT3D::saveWisdom(const std::string& path) { saveWisdomImpl(path); }
 }

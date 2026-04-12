@@ -191,6 +191,13 @@ namespace sirius {
             return {reinterpret_cast<std::complex<double>*>(data_) + z * stride, rows_, cols_};
         }
 
+        // element access
+        std::complex<double>& operator()(Eigen::Index z, Eigen::Index r, Eigen::Index c) noexcept {
+            assert(z >= 0 && z < depth_ && r >= 0 && r < rows_ && c >= 0 && c < cols_);
+            return reinterpret_cast<std::complex<double>*>(data_)[z * rows_ * cols_ + r * cols_ + c];
+        }
+
+
         Eigen::Index depth() const {return depth_;}
         Eigen::Index rows() const {return rows_;}
         Eigen::Index cols() const {return cols_;}

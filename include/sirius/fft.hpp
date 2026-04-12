@@ -1,6 +1,7 @@
 #ifndef SIRIUS_FFT_HPP
 #define SIRIUS_FFT_HPP
 
+#include "sirius/fft_buffers.hpp"
 #include <memory>
 #include <string>
 #include <Eigen/Core>
@@ -76,6 +77,34 @@ namespace sirius {
         // Column-major convenience overloads — always copies due to layout conversion.
         void forward(const Eigen::MatrixXcd& in, Eigen::MatrixXcd& out) const;
         void inverse(const Eigen::MatrixXcd& in, Eigen::MatrixXcd& out) const;
+
+        // Wisdom is global FFTW state — these are equivalent to FFT1D::loadWisdom/saveWisdom.
+        static void loadWisdom(const std::string& path);
+        static void saveWisdom(const std::string& path);
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        bool normalize_ = false;
+    };
+
+    class FFT3D {
+    public:
+        explicit FFT3D(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols,
+                       PlanRigor rigor = PlanRigor::Measure, bool normalize = false);
+        ~FFT3D();
+
+        // delete copy constructors
+        FFT3D(const FFT3D&) = delete;
+        FFT3D& operator=(const FFT3D&) = delete;
+
+        // move ops defined in .cpp for the same reason as the destructor
+        FFT3D(FFT3D&&) noexcept;
+        FFT3D& operator=(FFT3D&&) noexcept;
+
+        // Row major 3D stack, eigen doesnt support 3d
+        void forward(const FFTWBuffer3D& in, FFTWBuffer3D& out) const;
+        void inverse(const FFTWBuffer3D& in, FFTWBuffer3D& out) const;
 
         // Wisdom is global FFTW state — these are equivalent to FFT1D::loadWisdom/saveWisdom.
         static void loadWisdom(const std::string& path);
