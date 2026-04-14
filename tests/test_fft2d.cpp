@@ -4,6 +4,7 @@
 #include <Eigen/Core>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include "sirius/fft.hpp"
 
 using namespace sirius;
@@ -382,20 +383,21 @@ TEST_CASE("FFT2D plan can be reused across multiple calls", "[fft2d]") {
 // -----------------------------------------------------------------------
 
 namespace {
-    const char* kWisdom2DPath = "/tmp/sirius_test_wisdom_2d.fftw";
+    const std::string kWisdom2DPath =
+        (std::filesystem::temp_directory_path() / "sirius_test_wisdom_2d.fftw").string();
 }
 
 TEST_CASE("FFT2D saveWisdom and loadWisdom", "[fft2d][wisdom]") {
-    std::remove(kWisdom2DPath);
+    std::remove(kWisdom2DPath.c_str());
 
     FFT2D fft(32, 32);
-    REQUIRE_NOTHROW(FFT2D::saveWisdom(kWisdom2DPath));
+    REQUIRE_NOTHROW(FFT2D::saveWisdom(kWisdom2DPath.c_str()));
 
-    FILE* f = std::fopen(kWisdom2DPath, "r");
+    FILE* f = std::fopen(kWisdom2DPath.c_str(), "r");
     REQUIRE(f != nullptr);
     if (f) std::fclose(f);
 
-    REQUIRE_NOTHROW(FFT2D::loadWisdom(kWisdom2DPath));
+    REQUIRE_NOTHROW(FFT2D::loadWisdom(kWisdom2DPath.c_str()));
 
     // Plan created after loading wisdom should still produce correct results
     FFT2D fft2(32, 32);
@@ -408,12 +410,14 @@ TEST_CASE("FFT2D saveWisdom and loadWisdom", "[fft2d][wisdom]") {
         for (Eigen::Index f2 = 0; f2 < 32; ++f2)
             REQUIRE_THAT(std::abs(out(f1, f2)), Catch::Matchers::WithinAbs(1.0, kTol));
 
-    std::remove(kWisdom2DPath);
+    std::remove(kWisdom2DPath.c_str());
 }
 
 TEST_CASE("FFT2D saveWisdom to invalid path throws", "[fft2d][wisdom]") {
+    const std::string bad =
+        (std::filesystem::temp_directory_path() / "sirius_nonexistent_subdir" / "wisdom.fftw").string();
     REQUIRE_THROWS_AS(
-        FFT2D::saveWisdom("/nonexistent_dir/wisdom.fftw"),
+        FFT2D::saveWisdom(bad.c_str()),
         std::runtime_error
     );
 }

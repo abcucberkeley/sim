@@ -4,6 +4,7 @@
 #include <Eigen/Core>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include "sirius/fft.hpp"
 
 using namespace sirius;
@@ -406,23 +407,24 @@ TEST_CASE("FFT1D normalize flag does not affect forward transform", "[fft1d][nor
 
 namespace {
     // Use a fixed temp path; clean up in the test.
-    const char* kWisdomPath = "/tmp/sirius_test_wisdom.fftw";
+    const std::string kWisdomPath =
+        (std::filesystem::temp_directory_path() / "sirius_test_wisdom.fftw").string();
 }
 
 TEST_CASE("FFT1D saveWisdom writes a file and loadWisdom reads it back", "[fft1d][wisdom]") {
-    std::remove(kWisdomPath);
+    std::remove(kWisdomPath.c_str());
 
     // Plan and save
     FFT1D fft(128);
-    REQUIRE_NOTHROW(FFT1D::saveWisdom(kWisdomPath));
+    REQUIRE_NOTHROW(FFT1D::saveWisdom(kWisdomPath.c_str()));
 
     // File must exist after saving
-    FILE* f = std::fopen(kWisdomPath, "r");
+    FILE* f = std::fopen(kWisdomPath.c_str(), "r");
     REQUIRE(f != nullptr);
     if (f) std::fclose(f);
 
     // Load and verify a subsequent plan still produces correct results
-    REQUIRE_NOTHROW(FFT1D::loadWisdom(kWisdomPath));
+    REQUIRE_NOTHROW(FFT1D::loadWisdom(kWisdomPath.c_str()));
 
     FFT1D fft2(128);
     Eigen::VectorXcd in = Eigen::VectorXcd::Zero(128);
@@ -434,16 +436,20 @@ TEST_CASE("FFT1D saveWisdom writes a file and loadWisdom reads it back", "[fft1d
     for (Eigen::Index f = 0; f < 128; ++f)
         REQUIRE_THAT(std::abs(out[f]), Catch::Matchers::WithinAbs(1.0, kTol));
 
-    std::remove(kWisdomPath);
+    std::remove(kWisdomPath.c_str());
 }
 
 TEST_CASE("FFT1D loadWisdom on missing file does not throw", "[fft1d][wisdom]") {
-    REQUIRE_NOTHROW(FFT1D::loadWisdom("/tmp/sirius_nonexistent_wisdom.fftw"));
+    const std::string missing =
+        (std::filesystem::temp_directory_path() / "sirius_nonexistent_wisdom.fftw").string();
+    REQUIRE_NOTHROW(FFT1D::loadWisdom(missing.c_str()));
 }
 
 TEST_CASE("FFT1D saveWisdom to invalid path throws", "[fft1d][wisdom]") {
+    const std::string bad =
+        (std::filesystem::temp_directory_path() / "sirius_nonexistent_subdir" / "wisdom.fftw").string();
     REQUIRE_THROWS_AS(
-        FFT1D::saveWisdom("/nonexistent_dir/wisdom.fftw"),
+        FFT1D::saveWisdom(bad.c_str()),
         std::runtime_error
     );
 }

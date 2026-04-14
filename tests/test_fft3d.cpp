@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <filesystem>
 #include "sirius/fft.hpp"
 
 using namespace sirius;
@@ -420,20 +421,21 @@ TEST_CASE("FFT3D plan can be reused across multiple calls", "[fft3d]") {
 // -----------------------------------------------------------------------
 
 namespace {
-    const char* kWisdom3DPath = "/tmp/sirius_test_wisdom_3d.fftw";
+    const std::string kWisdom3DPath =
+        (std::filesystem::temp_directory_path() / "sirius_test_wisdom_3d.fftw").string();
 }
 
 TEST_CASE("FFT3D saveWisdom and loadWisdom", "[fft3d][wisdom]") {
-    std::remove(kWisdom3DPath);
+    std::remove(kWisdom3DPath.c_str());
 
     FFT3D fft(8, 8, 8);
-    REQUIRE_NOTHROW(FFT3D::saveWisdom(kWisdom3DPath));
+    REQUIRE_NOTHROW(FFT3D::saveWisdom(kWisdom3DPath.c_str()));
 
-    FILE* f = std::fopen(kWisdom3DPath, "r");
+    FILE* f = std::fopen(kWisdom3DPath.c_str(), "r");
     REQUIRE(f != nullptr);
     if (f) std::fclose(f);
 
-    REQUIRE_NOTHROW(FFT3D::loadWisdom(kWisdom3DPath));
+    REQUIRE_NOTHROW(FFT3D::loadWisdom(kWisdom3DPath.c_str()));
 
     FFT3D fft2(8, 8, 8);
     FFTWBuffer3D in(8, 8, 8), out(8, 8, 8);
@@ -447,12 +449,14 @@ TEST_CASE("FFT3D saveWisdom and loadWisdom", "[fft3d][wisdom]") {
                 REQUIRE_THAT(std::abs(out(d, r, c)),
                     Catch::Matchers::WithinAbs(1.0, kTol));
 
-    std::remove(kWisdom3DPath);
+    std::remove(kWisdom3DPath.c_str());
 }
 
 TEST_CASE("FFT3D saveWisdom to invalid path throws", "[fft3d][wisdom]") {
+    const std::string bad =
+        (std::filesystem::temp_directory_path() / "sirius_nonexistent_subdir" / "wisdom.fftw").string();
     REQUIRE_THROWS_AS(
-        FFT3D::saveWisdom("/nonexistent_dir/wisdom.fftw"),
+        FFT3D::saveWisdom(bad.c_str()),
         std::runtime_error
     );
 }
