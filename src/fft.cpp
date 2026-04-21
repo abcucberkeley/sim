@@ -1,3 +1,4 @@
+#include "sirius/fft_buffers.hpp"
 #include "sirius/fft.hpp"
 #include <cstring>
 #include <mutex>
@@ -31,7 +32,7 @@ namespace sirius {
 
         // safe execution in case unaligned buffers with offset are passed
         void execute_safe(fftw_plan plan, int plan_alignment,
-            const Eigen::VectorXcd& in, Eigen::VectorXcd& out) {
+            Eigen::Ref<const Eigen::VectorXcd> in, Eigen::Ref<Eigen::VectorXcd> out) {
                 auto* in_ptr = reinterpret_cast<fftw_complex*>(const_cast<std::complex<double>*>(in.data()));
                 auto* out_ptr = reinterpret_cast<fftw_complex*>(out.data());
 
@@ -124,12 +125,12 @@ namespace sirius {
     FFT1D& FFT1D::operator=(FFT1D&&) noexcept = default;
 
     // Forwards and inverse transforms
-    void FFT1D::forward(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const {
+    void FFT1D::forward(Eigen::Ref<const Eigen::VectorXcd> in, Eigen::Ref<Eigen::VectorXcd> out) const {
         if (in.size() != impl_->n || out.size() != impl_->n) throw std::invalid_argument("Buffer size mismatch.");
         execute_safe(impl_->forward_plan.get(), impl_->alignment, in, out);
     }
-    
-    void FFT1D::inverse(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const {
+
+    void FFT1D::inverse(Eigen::Ref<const Eigen::VectorXcd> in, Eigen::Ref<Eigen::VectorXcd> out) const {
         if (in.size() != impl_->n || out.size() != impl_->n) throw std::invalid_argument("Buffer size mismatch.");
         execute_safe(impl_->inverse_plan.get(), impl_->alignment, in, out);
         if (normalize_) out /= (double) impl_->n;

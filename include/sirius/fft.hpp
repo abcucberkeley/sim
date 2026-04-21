@@ -1,12 +1,14 @@
 #ifndef SIRIUS_FFT_HPP
 #define SIRIUS_FFT_HPP
 
-#include "sirius/fft_buffers.hpp"
 #include <memory>
 #include <string>
 #include <Eigen/Core>
 
 namespace sirius {
+
+    // TODO: use eigen tensor instead
+    class FFTWBuffer3D;
 
     // Row-major complex matrix — matches FFTW's expected C-order layout for 2D plans.
     // Prefer this over Eigen::MatrixXcd when calling FFT2D for zero-copy execution.
@@ -40,8 +42,8 @@ namespace sirius {
         // Forward and inverse FFT1D transforms.
         // std::complex<double> is layout-compatible with fftw_complex per the C++ standard
         // and FFTW documentation, so Eigen data is passed directly without copying.
-        void forward(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const;
-        void inverse(const Eigen::VectorXcd& in, Eigen::VectorXcd& out) const;
+        void forward(Eigen::Ref<const Eigen::VectorXcd> in, Eigen::Ref<Eigen::VectorXcd> out) const;
+        void inverse(Eigen::Ref<const Eigen::VectorXcd> in, Eigen::Ref<Eigen::VectorXcd> out) const;
 
         // Save/load fft wisdom
         static void loadWisdom(const std::string& path);

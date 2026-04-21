@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+endif()
+
 project(SIRIUS
     VERSION 0.1.0
     DESCRIPTION "Structured Illumination Reconstruction and Image Utility Suite"
@@ -23,4 +27,8 @@ endif()
 
 if(SIRIUS_ENABLE_GUI)
     add_subdirectory(app)
+endif()
+
+if(SIRIUS_ENABLE_PYTHON_BINDINGS)
+    add_subdirectory(bindings)
 endif()

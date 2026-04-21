@@ -9,6 +9,13 @@ if (SIRIUS_ENABLE_GUI)
     find_package(OpenGL REQUIRED)
 endif()
 
+if (SIRIUS_ENABLE_PYTHON_BINDINGS)
+    # Try to import all Python components potentially needed by nanobind
+    find_package(Python 3.9
+    REQUIRED COMPONENTS Interpreter Development.Module
+    OPTIONAL_COMPONENTS Development.SABIModule)
+    find_package(nanobind CONFIG REQUIRED)
+endif()
 
 if (SIRIUS_ENABLE_MPI)
     find_package(MPI REQUIRED)

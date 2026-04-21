@@ -109,6 +109,14 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "python-release",
+      "displayName": "Python Wheel (Release)",
+      "inherits": ["release"],
+      "cacheVariables": {
+        "SIRIUS_ENABLE_PYTHON": "ON"
+      }
     }
   ],
 
