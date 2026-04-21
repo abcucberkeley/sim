@@ -145,7 +145,10 @@ namespace sirius {
     template<int Rank>
     void FFT::ifft(const TensorXcd<Rank>& in, TensorXcd<Rank>& out, bool normalize) const {
         ifft(in.data(), out.data());
-        if (normalize) out = out / static_cast<double>(impl_->total_size);
+        if (normalize) {
+            const double inv = 1.0 / static_cast<double>(impl_->total_size);
+            for (Eigen::Index i = 0; i < out.size(); ++i) out.data()[i] *= inv;
+        }
     }
 
     // explicit instantiations to avoid linker errors (templates defined in .cpp must be instantiated there)

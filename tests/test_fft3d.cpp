@@ -20,8 +20,10 @@ namespace {
 
     // Fill with a 3D complex sinusoid: x[d,r,c] = exp(2πi*(f1*d/D + f2*r/R + f3*c/C))
     // Its 3D FFT has a single spike of magnitude D*R*C at bin (f1, f2, f3).
-    void fill_sinusoid(FFTWBuffer3D& buf, int f1, int f2, int f3) {
-        auto D = buf.depth(), R = buf.rows(), C = buf.cols();
+    void fill_sinusoid(TensorXcd<3>& buf, int f1, int f2, int f3) {
+        const Eigen::Index D = buf.dimension(0);
+        const Eigen::Index R = buf.dimension(1);
+        const Eigen::Index C = buf.dimension(2);
         for (Eigen::Index d = 0; d < D; ++d)
             for (Eigen::Index r = 0; r < R; ++r)
                 for (Eigen::Index c = 0; c < C; ++c)
@@ -32,8 +34,10 @@ namespace {
     }
 
     // Deterministic complex fill — avoids rand() while still exercising non-trivial values.
-    void fill_deterministic(FFTWBuffer3D& buf) {
-        auto D = buf.depth(), R = buf.rows(), C = buf.cols();
+    void fill_deterministic(TensorXcd<3>& buf) {
+        const Eigen::Index D = buf.dimension(0);
+        const Eigen::Index R = buf.dimension(1);
+        const Eigen::Index C = buf.dimension(2);
         for (Eigen::Index d = 0; d < D; ++d)
             for (Eigen::Index r = 0; r < R; ++r)
                 for (Eigen::Index c = 0; c < C; ++c)
@@ -42,24 +46,17 @@ namespace {
                         std::sin(d * 0.9 + r * 1.5 + c * 0.3));
     }
 
-    void fill_zero(FFTWBuffer3D& buf) {
-        std::memset(buf.data(), 0, static_cast<size_t>(buf.size()) * sizeof(fftw_complex));
-    }
-
-    double max_abs_error(const FFTWBuffer3D& a, const FFTWBuffer3D& b) {
-        auto* pa = reinterpret_cast<const std::complex<double>*>(a.data());
-        auto* pb = reinterpret_cast<const std::complex<double>*>(b.data());
+    double max_abs_error(const TensorXcd<3>& a, const TensorXcd<3>& b) {
         double err = 0.0;
         for (Eigen::Index i = 0; i < a.size(); ++i)
-            err = std::max(err, std::abs(pa[i] - pb[i]));
+            err = std::max(err, std::abs(a.data()[i] - b.data()[i]));
         return err;
     }
 
-    double sum_sq_norm(const FFTWBuffer3D& buf) {
-        auto* p = reinterpret_cast<const std::complex<double>*>(buf.data());
+    double sum_sq_norm(const TensorXcd<3>& buf) {
         double s = 0.0;
         for (Eigen::Index i = 0; i < buf.size(); ++i)
-            s += std::norm(p[i]); // std::norm returns |z|²
+            s += std::norm(buf.data()[i]); // std::norm returns |z|²
         return s;
     }
 }
@@ -68,20 +65,20 @@ namespace {
 // Construction
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D construction", "[fft3d]") {
+TEST_CASE("FFT 3D construction", "[fft3d]") {
     SECTION("Valid sizes construct without throwing") {
-        REQUIRE_NOTHROW(FFT3D(4, 4, 4));
-        REQUIRE_NOTHROW(FFT3D(2, 8, 16));
-        REQUIRE_NOTHROW(FFT3D(1, 1, 1));
+        REQUIRE_NOTHROW(FFT({4, 4, 4}));
+        REQUIRE_NOTHROW(FFT({2, 8, 16}));
+        REQUIRE_NOTHROW(FFT({1, 1, 1}));
     }
 
     SECTION("Non-cubic dimensions are valid") {
-        REQUIRE_NOTHROW(FFT3D(3, 5, 7));
-        REQUIRE_NOTHROW(FFT3D(8, 16, 32));
+        REQUIRE_NOTHROW(FFT({3, 5, 7}));
+        REQUIRE_NOTHROW(FFT({8, 16, 32}));
     }
 
     SECTION("Non-power-of-two sizes are valid for FFTW") {
-        REQUIRE_NOTHROW(FFT3D(6, 10, 15));
+        REQUIRE_NOTHROW(FFT({6, 10, 15}));
     }
 
     SECTION("All PlanRigor values construct successfully") {
@@ -91,25 +88,11 @@ TEST_CASE("FFT3D construction", "[fft3d]") {
             PlanRigor::Patient,
             PlanRigor::Exhaustive
         );
-        REQUIRE_NOTHROW(FFT3D(4, 4, 4, rigor));
+        REQUIRE_NOTHROW(FFT({4, 4, 4}, 1, rigor));
     }
 
-    SECTION("Zero depth throws") {
-        REQUIRE_THROWS_AS(FFT3D(0, 4, 4), std::invalid_argument);
-    }
-
-    SECTION("Zero rows throws") {
-        REQUIRE_THROWS_AS(FFT3D(4, 0, 4), std::invalid_argument);
-    }
-
-    SECTION("Zero cols throws") {
-        REQUIRE_THROWS_AS(FFT3D(4, 4, 0), std::invalid_argument);
-    }
-
-    SECTION("Negative dimensions throw") {
-        REQUIRE_THROWS_AS(FFT3D(-1, 4, 4), std::invalid_argument);
-        REQUIRE_THROWS_AS(FFT3D(4, -1, 4), std::invalid_argument);
-        REQUIRE_THROWS_AS(FFT3D(4, 4, -1), std::invalid_argument);
+    SECTION("Rank > 3 throws invalid_argument") {
+        REQUIRE_THROWS_AS(FFT({2, 2, 2, 2}), std::invalid_argument);
     }
 }
 
@@ -117,54 +100,26 @@ TEST_CASE("FFT3D construction", "[fft3d]") {
 // Move semantics
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D move semantics", "[fft3d]") {
+TEST_CASE("FFT 3D move semantics", "[fft3d]") {
     SECTION("Move constructor leaves object in valid state") {
-        FFT3D a(4, 8, 8);
-        FFT3D b(std::move(a));
+        FFT a({4, 8, 8});
+        FFT b(std::move(a));
 
-        FFTWBuffer3D in(4, 8, 8), out(4, 8, 8);
-        fill_zero(in);
+        TensorXcd<3> in(4, 8, 8); in.setZero();
         in(0, 0, 0) = 1.0;
-        REQUIRE_NOTHROW(b.forward(in, out));
+        TensorXcd<3> out(4, 8, 8);
+        REQUIRE_NOTHROW(b.fft(in, out));
     }
 
     SECTION("Move assignment leaves object in valid state") {
-        FFT3D a(4, 8, 8);
-        FFT3D b(2, 2, 2);
+        FFT a({4, 8, 8});
+        FFT b({2, 2, 2});
         b = std::move(a);
 
-        FFTWBuffer3D in(4, 8, 8), out(4, 8, 8);
-        fill_zero(in);
+        TensorXcd<3> in(4, 8, 8); in.setZero();
         in(0, 0, 0) = 1.0;
-        REQUIRE_NOTHROW(b.forward(in, out));
-    }
-}
-
-// -----------------------------------------------------------------------
-// Buffer dimension validation
-// -----------------------------------------------------------------------
-
-TEST_CASE("FFT3D rejects mismatched buffer dimensions", "[fft3d]") {
-    FFT3D fft(4, 8, 16);
-
-    SECTION("forward: wrong depth") {
-        FFTWBuffer3D in(2, 8, 16), out(4, 8, 16);
-        REQUIRE_THROWS_AS(fft.forward(in, out), std::invalid_argument);
-    }
-
-    SECTION("forward: wrong rows") {
-        FFTWBuffer3D in(4, 4, 16), out(4, 8, 16);
-        REQUIRE_THROWS_AS(fft.forward(in, out), std::invalid_argument);
-    }
-
-    SECTION("forward: wrong cols") {
-        FFTWBuffer3D in(4, 8, 8), out(4, 8, 16);
-        REQUIRE_THROWS_AS(fft.forward(in, out), std::invalid_argument);
-    }
-
-    SECTION("inverse: wrong output dimensions") {
-        FFTWBuffer3D in(4, 8, 16), out(4, 8, 8);
-        REQUIRE_THROWS_AS(fft.inverse(in, out), std::invalid_argument);
+        TensorXcd<3> out(4, 8, 8);
+        REQUIRE_NOTHROW(b.fft(in, out));
     }
 }
 
@@ -172,15 +127,15 @@ TEST_CASE("FFT3D rejects mismatched buffer dimensions", "[fft3d]") {
 // 3D impulse response
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D of 3D delta is flat spectrum", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D of 3D delta is flat spectrum", "[fft3d][correctness]") {
     // x[0,0,0]=1, rest=0 → X[f1,f2,f3]=1 for all (f1,f2,f3)
     const Eigen::Index D = 4, R = 8, C = 8;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
-    FFTWBuffer3D in(D, R, C), out(D, R, C);
-    fill_zero(in);
+    TensorXcd<3> in(D, R, C); in.setZero();
     in(0, 0, 0) = 1.0;
-    fft.forward(in, out);
+    TensorXcd<3> out(D, R, C);
+    fft.fft(in, out);
 
     for (Eigen::Index d = 0; d < D; ++d)
         for (Eigen::Index r = 0; r < R; ++r)
@@ -193,9 +148,9 @@ TEST_CASE("FFT3D of 3D delta is flat spectrum", "[fft3d][correctness]") {
 // 3D sinusoid — single spike in spectrum
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D of 3D sinusoid produces spike at correct bin", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D of 3D sinusoid produces spike at correct bin", "[fft3d][correctness]") {
     const Eigen::Index D = 8, R = 8, C = 8;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
     const double N = static_cast<double>(D * R * C);
 
     auto f1 = GENERATE(0, 1, 3);
@@ -203,9 +158,9 @@ TEST_CASE("FFT3D of 3D sinusoid produces spike at correct bin", "[fft3d][correct
     auto f3 = GENERATE(0, 4, 7);
     INFO("f1=" << f1 << " f2=" << f2 << " f3=" << f3);
 
-    FFTWBuffer3D in(D, R, C), out(D, R, C);
+    TensorXcd<3> in(D, R, C), out(D, R, C);
     fill_sinusoid(in, f1, f2, f3);
-    fft.forward(in, out);
+    fft.fft(in, out);
 
     for (Eigen::Index d = 0; d < D; ++d)
         for (Eigen::Index r = 0; r < R; ++r)
@@ -220,13 +175,13 @@ TEST_CASE("FFT3D of 3D sinusoid produces spike at correct bin", "[fft3d][correct
 // Linearity
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D linearity - FFT(a*X + b*Y) == a*FFT(X) + b*FFT(Y)", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D linearity - fft(a*X + b*Y) == a*fft(X) + b*fft(Y)", "[fft3d][correctness]") {
     const Eigen::Index D = 4, R = 6, C = 8;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
-    FFTWBuffer3D X(D, R, C), Y(D, R, C);
+    TensorXcd<3> X(D, R, C), Y(D, R, C);
     fill_deterministic(X);
-    // Y is a shifted version of X for variety
+    // Y is a different deterministic fill for variety
     for (Eigen::Index d = 0; d < D; ++d)
         for (Eigen::Index r = 0; r < R; ++r)
             for (Eigen::Index c = 0; c < C; ++c)
@@ -236,23 +191,23 @@ TEST_CASE("FFT3D linearity - FFT(a*X + b*Y) == a*FFT(X) + b*FFT(Y)", "[fft3d][co
 
     const std::complex<double> a(2.0, -1.0), b(0.5, 3.0);
 
-    FFTWBuffer3D combined(D, R, C);
-    auto* px = reinterpret_cast<const std::complex<double>*>(X.data());
-    auto* py = reinterpret_cast<const std::complex<double>*>(Y.data());
-    auto* pc = reinterpret_cast<std::complex<double>*>(combined.data());
-    for (Eigen::Index i = 0; i < D * R * C; ++i)
+    TensorXcd<3> combined(D, R, C);
+    const auto* px = X.data();
+    const auto* py = Y.data();
+    auto* pc = combined.data();
+    for (Eigen::Index i = 0; i < X.size(); ++i)
         pc[i] = a * px[i] + b * py[i];
 
-    FFTWBuffer3D out_combined(D, R, C), out_X(D, R, C), out_Y(D, R, C);
-    fft.forward(combined, out_combined);
-    fft.forward(X, out_X);
-    fft.forward(Y, out_Y);
+    TensorXcd<3> out_combined(D, R, C), out_X(D, R, C), out_Y(D, R, C);
+    fft.fft(combined,    out_combined);
+    fft.fft(X,           out_X);
+    fft.fft(Y,           out_Y);
 
-    auto* pox = reinterpret_cast<const std::complex<double>*>(out_X.data());
-    auto* poy = reinterpret_cast<const std::complex<double>*>(out_Y.data());
-    auto* poc = reinterpret_cast<const std::complex<double>*>(out_combined.data());
+    const auto* pox = out_X.data();
+    const auto* poy = out_Y.data();
+    const auto* poc = out_combined.data();
     double err = 0.0;
-    for (Eigen::Index i = 0; i < D * R * C; ++i)
+    for (Eigen::Index i = 0; i < out_combined.size(); ++i)
         err = std::max(err, std::abs(poc[i] - (a * pox[i] + b * poy[i])));
 
     REQUIRE(err < kTol);
@@ -262,36 +217,35 @@ TEST_CASE("FFT3D linearity - FFT(a*X + b*Y) == a*FFT(X) + b*FFT(Y)", "[fft3d][co
 // Forward-inverse round-trip
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D forward-inverse round-trip recovers original signal", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D forward-inverse round-trip recovers original signal", "[fft3d][correctness]") {
     auto D = GENERATE(4, 8);
     auto R = GENERATE(4, 6);
     auto C = GENERATE(4, 8);
     INFO("D=" << D << " R=" << R << " C=" << C);
 
     SECTION("manual normalization") {
-        FFT3D fft(D, R, C);
-        FFTWBuffer3D original(D, R, C), freq(D, R, C), recovered(D, R, C);
+        FFT fft({D, R, C});
+        TensorXcd<3> original(D, R, C), freq(D, R, C), recovered(D, R, C);
         fill_deterministic(original);
 
-        fft.forward(original, freq);
-        fft.inverse(freq, recovered);
+        fft.fft(original, freq);
+        fft.ifft(freq, recovered); // unnormalized
 
         double N = static_cast<double>(D * R * C);
-        auto* po = reinterpret_cast<const std::complex<double>*>(original.data());
-        auto* pr = reinterpret_cast<std::complex<double>*>(recovered.data());
-        for (Eigen::Index i = 0; i < D * R * C; ++i)
+        auto* pr = recovered.data();
+        for (Eigen::Index i = 0; i < recovered.size(); ++i)
             pr[i] /= N;
 
         REQUIRE(max_abs_error(recovered, original) < kTol);
     }
 
     SECTION("built-in normalization") {
-        FFT3D fft(D, R, C, PlanRigor::Measure, true);
-        FFTWBuffer3D original(D, R, C), freq(D, R, C), recovered(D, R, C);
+        FFT fft({D, R, C});
+        TensorXcd<3> original(D, R, C), freq(D, R, C), recovered(D, R, C);
         fill_deterministic(original);
 
-        fft.forward(original, freq);
-        fft.inverse(freq, recovered);
+        fft.fft(original, freq);
+        fft.ifft(freq, recovered, /*normalize=*/true);
 
         REQUIRE(max_abs_error(recovered, original) < kTol);
     }
@@ -301,14 +255,14 @@ TEST_CASE("FFT3D forward-inverse round-trip recovers original signal", "[fft3d][
 // Parseval's theorem
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D satisfies Parseval's theorem", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D satisfies Parseval's theorem", "[fft3d][correctness]") {
     // sum|x[d,r,c]|² == (1/N) * sum|X[f1,f2,f3]|²  where N = D*R*C
     const Eigen::Index D = 4, R = 6, C = 8;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
-    FFTWBuffer3D in(D, R, C), out(D, R, C);
+    TensorXcd<3> in(D, R, C), out(D, R, C);
     fill_deterministic(in);
-    fft.forward(in, out);
+    fft.fft(in, out);
 
     double energy_space = sum_sq_norm(in);
     double energy_freq  = sum_sq_norm(out) / static_cast<double>(D * R * C);
@@ -320,93 +274,82 @@ TEST_CASE("FFT3D satisfies Parseval's theorem", "[fft3d][correctness]") {
 // Separability — FFT3D(u⊗v⊗w)[f1,f2,f3] = FFT1D(u)[f1] * FFT1D(v)[f2] * FFT1D(w)[f3]
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D is separable along depth, rows, and cols", "[fft3d][correctness]") {
+TEST_CASE("FFT 3D is separable along depth, rows, and cols", "[fft3d][correctness]") {
     const Eigen::Index D = 8, R = 8, C = 8;
-    FFT1D fft1d_d(D), fft1d_r(R), fft1d_c(C);
-    FFT3D fft3d(D, R, C);
+    FFT fft1d_d({static_cast<int>(D)});
+    FFT fft1d_r({static_cast<int>(R)});
+    FFT fft1d_c({static_cast<int>(C)});
+    FFT fft3d({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
-    // Build 1D signals
-    Eigen::VectorXcd u(D), v(R), w(C);
-    for (Eigen::Index i = 0; i < D; ++i) u[i] = std::complex<double>(std::cos(i * 1.1), std::sin(i * 0.7));
-    for (Eigen::Index i = 0; i < R; ++i) v[i] = std::complex<double>(std::cos(i * 0.5), std::sin(i * 1.3));
-    for (Eigen::Index i = 0; i < C; ++i) w[i] = std::complex<double>(std::cos(i * 2.0), std::sin(i * 0.3));
+    // Build 1D signals as rank-1 tensors
+    TensorXcd<1> u(D), v(R), w(C);
+    for (Eigen::Index i = 0; i < D; ++i) u(i) = std::complex<double>(std::cos(i * 1.1), std::sin(i * 0.7));
+    for (Eigen::Index i = 0; i < R; ++i) v(i) = std::complex<double>(std::cos(i * 0.5), std::sin(i * 1.3));
+    for (Eigen::Index i = 0; i < C; ++i) w(i) = std::complex<double>(std::cos(i * 2.0), std::sin(i * 0.3));
 
     // Build outer product X[d,r,c] = u[d] * v[r] * w[c]
-    FFTWBuffer3D X(D, R, C);
+    TensorXcd<3> X(D, R, C);
     for (Eigen::Index d = 0; d < D; ++d)
         for (Eigen::Index r = 0; r < R; ++r)
             for (Eigen::Index c = 0; c < C; ++c)
-                X(d, r, c) = u[d] * v[r] * w[c];
+                X(d, r, c) = u(d) * v(r) * w(c);
 
-    FFTWBuffer3D X_fft(D, R, C);
-    fft3d.forward(X, X_fft);
+    TensorXcd<3> X_fft(D, R, C);
+    fft3d.fft(X, X_fft);
 
     // Compute 1D FFTs of each axis
-    Eigen::VectorXcd U(D), V(R), W(C);
-    fft1d_d.forward(u, U);
-    fft1d_r.forward(v, V);
-    fft1d_c.forward(w, W);
+    TensorXcd<1> U(D), V(R), W(C);
+    fft1d_d.fft(u, U);
+    fft1d_r.fft(v, V);
+    fft1d_c.fft(w, W);
 
     // Verify X_fft[f1,f2,f3] == U[f1] * V[f2] * W[f3]
     double err = 0.0;
     for (Eigen::Index f1 = 0; f1 < D; ++f1)
         for (Eigen::Index f2 = 0; f2 < R; ++f2)
             for (Eigen::Index f3 = 0; f3 < C; ++f3)
-                err = std::max(err, std::abs(X_fft(f1, f2, f3) - U[f1] * V[f2] * W[f3]));
+                err = std::max(err, std::abs(X_fft(f1, f2, f3) - U(f1) * V(f2) * W(f3)));
 
     REQUIRE(err < kTol * D * R * C);
 }
 
 // -----------------------------------------------------------------------
-// Normalization flag
+// Normalization flag (per-call on ifft)
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D normalize=false (default): inverse is unnormalized", "[fft3d][normalize]") {
+TEST_CASE("FFT 3D ifft(normalize=false) default: inverse is unnormalized", "[fft3d][normalize]") {
     const Eigen::Index D = 4, R = 4, C = 4;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
-    FFTWBuffer3D original(D, R, C), freq(D, R, C), recovered(D, R, C);
+    TensorXcd<3> original(D, R, C), freq(D, R, C), recovered(D, R, C);
     fill_deterministic(original);
-    fft.forward(original, freq);
-    fft.inverse(freq, recovered);
+    fft.fft(original, freq);
+    fft.ifft(freq, recovered); // default normalize=false
 
     double N = static_cast<double>(D * R * C);
-    auto* po = reinterpret_cast<const std::complex<double>*>(original.data());
-    auto* pr = reinterpret_cast<const std::complex<double>*>(recovered.data());
+    const auto* po = original.data();
+    const auto* pr = recovered.data();
     double err = 0.0;
-    for (Eigen::Index i = 0; i < D * R * C; ++i)
+    for (Eigen::Index i = 0; i < recovered.size(); ++i)
         err = std::max(err, std::abs(pr[i] - N * po[i]));
 
     REQUIRE(err < kTol);
-}
-
-TEST_CASE("FFT3D normalize flag does not affect forward transform", "[fft3d][normalize]") {
-    const Eigen::Index D = 4, R = 4, C = 4;
-    FFT3D fft_raw(D, R, C, PlanRigor::Measure, false);
-    FFT3D fft_norm(D, R, C, PlanRigor::Measure, true);
-
-    FFTWBuffer3D in(D, R, C), out_raw(D, R, C), out_norm(D, R, C);
-    fill_deterministic(in);
-    fft_raw.forward(in, out_raw);
-    fft_norm.forward(in, out_norm);
-
-    REQUIRE(max_abs_error(out_raw, out_norm) < kTol);
 }
 
 // -----------------------------------------------------------------------
 // Plan reuse
 // -----------------------------------------------------------------------
 
-TEST_CASE("FFT3D plan can be reused across multiple calls", "[fft3d]") {
+TEST_CASE("FFT 3D plan can be reused across multiple calls", "[fft3d]") {
     const Eigen::Index D = 4, R = 4, C = 4;
-    FFT3D fft(D, R, C);
+    FFT fft({static_cast<int>(D), static_cast<int>(R), static_cast<int>(C)});
 
     for (int f1 = 0; f1 < 2; ++f1) {
         for (int f2 = 0; f2 < 2; ++f2) {
             for (int f3 = 0; f3 < 2; ++f3) {
-                FFTWBuffer3D in(D, R, C), out(D, R, C);
+                TensorXcd<3> in(D, R, C), out(D, R, C);
                 fill_sinusoid(in, f1, f2, f3);
-                fft.forward(in, out);
+                fft.fft(in, out);
 
                 double N = static_cast<double>(D * R * C);
                 REQUIRE_THAT(std::abs(out(f1, f2, f3)),
@@ -425,23 +368,23 @@ namespace {
         (std::filesystem::temp_directory_path() / "sirius_test_wisdom_3d.fftw").string();
 }
 
-TEST_CASE("FFT3D saveWisdom and loadWisdom", "[fft3d][wisdom]") {
+TEST_CASE("FFT 3D saveWisdom and loadWisdom", "[fft3d][wisdom]") {
     std::remove(kWisdom3DPath.c_str());
 
-    FFT3D fft(8, 8, 8);
-    REQUIRE_NOTHROW(FFT3D::saveWisdom(kWisdom3DPath.c_str()));
+    FFT fft({8, 8, 8});
+    REQUIRE_NOTHROW(FFT::saveWisdom(kWisdom3DPath));
 
     FILE* f = std::fopen(kWisdom3DPath.c_str(), "r");
     REQUIRE(f != nullptr);
     if (f) std::fclose(f);
 
-    REQUIRE_NOTHROW(FFT3D::loadWisdom(kWisdom3DPath.c_str()));
+    REQUIRE_NOTHROW(FFT::loadWisdom(kWisdom3DPath));
 
-    FFT3D fft2(8, 8, 8);
-    FFTWBuffer3D in(8, 8, 8), out(8, 8, 8);
-    fill_zero(in);
+    FFT fft2({8, 8, 8});
+    TensorXcd<3> in(8, 8, 8); in.setZero();
     in(0, 0, 0) = 1.0;
-    fft2.forward(in, out);
+    TensorXcd<3> out(8, 8, 8);
+    fft2.fft(in, out);
 
     for (Eigen::Index d = 0; d < 8; ++d)
         for (Eigen::Index r = 0; r < 8; ++r)
@@ -450,13 +393,4 @@ TEST_CASE("FFT3D saveWisdom and loadWisdom", "[fft3d][wisdom]") {
                     Catch::Matchers::WithinAbs(1.0, kTol));
 
     std::remove(kWisdom3DPath.c_str());
-}
-
-TEST_CASE("FFT3D saveWisdom to invalid path throws", "[fft3d][wisdom]") {
-    const std::string bad =
-        (std::filesystem::temp_directory_path() / "sirius_nonexistent_subdir" / "wisdom.fftw").string();
-    REQUIRE_THROWS_AS(
-        FFT3D::saveWisdom(bad.c_str()),
-        std::runtime_error
-    );
 }
