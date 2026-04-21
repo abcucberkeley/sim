@@ -146,8 +146,8 @@ namespace sirius {
     void FFT::ifft(const TensorXcd<Rank>& in, TensorXcd<Rank>& out, bool normalize) const {
         ifft(in.data(), out.data());
         if (normalize) {
-            const double inv = 1.0 / static_cast<double>(impl_->total_size);
-            for (Eigen::Index i = 0; i < out.size(); ++i) out.data()[i] *= inv;
+            Eigen::Map<Eigen::VectorXcd>(out.data(), out.size()) /=
+                static_cast<double>(impl_->total_size);
         }
     }
 
