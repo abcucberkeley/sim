@@ -28,8 +28,8 @@ namespace {
         TiffPtr tif(TIFFOpen(path.c_str(), "w"));
         if (!tif) throw std::runtime_error("Failed to create tiled TIFF: " + path);
 
-        const auto rows = static_cast<uint32_t>(img.rows());
-        const auto cols = static_cast<uint32_t>(img.cols());
+        const auto rows = static_cast<uint32_t>(img.dimension(0));
+        const auto cols = static_cast<uint32_t>(img.dimension(1));
 
         TIFFSetField(tif.get(), TIFFTAG_IMAGEWIDTH,      cols);
         TIFFSetField(tif.get(), TIFFTAG_IMAGELENGTH,     rows);
@@ -69,7 +69,7 @@ inline std::string uniqueTempPath(const char* suffix) {
 }
 
 // -----------------------------------------------------------------------
-// ImageStack - memory layout and in-memory operations
+// ImageStack - memory layout and slicing helpers
 // -----------------------------------------------------------------------
 
 TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
@@ -84,15 +84,15 @@ TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
                 stack(z, r, c) = static_cast<uint16_t>(z * 100 + r * 10 + c);
 
     SECTION("Dimensions are correct") {
-        REQUIRE(stack.depth() == depth);
-        REQUIRE(stack.rows() == rows);
-        REQUIRE(stack.cols() == cols);
+        REQUIRE(stack.dimension(0) == depth);
+        REQUIRE(stack.dimension(1) == rows);
+        REQUIRE(stack.dimension(2) == cols);
         REQUIRE(static_cast<Eigen::Index>(stack.size()) == depth * rows * cols);
-        REQUIRE_FALSE(stack.empty());
+        REQUIRE(stack.size() != 0);
     }
 
-    SECTION("Slicing returns a view, not a copy") {
-        auto slice1 = stack.slice(1);
+    SECTION("slice() returns a view, not a copy") {
+        auto slice1 = slice(stack, 1);
         REQUIRE(slice1.rows() == rows);
         REQUIRE(slice1.cols() == cols);
         REQUIRE(slice1(0, 0) == 100);
@@ -104,8 +104,8 @@ TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
     }
 
     SECTION("Slices from different pages are independent regions") {
-        auto s0 = stack.slice(0);
-        auto s2 = stack.slice(2);
+        auto s0 = slice(stack, 0);
+        auto s2 = slice(stack, 2);
         s0(0, 0) = 111;
         REQUIRE(stack(0, 0, 0) == 111);
         REQUIRE(stack(2, 0, 0) == 200); // untouched
@@ -113,17 +113,15 @@ TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
 
     SECTION("Move semantics work") {
         ImageStack<uint16_t> moved = std::move(stack);
-        REQUIRE(moved.depth() == depth);
-        REQUIRE(moved.rows() == rows);
-        REQUIRE(moved.cols() == cols);
-        REQUIRE(stack.empty()); // source is empty after move
+        REQUIRE(moved.dimension(0) == depth);
+        REQUIRE(moved.dimension(1) == rows);
+        REQUIRE(moved.dimension(2) == cols);
     }
 
     SECTION("Default constructed stack is empty") {
         ImageStack<float> empty;
-        REQUIRE(empty.empty());
         REQUIRE(empty.size() == 0);
-        REQUIRE(empty.depth() == 0);
+        REQUIRE(empty.dimension(0) == 0);
     }
 }
 
@@ -141,21 +139,22 @@ TEST_CASE("Single image round-trip - all compression modes", "[tiff][io]") {
 
     TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(32, 32);
-    original.setRandom();
+    asMatrix(original).setRandom();
 
     writeTiff(f.path, original, compression);
     auto loaded = readTiff<float>(f.path);
 
-    REQUIRE(loaded.rows() == original.rows());
-    REQUIRE(loaded.cols() == original.cols());
-    REQUIRE(loaded.isApprox(original));
+    REQUIRE(loaded.dimension(0) == original.dimension(0));
+    REQUIRE(loaded.dimension(1) == original.dimension(1));
+    REQUIRE(asMatrix(loaded).isApprox(asMatrix(original)));
 }
 
 TEST_CASE("Single image round-trip - all supported pixel types", "[tiff][io]") {
     SECTION("uint8") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<uint8_t> img(16, 16);
-        img << 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        asMatrix(img) <<
+               0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240,
                100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115,
                200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215,
@@ -172,7 +171,8 @@ TEST_CASE("Single image round-trip - all supported pixel types", "[tiff][io]") {
                110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
                210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<uint8_t>(f.path) == img);
+        auto loaded = readTiff<uint8_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 
     SECTION("uint16") {
@@ -181,15 +181,17 @@ TEST_CASE("Single image round-trip - all supported pixel types", "[tiff][io]") {
         img.setZero();
         img(0, 0) = 0; img(0, 1) = 1000; img(0, 2) = 65535;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<uint16_t>(f.path) == img);
+        auto loaded = readTiff<uint16_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 
     SECTION("double") {
         TempFile f(uniqueTempPath(".tiff"));
         Image<double> img(8, 8);
-        img.setRandom();
+        asMatrix(img).setRandom();
         writeTiff(f.path, img);
-        REQUIRE(readTiff<double>(f.path).isApprox(img));
+        auto loaded = readTiff<double>(f.path);
+        REQUIRE(asMatrix(loaded).isApprox(asMatrix(img)));
     }
 }
 
@@ -198,14 +200,14 @@ TEST_CASE("Reading a TIFF as a different type converts pixels", "[tiff][io][conv
 
     // write uint16, read back as float
     Image<uint16_t> original(4, 4);
-    original.fill(1000);
+    original.setConstant(1000);
     writeTiff(f.path, original);
 
     auto loaded = readTiff<float>(f.path);
-    REQUIRE(loaded.rows() == 4);
-    REQUIRE(loaded.cols() == 4);
+    REQUIRE(loaded.dimension(0) == 4);
+    REQUIRE(loaded.dimension(1) == 4);
     // every pixel should be exactly 1000.0f
-    REQUIRE(loaded.isApprox(Image<float>::Constant(4, 4, 1000.0f)));
+    REQUIRE(asMatrix(loaded).isApprox(ImageMatrix<float>::Constant(4, 4, 1000.0f)));
 }
 
 TEST_CASE("Image dimensions are preserved exactly", "[tiff][io]") {
@@ -222,13 +224,13 @@ TEST_CASE("Image dimensions are preserved exactly", "[tiff][io]") {
 
     TempFile f(uniqueTempPath(".tiff"));
     Image<uint16_t> img(r, c);
-    img.setRandom();
+    asMatrix(img).setRandom();
     writeTiff(f.path, img);
 
     auto loaded = readTiff<uint16_t>(f.path);
-    REQUIRE(loaded.rows() == r);
-    REQUIRE(loaded.cols() == c);
-    REQUIRE(loaded == img);
+    REQUIRE(loaded.dimension(0) == r);
+    REQUIRE(loaded.dimension(1) == c);
+    REQUIRE(asMatrix(loaded) == asMatrix(img));
 }
 
 // -----------------------------------------------------------------------
@@ -241,17 +243,17 @@ TEST_CASE("Stack round-trip preserves all pages", "[tiff][io][stack]") {
     const Eigen::Index depth = 5, rows = 16, cols = 16;
     ImageStack<uint16_t> original(depth, rows, cols);
     for (Eigen::Index z = 0; z < depth; ++z)
-        original.slice(z).fill(static_cast<uint16_t>(z * 1000));
+        slice(original, z).fill(static_cast<uint16_t>(z * 1000));
 
     writeTiffStack(f.path, original);
     auto loaded = readTiffStack<uint16_t>(f.path);
 
-    REQUIRE(loaded.depth() == depth);
-    REQUIRE(loaded.rows() == rows);
-    REQUIRE(loaded.cols() == cols);
+    REQUIRE(loaded.dimension(0) == depth);
+    REQUIRE(loaded.dimension(1) == rows);
+    REQUIRE(loaded.dimension(2) == cols);
 
     for (Eigen::Index z = 0; z < depth; ++z)
-        REQUIRE(loaded.slice(z).isApprox(original.slice(z)));
+        REQUIRE(slice(loaded, z).isApprox(slice(original, z)));
 }
 
 TEST_CASE("Stack round-trip - compression modes", "[tiff][io][stack]") {
@@ -265,14 +267,14 @@ TEST_CASE("Stack round-trip - compression modes", "[tiff][io][stack]") {
     TempFile f(uniqueTempPath(".tiff"));
     ImageStack<float> original(3, 32, 32);
     for (Eigen::Index z = 0; z < 3; ++z)
-        original.slice(z).setRandom();
+        slice(original, z).setRandom();
 
     writeTiffStack(f.path, original, compression);
     auto loaded = readTiffStack<float>(f.path);
 
-    REQUIRE(loaded.depth() == 3);
+    REQUIRE(loaded.dimension(0) == 3);
     for (Eigen::Index z = 0; z < 3; ++z)
-        REQUIRE(loaded.slice(z).isApprox(original.slice(z)));
+        REQUIRE(slice(loaded, z).isApprox(slice(original, z)));
 }
 
 TEST_CASE("Stack pages are independent - writing one page does not corrupt others", "[tiff][io][stack]") {
@@ -304,7 +306,8 @@ TEST_CASE("Single image round-trip - signed and wider integer types", "[tiff][io
         img.setZero();
         img(0, 0) = -128; img(0, 1) = 0; img(0, 2) = 127;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<int8_t>(f.path) == img);
+        auto loaded = readTiff<int8_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 
     SECTION("int16 - min, zero, max") {
@@ -313,7 +316,8 @@ TEST_CASE("Single image round-trip - signed and wider integer types", "[tiff][io
         img.setZero();
         img(0, 0) = -32768; img(0, 1) = 0; img(0, 2) = 32767;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<int16_t>(f.path) == img);
+        auto loaded = readTiff<int16_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 
     SECTION("uint32 - zero, mid, max") {
@@ -322,7 +326,8 @@ TEST_CASE("Single image round-trip - signed and wider integer types", "[tiff][io
         img.setZero();
         img(0, 0) = 0; img(0, 1) = 65536; img(0, 2) = 0xFFFF'FFFFu;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<uint32_t>(f.path) == img);
+        auto loaded = readTiff<uint32_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 
     SECTION("int32 - min, zero, max") {
@@ -331,7 +336,8 @@ TEST_CASE("Single image round-trip - signed and wider integer types", "[tiff][io
         img.setZero();
         img(0, 0) = -2'147'483'647 - 1; img(0, 1) = 0; img(0, 2) = 2'147'483'647;
         writeTiff(f.path, img);
-        REQUIRE(readTiff<int32_t>(f.path) == img);
+        auto loaded = readTiff<int32_t>(f.path);
+        REQUIRE(asMatrix(loaded) == asMatrix(img));
     }
 }
 
@@ -340,24 +346,24 @@ TEST_CASE("Stack round-trip - signed and wider integer types", "[tiff][io][stack
         TempFile f(uniqueTempPath(".tiff"));
         ImageStack<int16_t> original(3, 8, 8);
         for (Eigen::Index z = 0; z < 3; ++z)
-            original.slice(z).fill(static_cast<int16_t>((z - 1) * 1000));
+            slice(original, z).fill(static_cast<int16_t>((z - 1) * 1000));
         writeTiffStack(f.path, original);
         auto loaded = readTiffStack<int16_t>(f.path);
-        REQUIRE(loaded.depth() == 3);
+        REQUIRE(loaded.dimension(0) == 3);
         for (Eigen::Index z = 0; z < 3; ++z)
-            REQUIRE(loaded.slice(z) == original.slice(z));
+            REQUIRE(slice(loaded, z) == slice(original, z));
     }
 
     SECTION("int32") {
         TempFile f(uniqueTempPath(".tiff"));
         ImageStack<int32_t> original(3, 8, 8);
         for (Eigen::Index z = 0; z < 3; ++z)
-            original.slice(z).fill(static_cast<int32_t>(z * 100'000));
+            slice(original, z).fill(static_cast<int32_t>(z * 100'000));
         writeTiffStack(f.path, original);
         auto loaded = readTiffStack<int32_t>(f.path);
-        REQUIRE(loaded.depth() == 3);
+        REQUIRE(loaded.dimension(0) == 3);
         for (Eigen::Index z = 0; z < 3; ++z)
-            REQUIRE(loaded.slice(z) == original.slice(z));
+            REQUIRE(slice(loaded, z) == slice(original, z));
     }
 }
 
@@ -369,14 +375,14 @@ TEST_CASE("Tiled TIFF round-trip - tile-aligned dimensions", "[tiff][io][tiled]"
     // 64x64 image with 16x16 tiles: every tile is fully populated, no edge clamping needed
     TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(64, 64);
-    original.setRandom();
+    asMatrix(original).setRandom();
 
     writeTiledTiffRaw(f.path, original, 16, 16);
     auto loaded = readTiff<float>(f.path);
 
-    REQUIRE(loaded.rows() == original.rows());
-    REQUIRE(loaded.cols() == original.cols());
-    REQUIRE(loaded.isApprox(original));
+    REQUIRE(loaded.dimension(0) == original.dimension(0));
+    REQUIRE(loaded.dimension(1) == original.dimension(1));
+    REQUIRE(asMatrix(loaded).isApprox(asMatrix(original)));
 }
 
 TEST_CASE("Tiled TIFF round-trip - non-tile-aligned dimensions (edge clamping)", "[tiff][io][tiled]") {
@@ -391,14 +397,14 @@ TEST_CASE("Tiled TIFF round-trip - non-tile-aligned dimensions (edge clamping)",
 
     TempFile f(uniqueTempPath(".tiff"));
     Image<float> original(rows, cols);
-    original.setRandom();
+    asMatrix(original).setRandom();
 
     writeTiledTiffRaw(f.path, original, 16, 16);
     auto loaded = readTiff<float>(f.path);
 
-    REQUIRE(loaded.rows() == rows);
-    REQUIRE(loaded.cols() == cols);
-    REQUIRE(loaded.isApprox(original));
+    REQUIRE(loaded.dimension(0) == rows);
+    REQUIRE(loaded.dimension(1) == cols);
+    REQUIRE(asMatrix(loaded).isApprox(asMatrix(original)));
 }
 
 // -----------------------------------------------------------------------

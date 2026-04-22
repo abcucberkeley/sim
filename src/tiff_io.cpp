@@ -128,10 +128,13 @@ namespace sirius {
         // Scanline/strip layout: stored row-by-row, TIFFReadScanline handles both fine
         template <typename T>
         void readScanlinePage(TIFF* tif, T* dst, const TiffPageInfo& info) {
-            std::vector<uint8_t> buf(static_cast<size_t>(TIFFScanlineSize(tif)));
+            const tmsize_t scanBytes = TIFFScanlineSize(tif);
+            if (scanBytes <= 0)
+                throw std::runtime_error("TIFF reports invalid scanline size");
+            std::vector<uint8_t> buf(static_cast<size_t>(scanBytes));
 
             // if tiff format is an exact match to the Eigen matrix, we will just memcpy
-            bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
+            const bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
 
             // scanline is a row
             for (uint32_t row = 0; row < info.height; ++row) {
@@ -141,10 +144,10 @@ namespace sirius {
                     throw std::runtime_error("Failed to read scanline " + std::to_string(row));
 
                 // location in dst
-                T* rowDst = dst + row * info.width;
+                T* rowDst = dst + static_cast<size_t>(row) * info.width;
 
                 if (useFastPath) {
-                    std::memcpy(rowDst, buf.data(), info.width * sizeof(T));
+                    std::memcpy(rowDst, buf.data(), static_cast<size_t>(info.width) * sizeof(T));
                 } else {
                     // convert to appropriate format and copy to the correct location on the Eigen dst
                     convertScanline<T>(buf.data(), rowDst, info.width, info.bps, info.fmt);
@@ -159,16 +162,25 @@ namespace sirius {
         template <typename T>
         void readTiledPage(TIFF* tif, T* dst, const TiffPageInfo& info) {
             uint32_t tileW = 0, tileH = 0;
-            TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &tileW);
-            TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH);
+            if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &tileW) || tileW == 0)
+                throw std::runtime_error("TIFF missing or invalid TILEWIDTH");
+            if (!TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH) || tileH == 0)
+                throw std::runtime_error("TIFF missing or invalid TILELENGTH");
+
+            const tmsize_t tileBytes = TIFFTileSize(tif);
+            if (tileBytes <= 0)
+                throw std::runtime_error("TIFF reports invalid tile size");
 
             // allocate once outside the loop
-            std::vector<uint8_t> tileBuf(static_cast<size_t>(TIFFTileSize(tif)));
-            const uint32_t bytesPerPixel = info.bps / 8;
+            std::vector<uint8_t> tileBuf(static_cast<size_t>(tileBytes));
+            const size_t bytesPerPixel = info.bps / 8;
 
             // use fast path if there is exact match between eigen type and the tiff type
-            bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
+            const bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
 
+            // Loop counters stay uint32_t to match TIFFReadTile's x/y params
+            // and the TIFF spec (image dims are uint32_t). Any multiplication
+            // that could overflow uint32_t is promoted to size_t at the site.
             for (uint32_t tileRow = 0; tileRow < info.height; tileRow += tileH) {
                 for (uint32_t tileCol = 0; tileCol < info.width; tileCol += tileW) {
                     if (TIFFReadTile(tif, tileBuf.data(), tileCol, tileRow, 0, 0) < 0)
@@ -176,15 +188,18 @@ namespace sirius {
                             std::to_string(tileCol) + "," + std::to_string(tileRow) + ")");
 
                     // edge tiles are padded to full tile size — clamp to actual image bounds
-                    uint32_t validH = std::min(tileH, info.height - tileRow);
-                    uint32_t validW = std::min(tileW, info.width  - tileCol);
+                    const uint32_t validH = std::min(tileH, info.height - tileRow);
+                    const uint32_t validW = std::min(tileW, info.width  - tileCol);
 
                     for (uint32_t r = 0; r < validH; ++r) {
-                        const uint8_t* srcRow = tileBuf.data() + r * tileW * bytesPerPixel;
-                        T* dstRow = dst + (tileRow + r) * info.width + tileCol;
+                        // promote to size_t before multiplying to avoid overflow on large tiles
+                        const uint8_t* srcRow = tileBuf.data() +
+                            static_cast<size_t>(r) * tileW * bytesPerPixel;
+                        T* dstRow = dst +
+                            (static_cast<size_t>(tileRow) + r) * info.width + tileCol;
 
                         if (useFastPath) {
-                            std::memcpy(dstRow, srcRow, validW * sizeof(T));
+                            std::memcpy(dstRow, srcRow, static_cast<size_t>(validW) * sizeof(T));
                         } else {
                             convertScanline<T>(srcRow, dstRow, validW, info.bps, info.fmt);
                         }
@@ -222,8 +237,17 @@ namespace sirius {
             if (multiPage)
                 TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_PAGE);
 
+            // TIFFWriteScanline is documented as allowed to modify its input
+            // buffer (e.g. in-place byte-swap when writing non-native endian).
+            // Copy each row into a scratch buffer so the caller's const data
+            // is never touched — also lets us drop the const_cast UB.
+            std::vector<T> rowBuf(width);
+            const size_t rowBytes = static_cast<size_t>(width) * sizeof(T);
             for (uint32_t row = 0; row < height; ++row) {
-                if (TIFFWriteScanline(tif, static_cast<void*>(const_cast<T*>(src + row * width)), row) < 0)
+                std::memcpy(rowBuf.data(),
+                            src + static_cast<size_t>(row) * width,
+                            rowBytes);
+                if (TIFFWriteScanline(tif, rowBuf.data(), row) < 0)
                     throw std::runtime_error("Failed to write scanline " + std::to_string(row));
             }
         }
@@ -249,8 +273,8 @@ namespace sirius {
     void writeTiff(const std::string& path, const Image<T>& image, TiffCompression comp) {
         auto tif = openTiff(path, "w");
         writePageFrom<T>(tif.get(), image.data(),
-                        static_cast<uint32_t>(image.rows()),
-                        static_cast<uint32_t>(image.cols()), false, comp);
+                        static_cast<uint32_t>(image.dimension(0)),
+                        static_cast<uint32_t>(image.dimension(1)), false, comp);
     }
 
     // --- Image stack ---
@@ -261,38 +285,41 @@ namespace sirius {
         Eigen::Index rows = 0;
         Eigen::Index cols = 0;
 
-        // Pass 1: Light-weight sequential read to grab dimensions and count pages
-        bool tiled = false; // check if tiled
+        // Pass 1: walk the directory chain sequentially to grab dimensions and
+        // cache each page's on-disk offset. TIFF directories are a linked list,
+        // so repeatedly calling TIFFSetDirectory(z) would be O(n^2).
+        // TIFFSetSubDirectory(offset) is O(1).
         std::vector<uint64_t> offset;
         {
             auto tif = openTiff(path, "r");
             auto info = getPageInfo(tif.get());
             rows = static_cast<Eigen::Index>(info.height);
             cols = static_cast<Eigen::Index>(info.width);
-            tiled = TIFFIsTiled(tif.get());
 
             do {
-                // total page count needed for allocation size
-                ++pageCount; 
-                // offset needed since pages are like linked lists
-                // so we should avoid the n^2 penalty of setting set directory in a parallel loop later on
+                ++pageCount;
                 offset.push_back(TIFFCurrentDirOffset(tif.get()));
             } while (TIFFReadDirectory(tif.get()));
         }
 
         // Allocate the contiguous memory block once
         ImageStack<T> stack(pageCount, rows, cols);
+        const Eigen::Index stride = rows * cols;
 
-        // Parallel thread pool opening individual file handles
+        // Parallel read: each thread opens its own TIFF* (libtiff handles are
+        // not thread-safe) and jumps straight to the cached offset.
         std::exception_ptr ex;
         std::atomic<bool> failed{false};
 
         #pragma omp parallel for schedule(dynamic)
         for (Eigen::Index z = 0; z < pageCount; ++z) {
-            if (failed.load()) continue; 
+            if (failed.load(std::memory_order_relaxed)) continue;
             try {
                 auto localTif = openTiff(path, "r");
-                TIFFSetSubDirectory(localTif.get(), offset[z]);
+                if (!TIFFSetSubDirectory(localTif.get(), offset[z]))
+                    throw std::runtime_error(
+                        "Failed to seek to TIFF directory " + std::to_string(z));
+
                 auto info = getPageInfo(localTif.get());
                 if (static_cast<Eigen::Index>(info.height) != rows ||
                     static_cast<Eigen::Index>(info.width)  != cols)
@@ -301,13 +328,20 @@ namespace sirius {
                         " dimensions (" + std::to_string(info.width) + "x" +
                         std::to_string(info.height) + ") do not match page 0 (" +
                         std::to_string(cols) + "x" + std::to_string(rows) + ")");
-                T* dst = stack.data() + z * stack.stride();
-                if (tiled) readTiledPage<T>(localTif.get(), dst, info);
-                else       readScanlinePage<T>(localTif.get(), dst, info);
+
+                T* dst = stack.data() + z * stride;
+                // TIFFIsTiled is per-page — don't assume page 0's layout
+                // applies to every subsequent directory.
+                if (TIFFIsTiled(localTif.get()))
+                    readTiledPage<T>(localTif.get(), dst, info);
+                else
+                    readScanlinePage<T>(localTif.get(), dst, info);
             } catch (...) {
                 #pragma omp critical
-                if (!ex) ex = std::current_exception();
-                failed.store(true); 
+                {
+                    if (!ex) ex = std::current_exception();
+                }
+                failed.store(true, std::memory_order_relaxed);
             }
         }
         if (ex) std::rethrow_exception(ex);
@@ -317,18 +351,27 @@ namespace sirius {
 
     template <typename T>
     void writeTiffStack(const std::string& path, const ImageStack<T>& stack, TiffCompression comp) {
-        if (stack.empty())
+        if (stack.size() == 0)
             throw std::runtime_error("Cannot write empty stack");
 
-        // use bigtiff always
+        // BigTIFF ("w8") lifts the 4 GiB offset limit. For small stacks this
+        // is mild overhead; for large ones it is the only option that works.
         auto tif = openTiff(path, "w8");
-        auto height = static_cast<uint32_t>(stack.rows());
-        auto width = static_cast<uint32_t>(stack.cols());
 
-        for (Eigen::Index z = 0; z < stack.depth(); ++z) {
-            writePageFrom<T>(tif.get(), stack.data() + z * stack.stride(),
-                            height, width, true, comp);
-            TIFFWriteDirectory(tif.get());
+        const Eigen::Index pages  = stack.dimension(0);
+        const Eigen::Index rows   = stack.dimension(1);
+        const Eigen::Index cols   = stack.dimension(2);
+        const Eigen::Index stride = rows * cols; // 64-bit: safe for huge pages
+
+        const auto height = static_cast<uint32_t>(rows);
+        const auto width  = static_cast<uint32_t>(cols);
+
+        for (Eigen::Index z = 0; z < pages; ++z) {
+            writePageFrom<T>(tif.get(), stack.data() + z * stride,
+                             height, width, true, comp);
+            if (!TIFFWriteDirectory(tif.get()))
+                throw std::runtime_error(
+                    "Failed to finalize TIFF directory for page " + std::to_string(z));
         }
     }
 

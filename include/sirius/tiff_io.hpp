@@ -1,16 +1,25 @@
 #ifndef SIRIUS_TIFF_IO_HPP
 #define SIRIUS_TIFF_IO_HPP
 
-#include <Eigen/Core>
-#include <cassert>
 #include <stdexcept>
 #include <string>
-#include <memory>
+
+#include <Eigen/Core>
+#include <unsupported/Eigen/CXX11/Tensor>
 
 namespace sirius {
 
+    // Row major so the inner most dim is contig maching tiff scan layyout
     template <typename T>
-    using Image = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+    using Image = Eigen::Tensor<T, 2, Eigen::RowMajor>;
+
+    template <typename T>
+    using ImageStack = Eigen::Tensor<T, 3, Eigen::RowMajor>;
+
+    // Row-major matrix type returned by asMatrix/slice views. Exposes the
+    // Eigen matrix API (isApprox, operator==, comma-init, block ops, etc.)
+    template <typename T>
+    using ImageMatrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
     // Compression options for writing
     enum class TiffCompression {
@@ -19,74 +28,29 @@ namespace sirius {
         Deflate // Often referred to as ZIP
     };
 
+    // Zero-copy 2D dense-matrix view over an Image<T>.
     template <typename T>
-    class ImageStack {
-        std::unique_ptr<T[]> data_;
-        size_t size_{0};
-        Eigen::Index depth_{0}, rows_{0}, cols_{0};
-        Eigen::Index stride_{0};
+    inline Eigen::Map<ImageMatrix<T>> asMatrix(Image<T>& img) {
+        return {img.data(), img.dimension(0), img.dimension(1)};
+    }
+    template <typename T>
+    inline Eigen::Map<const ImageMatrix<T>> asMatrix(const Image<T>& img) {
+        return {img.data(), img.dimension(0), img.dimension(1)};
+    }
 
-    public:
-        ImageStack() noexcept = default;
-
-        // delete copy
-        ImageStack(const ImageStack&) = delete;
-        ImageStack& operator=(const ImageStack&) = delete;
-        
-        // default move
-        ImageStack(ImageStack&&) noexcept = default;
-        ImageStack& operator=(ImageStack&&) noexcept = default;
-
-        ImageStack(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols) {
-            if (depth <= 0 || rows <= 0 || cols <= 0)
-                throw std::invalid_argument("ImageStack dimensions must be positive");
-            depth_ = depth; rows_ = rows; cols_ = cols;
-            stride_ = rows * cols;
-            size_ = static_cast<size_t>(depth * rows * cols);
-            data_ = std::make_unique<T[]>(size_);
-        }
-
-        T& operator()(Eigen::Index z, Eigen::Index r, Eigen::Index c) noexcept {
-            assert(z >= 0 && z < depth_ && r >= 0 && r < rows_ && c >= 0 && c < cols_);
-            return data_[static_cast<size_t>(z * stride_ + r * cols_ + c)];
-        }
-
-        const T& operator()(Eigen::Index z, Eigen::Index r, Eigen::Index c) const noexcept {
-            assert(z >= 0 && z < depth_ && r >= 0 && r < rows_ && c >= 0 && c < cols_);
-            return data_[static_cast<size_t>(z * stride_ + r * cols_ + c)];
-        }
-
-        Eigen::Map<Image<T>> slice(Eigen::Index z) noexcept {
-            assert(z >= 0 && z < depth_);
-            return {data_.get() + z * stride_, rows_, cols_};
-        }
-
-        Eigen::Map<const Image<T>> slice(Eigen::Index z) const noexcept {
-            assert(z >= 0 && z < depth_);
-            return {data_.get() + z * stride_, rows_, cols_};
-        }
-
-        void resize(Eigen::Index depth, Eigen::Index rows, Eigen::Index cols) {
-            if (depth <= 0 || rows <= 0 || cols <= 0)
-                throw std::invalid_argument("ImageStack dimensions must be positive");
-            depth_ = depth;
-            rows_ = rows;
-            cols_ = cols;
-            stride_ = rows * cols;
-            size_ = static_cast<size_t>(depth * stride_);
-            data_ = std::make_unique<T[]>(size_);
-        }
-
-        T* data() noexcept { return data_.get(); }
-        const T* data() const noexcept { return data_.get(); }
-        Eigen::Index depth() const noexcept { return depth_; }
-        Eigen::Index rows() const noexcept { return rows_; }
-        Eigen::Index cols() const noexcept { return cols_; }
-        Eigen::Index stride() const noexcept { return stride_; }
-        size_t size() const noexcept { return size_; }
-        size_t sizeBytes() const noexcept { return size_ * sizeof(T); }
-        bool empty() const noexcept { return data_ == nullptr; }
-    };
+    // Zero-copy 2D dense-matrix view over page z of an ImageStack<T>.
+    template <typename T>
+    inline Eigen::Map<ImageMatrix<T>> slice(ImageStack<T>& stack, Eigen::Index z) {
+        const auto rows = stack.dimension(1);
+        const auto cols = stack.dimension(2);
+        return {stack.data() + z * rows * cols, rows, cols};
+    }
+    template <typename T>
+    inline Eigen::Map<const ImageMatrix<T>> slice(const ImageStack<T>& stack, Eigen::Index z) {
+        const auto rows = stack.dimension(1);
+        const auto cols = stack.dimension(2);
+        return {stack.data() + z * rows * cols, rows, cols};
+    }
 
     template <typename T>
     Image<T> readTiff(const std::string& path);
@@ -95,11 +59,11 @@ namespace sirius {
     ImageStack<T> readTiffStack(const std::string& path);
 
     template <typename T>
-    void writeTiff(const std::string& path, const Image<T>& image, 
+    void writeTiff(const std::string& path, const Image<T>& image,
                    TiffCompression comp = TiffCompression::None);
 
     template <typename T>
-    void writeTiffStack(const std::string& path, const ImageStack<T>& stack, 
+    void writeTiffStack(const std::string& path, const ImageStack<T>& stack,
                         TiffCompression comp = TiffCompression::None);
 
 } // namespace sirius
