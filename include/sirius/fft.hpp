@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
-#include <unsupported/Eigen/CXX11/tensor>
+#include <unsupported/Eigen/CXX11/Tensor>
 
 namespace sirius {
 
