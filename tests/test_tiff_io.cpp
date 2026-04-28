@@ -408,6 +408,164 @@ TEST_CASE("Tiled TIFF round-trip - non-tile-aligned dimensions (edge clamping)",
 }
 
 // -----------------------------------------------------------------------
+// readTiffStackAny — runtime type dispatch
+// -----------------------------------------------------------------------
+
+namespace {
+    // Write a two-page TIFF stack with an unsupported format (16-bit float)
+    // to exercise the error path in readTiffStackAny.
+    void writeUnsupportedFormatStack(const std::string& path) {
+        TiffPtr tif(TIFFOpen(path.c_str(), "w"));
+        if (!tif) throw std::runtime_error("Failed to create TIFF: " + path);
+        for (int page = 0; page < 2; ++page) {
+            TIFFSetField(tif.get(), TIFFTAG_IMAGEWIDTH,      4);
+            TIFFSetField(tif.get(), TIFFTAG_IMAGELENGTH,     4);
+            TIFFSetField(tif.get(), TIFFTAG_BITSPERSAMPLE,   16); // half-float: unsupported
+            TIFFSetField(tif.get(), TIFFTAG_SAMPLESPERPIXEL, 1);
+            TIFFSetField(tif.get(), TIFFTAG_SAMPLEFORMAT,    SAMPLEFORMAT_IEEEFP);
+            TIFFSetField(tif.get(), TIFFTAG_PHOTOMETRIC,     PHOTOMETRIC_MINISBLACK);
+            TIFFSetField(tif.get(), TIFFTAG_PLANARCONFIG,    PLANARCONFIG_CONTIG);
+            std::vector<uint16_t> row(4, 0);
+            for (uint32_t r = 0; r < 4; ++r)
+                TIFFWriteScanline(tif.get(), row.data(), r);
+            TIFFWriteDirectory(tif.get());
+        }
+    }
+}
+
+TEST_CASE("readTiffStackAny dispatches to the correct type", "[tiff][io][stack][any]") {
+    SECTION("uint8") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<uint8_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<uint8_t>(z * 10));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<uint8_t>>(result));
+        auto& loaded = std::get<ImageStack<uint8_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("int8") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<int8_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<int8_t>((z - 1) * 10));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<int8_t>>(result));
+        auto& loaded = std::get<ImageStack<int8_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("uint16") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<uint16_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<uint16_t>(z * 1000));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<uint16_t>>(result));
+        auto& loaded = std::get<ImageStack<uint16_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("int16") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<int16_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<int16_t>((z - 1) * 1000));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<int16_t>>(result));
+        auto& loaded = std::get<ImageStack<int16_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("uint32") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<uint32_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<uint32_t>(z * 100'000));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<uint32_t>>(result));
+        auto& loaded = std::get<ImageStack<uint32_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("int32") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<int32_t> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setConstant(static_cast<int32_t>((z - 1) * 100'000));
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<int32_t>>(result));
+        auto& loaded = std::get<ImageStack<int32_t>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z) == slice(original, z));
+    }
+
+    SECTION("float") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<float> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setRandom();
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<float>>(result));
+        auto& loaded = std::get<ImageStack<float>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z).isApprox(slice(original, z)));
+    }
+
+    SECTION("double") {
+        TempFile f(uniqueTempPath(".tiff"));
+        ImageStack<double> original(3, 8, 8);
+        for (Eigen::Index z = 0; z < 3; ++z) slice(original, z).setRandom();
+        writeTiffStack(f.path, original);
+        auto result = readTiffStackAny(f.path);
+        REQUIRE(std::holds_alternative<ImageStack<double>>(result));
+        auto& loaded = std::get<ImageStack<double>>(result);
+        REQUIRE(loaded.dimension(0) == 3);
+        for (Eigen::Index z = 0; z < 3; ++z) REQUIRE(slice(loaded, z).isApprox(slice(original, z)));
+    }
+}
+
+TEST_CASE("readTiffStackAny preserves dimensions", "[tiff][io][stack][any]") {
+    auto [depth, rows, cols] = GENERATE(table<int, int, int>({
+        {1,  1,   1},
+        {5,  16,  16},
+        {3,  17,  31},
+        {2,  128, 64},
+    }));
+    INFO("Dimensions: " << depth << "x" << rows << "x" << cols);
+
+    TempFile f(uniqueTempPath(".tiff"));
+    ImageStack<uint16_t> original(depth, rows, cols);
+    for (Eigen::Index z = 0; z < depth; ++z) slice(original, z).setConstant(static_cast<uint16_t>(z));
+    writeTiffStack(f.path, original);
+
+    auto result = readTiffStackAny(f.path);
+    REQUIRE(std::holds_alternative<ImageStack<uint16_t>>(result));
+    auto& loaded = std::get<ImageStack<uint16_t>>(result);
+    REQUIRE(loaded.dimension(0) == depth);
+    REQUIRE(loaded.dimension(1) == rows);
+    REQUIRE(loaded.dimension(2) == cols);
+}
+
+TEST_CASE("readTiffStackAny error handling", "[tiff][io][stack][any][error_handling]") {
+    SECTION("throws on nonexistent file") {
+        REQUIRE_THROWS_AS(readTiffStackAny("does_not_exist_12345.tiff"), std::runtime_error);
+    }
+
+    SECTION("throws on unsupported format") {
+        TempFile f(uniqueTempPath(".tiff"));
+        writeUnsupportedFormatStack(f.path);
+        REQUIRE_THROWS_AS(readTiffStackAny(f.path), std::runtime_error);
+    }
+}
+
+// -----------------------------------------------------------------------
 // Error handling
 // -----------------------------------------------------------------------
 

@@ -20,7 +20,8 @@
         "SIRIUS_ENABLE_TESTS": "ON",
         "SIRIUS_ENABLE_WARNINGS": "ON",
         "SIRIUS_ENABLE_GUI": "ON",
-        "VCPKG_MANIFEST_FEATURES": "testing"
+        "SIRIUS_ENABLE_PYTHON_BINDINGS": "ON",
+        "VCPKG_MANIFEST_FEATURES": "testing;python-bindings"
       }
     },
     {

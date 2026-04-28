@@ -88,23 +88,28 @@ namespace sirius {
         template <typename T>
         void convertScanline(const uint8_t* src, T* dst, uint32_t width,
                             uint16_t bps, uint16_t fmt) {
-            for (uint32_t i = 0; i < width; ++i) {
-                if (fmt == SAMPLEFORMAT_IEEEFP) {
-                    if      (bps == 32) { float v;  std::memcpy(&v, src + i*4, 4); dst[i] = static_cast<T>(v); }
-                    else if (bps == 64) { double v; std::memcpy(&v, src + i*8, 8); dst[i] = static_cast<T>(v); }
-                } else if (fmt == SAMPLEFORMAT_INT) {
-                    if      (bps == 8)  { int8_t  v; std::memcpy(&v, src + i,   1); dst[i] = static_cast<T>(v); }
-                    else if (bps == 16) { int16_t v; std::memcpy(&v, src + i*2, 2); dst[i] = static_cast<T>(v); }
-                    else if (bps == 32) { int32_t v; std::memcpy(&v, src + i*4, 4); dst[i] = static_cast<T>(v); }
-                } else { // SAMPLEFORMAT_UINT
-                    if      (bps == 8)  { dst[i] = static_cast<T>(src[i]); }
-                    else if (bps == 16) { uint16_t v; std::memcpy(&v, src + i*2, 2); dst[i] = static_cast<T>(v); }
-                    else if (bps == 32) { uint32_t v; std::memcpy(&v, src + i*4, 4); dst[i] = static_cast<T>(v); }
-                }
+            switch (fmt) {
+                case SAMPLEFORMAT_IEEEFP:
+                    switch (bps) {
+                        case 32: for (uint32_t i = 0; i < width; ++i) { float  v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
+                        case 64: for (uint32_t i = 0; i < width; ++i) { double v; std::memcpy(&v, src+i*8, 8); dst[i] = static_cast<T>(v); } break;
+                    } break;
+                case SAMPLEFORMAT_INT:
+                    switch (bps) {
+                        case  8: for (uint32_t i = 0; i < width; ++i) { int8_t  v; std::memcpy(&v, src+i,   1); dst[i] = static_cast<T>(v); } break;
+                        case 16: for (uint32_t i = 0; i < width; ++i) { int16_t v; std::memcpy(&v, src+i*2, 2); dst[i] = static_cast<T>(v); } break;
+                        case 32: for (uint32_t i = 0; i < width; ++i) { int32_t v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
+                    } break;
+                default: // SAMPLEFORMAT_UINT
+                    switch (bps) {
+                        case  8: for (uint32_t i = 0; i < width; ++i) { dst[i] = static_cast<T>(src[i]); } break;
+                        case 16: for (uint32_t i = 0; i < width; ++i) { uint16_t v; std::memcpy(&v, src+i*2, 2); dst[i] = static_cast<T>(v); } break;
+                        case 32: for (uint32_t i = 0; i < width; ++i) { uint32_t v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
+                    } break;
             }
         }
 
-        // check if Eigen matrix type T is an exact match
+        // check if Eigen tensor type T is an exact match
         // to circumvent the slow "pixel by pixel" conversion process
         template <typename T>
         constexpr bool isExactMatch(uint16_t bps, uint16_t fmt) {
@@ -315,6 +320,9 @@ namespace sirius {
         for (Eigen::Index z = 0; z < pageCount; ++z) {
             if (failed.load(std::memory_order_relaxed)) continue;
             try {
+                // Tiff handle is stateful hence not thread safe
+                // therefore each thread must open its own tiff file
+                // even though it is read only
                 auto localTif = openTiff(path, "r");
                 if (!TIFFSetSubDirectory(localTif.get(), offset[z]))
                     throw std::runtime_error(
@@ -373,6 +381,41 @@ namespace sirius {
                 throw std::runtime_error(
                     "Failed to finalize TIFF directory for page " + std::to_string(z));
         }
+    }
+
+    AnyImageStack readTiffStackAny(const std::string& path) {
+        auto tif = openTiff(path, "r");
+        auto info = getPageInfo(tif.get());
+
+        switch(info.fmt) {
+            case SAMPLEFORMAT_INT:
+                switch(info.bps) {
+                    case 8 : return readTiffStack<int8_t>(path);
+                    case 16: return readTiffStack<int16_t>(path);
+                    case 32: return readTiffStack<int32_t>(path);
+                    default: break;
+                }
+                break;
+            case SAMPLEFORMAT_UINT:
+                switch(info.bps) {
+                    case 8 : return readTiffStack<uint8_t>(path);
+                    case 16: return readTiffStack<uint16_t>(path);
+                    case 32: return readTiffStack<uint32_t>(path);
+                    default: break;
+                }
+                break;
+            case SAMPLEFORMAT_IEEEFP:
+                switch(info.bps) {
+                    case 32: return readTiffStack<float>(path);
+                    case 64: return readTiffStack<double>(path);
+                    default: break;
+                }
+                break;
+            default:
+                break;
+        }
+
+        throw std::runtime_error("Unsupported TIFF format");
     }
 
     // Explicit instantiations

@@ -1,7 +1,7 @@
 set(SIRIUS_BINDING_SOURCES
     src/module.cpp
     src/bind_fft.cpp
-    # src/bind_tiff_io.cpp
+    src/bind_tiff_io.cpp
 )
 
 # We are now ready to compile the actual extension module

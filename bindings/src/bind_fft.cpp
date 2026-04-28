@@ -111,7 +111,7 @@ namespace {
         FFT fft_;
     };
 
-} // namespace
+} // anonymous namespace
 
 void bind_fft(nb::module_& m) {
     nb::enum_<PlanRigor>(m, "PlanRigor",

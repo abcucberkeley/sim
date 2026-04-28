@@ -3,6 +3,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 #include <Eigen/Core>
 #include <unsupported/Eigen/CXX11/Tensor>
@@ -20,6 +21,10 @@ namespace sirius {
     // Eigen matrix API (isApprox, operator==, comma-init, block ops, etc.)
     template <typename T>
     using ImageMatrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+
+    // Need to be able to dispatch the correct reader based on tiff data
+    using AnyImageStack = std::variant<ImageStack<uint8_t>, ImageStack<int8_t>, ImageStack<uint16_t>, ImageStack<int16_t>,
+                                        ImageStack<uint32_t>, ImageStack<int32_t>, ImageStack<float>, ImageStack<double>>;
 
     // Compression options for writing
     enum class TiffCompression {
@@ -57,6 +62,13 @@ namespace sirius {
 
     template <typename T>
     ImageStack<T> readTiffStack(const std::string& path);
+
+    // Call the correct function based on tiff data type
+    // Usage:
+    //     std::visit([](auto& img) {}, readTiffStackAny("file.tiff"));
+    // Note: it is more efficient to call the correct function
+    // if the underlying data is already known or data will be recast downstream
+    AnyImageStack readTiffStackAny(const std::string& path);
 
     template <typename T>
     void writeTiff(const std::string& path, const Image<T>& image,

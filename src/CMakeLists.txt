@@ -1,5 +1,9 @@
 add_library(sirius STATIC)
 
+if(SIRIUS_ENABLE_PYTHON_BINDINGS)
+    set_target_properties(sirius PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 target_include_directories(sirius
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>

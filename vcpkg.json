@@ -23,6 +23,10 @@
     "testing": {
       "description": "Build and run tests",
       "dependencies": ["catch2"]
+    },
+    "python-bindings": {
+      "description": "Build Python bindings",
+      "dependencies": ["nanobind"]
     }
   }
 }
