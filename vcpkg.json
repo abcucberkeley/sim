@@ -1,5 +1,6 @@
 {
-  "version-string": "0.1.0",
+  "name": "sirius",
+  "version-semver": "0.1.0",
   "description": "Structured Illumination Reconstruction and Image Utility Suite",
   "dependencies": [
     "eigen3",
@@ -7,11 +8,7 @@
     "fftw3",
     {
       "name": "imgui",
-      "features": [
-        "docking-experimental",
-        "opengl3-binding",
-        "sdl3-binding"
-      ]
+      "features": ["docking-experimental", "opengl3-binding", "sdl3-binding"]
     },
     {
       "name": "sdl3",
@@ -26,7 +23,7 @@
     },
     "python-bindings": {
       "description": "Build Python bindings",
-      "dependencies": [{"name":"nanobind", "version>=": "2.12.0"}]
+      "dependencies": [{ "name": "nanobind", "version>=": "2.12.0" }]
     }
   }
 }
