@@ -26,7 +26,7 @@
     },
     "python-bindings": {
       "description": "Build Python bindings",
-      "dependencies": ["nanobind"]
+      "dependencies": [{"name":"nanobind", "version>=": "2.12.0"}]
     }
   }
 }
