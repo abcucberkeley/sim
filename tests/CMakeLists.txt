@@ -16,3 +16,11 @@ target_link_libraries(sirius_tests
 
 include(Catch)
 catch_discover_tests(sirius_tests DISCOVERY_MODE PRE_TEST)
+
+if(SIRIUS_ENABLE_WARNINGS)
+    target_set_warnings(sirius_tests)
+endif()
+
+if(SIRIUS_ENABLE_SANITIZERS)
+    target_enable_sanitizers(sirius_tests)
+endif()

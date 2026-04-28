@@ -1,5 +1,6 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/eigen/tensor.h>
+#include <nanobind/stl/string.h>
 
 #include <sirius/tiff_io.hpp>
 
@@ -12,7 +13,10 @@ using sirius::writeTiffStack;
 
 namespace {
     template <typename ImgT>
-    nb::object eigenTensorToNumpy(ImgT img) {
+    using nparray = nb::ndarray<nb::numpy, typename ImgT::Scalar, nb::ndim<ImgT::NumDimensions>, nb::c_contig>;
+    
+    template <typename ImgT>
+    nparray<ImgT> eigenTensorToNumpy(ImgT img) {
         using T = typename ImgT::Scalar;
         constexpr size_t Rank = ImgT::NumDimensions;
 
@@ -26,16 +30,18 @@ namespace {
         for (size_t i = 0; i < Rank; ++i)
             shape[i] = static_cast<size_t>(ptr->dimension(i));
 
-        return nb::ndarray<nb::numpy, T, nb::ndim<Rank>, nb::c_contig>(
+        return nparray<ImgT>(
             ptr->data(), Rank, shape.data(), owner
         );
     }
 
     nb::object readTiffStackNumpy(const std::string& path) {
-        auto stack = readTiffStackAny(path);
-        return std::visit([](auto img) -> nb::object {
-            return eigenTensorToNumpy(std::move(img));
-        }, std::move(stack));
+        return std::visit(
+            [](auto img) -> nb::object {
+                return nb::cast(eigenTensorToNumpy(std::move(img)));
+            },
+            readTiffStackAny(path)
+        );
     }
 } // anonymous namespace
 

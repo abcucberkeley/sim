@@ -29,15 +29,17 @@ nanobind_add_module(
 target_link_libraries(_sirius_ext PRIVATE sirius)
 target_include_directories(_sirius_ext PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
-if(CHIEFRAY_ENABLE_CUDA)
+if(SIRIUS_ENABLE_CUDA)
     target_compile_definitions(_sirius_ext PRIVATE SIRIUS_HAS_CUDA_BINDINGS)
     target_sources(_sirius_ext PRIVATE src/bind_cuda_batch.cpp)
 endif()
 
-if(CHIEFRAY_ENABLE_MPI)
+if(SIRIUS_ENABLE_MPI)
     target_sources(_sirius_ext PRIVATE src/bind_mpi_distributor.cpp)
 endif()
 
+# The pure-Python sources are shipped via `wheel.packages` in pyproject.toml,
+# which is also what makes `pip install -e .` editable for Python files.
+# CMake only owns the compiled extension and any runtime DLLs.
 install(TARGETS _sirius_ext LIBRARY DESTINATION sirius COMPONENT python)
 install(FILES $<TARGET_RUNTIME_DLLS:_sirius_ext> DESTINATION sirius COMPONENT python)
-install(DIRECTORY python/sirius/ DESTINATION sirius COMPONENT python)

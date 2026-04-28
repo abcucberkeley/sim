@@ -52,7 +52,7 @@ namespace {
             shape[i] = like.shape(i);
             total *= shape[i];
         }
-        auto* data = new Cplx[total];
+        auto* data = std::make_unique<Cplx[]>(total).release();
         nb::capsule owner(data, [](void* p) noexcept {
             delete[] static_cast<Cplx*>(p);
         });
