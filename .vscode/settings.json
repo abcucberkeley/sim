@@ -1,5 +1,4 @@
 {
-  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
   "C_Cpp.intelliSenseEngine": "default",
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }
