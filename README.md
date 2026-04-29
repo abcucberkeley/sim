@@ -6,8 +6,15 @@ TODO
 
 ## TODO
 - detect/handle int overflow and use fftw_plan_guru64_dft instead of fftw_plan_many_dft
+- for tiff io separate out type dependent code to reduce binary bloat (ie define readTiffStackRaw which doesnt depend on type and then use a templated convert_stack function)
 - Remove port overlay after the next nanobind release (due to missing tensor header)
-- Add tensorstore 
+- Add tensorstore
+- Sanitizers.cmake only enables ASan+UBSan for non-MSVC. Add tsan/msan as separate options (mutually exclusive with ASan), and on MSVC, /fsanitize=address doesn't co-exist with /RTC1, which Debug enables by default. Worth a string(REGEX REPLACE) to strip /RTC* when sanitizers are on.
+- cmake install command so the downstream user can simply do
+```cmake
+find_package(SIRIUS CONFIG REQUIRED)
+target_link_libraries(myapp PRIVATE sirius::sirius)
+```
 
 ## Python Bindings
 Dev install
