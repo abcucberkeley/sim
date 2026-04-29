@@ -40,7 +40,7 @@ build-dir = "build/{wheel_tag}"
 cmake.args = ["-DSIRIUS_ENABLE_PYTHON_BINDINGS=ON"]
 
 # Build stable ABI wheels for CPython 3.12+
-wheel.py-api = "cp312"
+wheel.py-api = "cp39"
 
 # Editable installs: do NOT auto-rebuild on import. Auto-rebuild calls back
 # into CMake reconfigure, which requires the build env (nanobind, vcpkg deps)

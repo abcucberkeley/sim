@@ -7,6 +7,9 @@
 #include <cstring>
 #include <fftw3.h>
 
+// TODO: detect/handle int overflow and use
+//       fftw_plan_guru64_dft instead of fftw_plan_many_dft
+
 namespace sirius {
     namespace {
         // RAII for fft plan
