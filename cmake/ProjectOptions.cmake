@@ -1,12 +1,21 @@
 option(SIRIUS_ENABLE_MPI "Enable MPI" OFF)
 option(SIRIUS_ENABLE_CUDA "Enable CUDA (device buffers, cuFFT, nvTIFF)" OFF)
 option(SIRIUS_ENABLE_PYTHON_BINDINGS "Enable nanobind python bindings" OFF)
+# Qt desktop application (app/). Qt is found on the system, not fetched: see
+# cmake/Dependencies.cmake for how to point CMake at an installation.
+option(SIRIUS_ENABLE_APP "Build the Qt GUI application (needs Qt 6 or Qt 5 Widgets)" OFF)
+# On Windows the Qt DLLs and plugins are copied next to sirius-app with
+# windeployqt after every link, so the build tree runs without PATH changes.
+# Turn off for Qt builds windeployqt cannot handle (e.g. conda-forge's Qt with
+# its renamed Qt5*_conda.dll) and run with the Qt bin directory on PATH.
+include(CMakeDependentOption)
+cmake_dependent_option(SIRIUS_APP_DEPLOY_QT "Run windeployqt on sirius-app after linking" ON
+                       "SIRIUS_ENABLE_APP;WIN32" OFF)
 
 # nvTIFF decodes TIFF strips/tiles straight into device memory. It is an NVIDIA
 # redistributable (no source), fetched from developer.download.nvidia.com by
 # cmake/Dependencies.cmake, or taken from SIRIUS_NVTIFF_ROOT when set (e.g. a
 # cluster module). Deflate/ZIP decoding additionally needs nvCOMP at runtime.
-include(CMakeDependentOption)
 cmake_dependent_option(SIRIUS_ENABLE_NVTIFF "Enable GPU TIFF decoding via nvTIFF" ON
                        "SIRIUS_ENABLE_CUDA" OFF)
 cmake_dependent_option(SIRIUS_ENABLE_NVCOMP "Fetch nvCOMP so nvTIFF can decode Deflate/ZIP TIFFs on the GPU" ON

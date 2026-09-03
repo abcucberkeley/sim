@@ -39,6 +39,14 @@
       }
     },
     {
+      "name": "app",
+      "hidden": true,
+      "cacheVariables": {
+        "SIRIUS_ENABLE_APP": "ON",
+        "CMAKE_PREFIX_PATH": "$env{SIRIUS_QT_DIR}"
+      }
+    },
+    {
       "name": "win-msvc-dev",
       "displayName": "Windows (MSVC) Dev",
       "inherits": [
@@ -52,6 +60,14 @@
       }
     },
     {
+      "name": "win-msvc-app-dev",
+      "displayName": "Windows (MSVC) Dev + Qt app (SIRIUS_QT_DIR -> Qt prefix)",
+      "inherits": [
+        "win-msvc-dev",
+        "app"
+      ]
+    },
+    {
       "name": "win-msvc-release",
       "displayName": "Windows (MSVC) Release",
       "inherits": [
@@ -63,6 +79,14 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       }
+    },
+    {
+      "name": "win-msvc-app-release",
+      "displayName": "Windows (MSVC) Release + Qt app (SIRIUS_QT_DIR -> Qt prefix)",
+      "inherits": [
+        "win-msvc-release",
+        "app"
+      ]
     },
     {
       "name": "win-msvc-cuda-dev",
@@ -113,6 +137,22 @@
         "CMAKE_C_COMPILER": "gcc",
         "CMAKE_CXX_COMPILER": "g++"
       }
+    },
+    {
+      "name": "linux-gcc-app-dev",
+      "displayName": "Linux (GCC) Dev + Qt app (SIRIUS_QT_DIR -> Qt prefix)",
+      "inherits": [
+        "linux-gcc-dev",
+        "app"
+      ]
+    },
+    {
+      "name": "linux-gcc-app-release",
+      "displayName": "Linux (GCC) Release + Qt app (SIRIUS_QT_DIR -> Qt prefix)",
+      "inherits": [
+        "linux-gcc-release",
+        "app"
+      ]
     },
     {
       "name": "fiona-avx2-release",
@@ -256,11 +296,41 @@
       "configuration": "Release"
     },
     {
+      "name": "win-msvc-app-dev",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "win-msvc-app-dev",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-msvc-app-release",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "win-msvc-app-release",
+      "configuration": "Release"
+    },
+    {
       "name": "linux-gcc-dev",
       "inherits": [
         "base-build"
       ],
       "configurePreset": "linux-gcc-dev"
+    },
+    {
+      "name": "linux-gcc-app-dev",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "linux-gcc-app-dev"
+    },
+    {
+      "name": "linux-gcc-app-release",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "linux-gcc-app-release"
     },
     {
       "name": "linux-gcc-release",
@@ -352,11 +422,26 @@
       "configuration": "Debug"
     },
     {
+      "name": "win-msvc-app-dev",
+      "inherits": [
+        "base-test"
+      ],
+      "configurePreset": "win-msvc-app-dev",
+      "configuration": "Debug"
+    },
+    {
       "name": "linux-gcc-dev",
       "inherits": [
         "base-test"
       ],
       "configurePreset": "linux-gcc-dev"
+    },
+    {
+      "name": "linux-gcc-app-dev",
+      "inherits": [
+        "base-test"
+      ],
+      "configurePreset": "linux-gcc-app-dev"
     },
     {
       "name": "linux-clang-dev",

@@ -159,6 +159,27 @@ if(SIRIUS_ENABLE_MPI)
     find_package(MPI REQUIRED)
 endif()
 
+# Qt (GUI application only). Like the CUDA toolkit, Qt is a large prebuilt
+# system dependency rather than something FetchContent should build: it is
+# found via its CMake package config. Qt 6 is preferred, Qt 5.15 works too.
+# Point CMake at an installation with one of
+#   -DCMAKE_PREFIX_PATH=/path/to/Qt/6.x/gcc_64        (the *-app-* presets set
+#                                                       this from $SIRIUS_QT_DIR)
+#   -DQt6_DIR=/path/to/Qt/6.x/gcc_64/lib/cmake/Qt6    (or Qt5_DIR)
+# Prefer the Qt*_DIR form for a Qt that lives inside a larger prefix (e.g. a
+# conda environment): a prefix path would also expose that environment's
+# libjpeg/zstd/... to libtiff's own find_package calls and drag in DLLs.
+# The app links the sirius::qt interface target, which resolves to the right
+# major version's Widgets module.
+if(SIRIUS_ENABLE_APP)
+    find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets HINTS ${Qt6_DIR} ${Qt5_DIR})
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+    add_library(sirius_qt INTERFACE)
+    target_link_libraries(sirius_qt INTERFACE Qt${QT_VERSION_MAJOR}::Widgets)
+    add_library(sirius::qt ALIAS sirius_qt)
+    message(STATUS "Qt ${Qt${QT_VERSION_MAJOR}_VERSION} (Widgets) for the SIRIUS app")
+endif()
+
 if(SIRIUS_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)

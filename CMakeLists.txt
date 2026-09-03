@@ -13,9 +13,15 @@ include(SIMD)
 include(Warnings)
 include(Sanitizers)
 include(StaticAnalysis)
+include(RuntimeDeps)
 include(Dependencies)
 
 add_subdirectory(src)
+
+# before tests: the app's Qt-free core library is unit-tested there
+if(SIRIUS_ENABLE_APP)
+    add_subdirectory(app)
+endif()
 
 if(SIRIUS_ENABLE_TESTS)
     enable_testing()

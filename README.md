@@ -122,6 +122,37 @@ pair for the cluster.
 Container images with the full toolchain (identical for Docker locally and Apptainer on
 the cluster) are in [containers/](containers/README.md).
 
+## Desktop application (`app/`)
+
+`sirius-app` is a Qt Widgets front end for the reconstruction pipeline: load a raw
+stack, an OTF and a parameter file (TOML or legacy cudasirecon `key=value`), edit the
+parameters, reconstruct on the CPU or any CUDA device, browse the raw and reconstructed
+volumes slice by slice, read off the fitted pattern vectors and save the result as a
+float32 TIFF. Reconstructions run on a worker thread; the `SimReconstructor` (FFT
+plans) and the device copy of the raw stack are kept between runs and only rebuilt
+when the parameters, OTF or device change.
+
+```
+export SIRIUS_QT_DIR=/path/to/Qt/6.x/gcc_64        # any Qt 6 or Qt 5.15 prefix
+cmake --preset linux-gcc-app-dev
+cmake --build --preset linux-gcc-app-dev
+ctest --preset linux-gcc-app-dev                    # includes the app core tests
+./build/linux-gcc-app-dev/app/sirius-app --raw raw.tif --otf otf.tif --params config.txt [--reconstruct]
+```
+
+`SIRIUS_ENABLE_APP=ON` locates Qt with `find_package` (Qt is a system dependency
+like the CUDA toolkit, not something FetchContent builds); the `*-app-*` presets
+take the prefix from `$SIRIUS_QT_DIR`, or pass `-DQt6_DIR=.../lib/cmake/Qt6`
+(or `Qt5_DIR`) for a Qt that lives inside a larger prefix such as a conda
+environment. The layout separates a Qt-free model (`app/core`: `ReconSession`,
+parameter-format detection, display mapping) that `tests/test_app_core.cpp`
+covers without a display from the Widgets layer (`app/qt`). On Windows,
+`windeployqt` copies the Qt runtime next to the executable after every link
+(`SIRIUS_APP_DEPLOY_QT`; turn it off for Qt builds it cannot process, such as
+conda-forge's renamed `Qt5*_conda.dll`, and run with the Qt `bin` directory on
+`PATH` instead). Add `-DSIRIUS_ENABLE_APP=ON` to any CUDA preset to get the GPU
+devices in the device list.
+
 ## Python Bindings
 Dev install
 ```
