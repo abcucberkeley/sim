@@ -268,3 +268,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Apptainer/Singularity images
+*.sif

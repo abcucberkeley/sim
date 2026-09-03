@@ -28,11 +28,10 @@ Check intrinsics supported
 lscpu | grep -i flags | tr ' ' '\n' | grep -E "sse|avx|fma" | sort -u
 ```
 
-Fiona supports avx2 so make sure to pass `-DSIRIUS_ENABLE_AVX2=ON`
+Fiona supports avx2 so make sure to pass `-DSIRIUS_ENABLE_AVX2=ON`; the `fiona-avx2-cuda-*` presets add CUDA/nvTIFF.
 
 ## TODO
 - detect/handle int overflow and use fftw_plan_guru64_dft instead of fftw_plan_many_dft
-- for tiff io separate out type dependent code to reduce binary bloat (ie define readTiffStackRaw which doesnt depend on type and then use a templated convert_stack function)
 - Remove port overlay after the next nanobind release (due to missing tensor header)
 - Add tensorstore
 - Sanitizers.cmake only enables ASan+UBSan for non-MSVC. Add tsan/msan as separate options (mutually exclusive with ASan), and on MSVC, /fsanitize=address doesn't co-exist with /RTC1, which Debug enables by default. Worth a string(REGEX REPLACE) to strip /RTC* when sanitizers are on.
@@ -41,6 +40,87 @@ Fiona supports avx2 so make sure to pass `-DSIRIUS_ENABLE_AVX2=ON`
 find_package(SIRIUS CONFIG REQUIRED)
 target_link_libraries(myapp PRIVATE sirius::sirius)
 ```
+- MPI: bind each rank to `Device::cuda(localRank % cudaDeviceCount())`, distribute pages via `TiffFile::readPages`, and add a `Buffer`-aware halo exchange
+- nvTIFF encoder (`nvtiffEncode`) for writing stacks straight from device memory; the writers currently stage device buffers through the host
+- GPU reads of Deflate TIFFs need `libnvcomp.so.5` at run time (fetched and linked by default); wheels should bundle it via auditwheel
+- `.gitattributes` tracks `tests/data/*.tiff` in LFS but the data files are `*.tif`, so they are committed directly
+
+## CPU / GPU execution model
+
+Every algorithm works on `sirius::BufferView<T>` (pointer + `Shape` + `Device`),
+and `sirius::Buffer<T>` owns such memory on the CPU (pageable or pinned) or on
+a CUDA device. The public headers contain no CUDA types and no build macros:
+a CPU-only build exposes the same API and `Device::cuda()` fails at run time
+with a clear error. Query `builtWithCuda()` / `cudaAvailable()` to choose.
+
+```cpp
+#include <sirius/buffer.hpp>
+#include <sirius/fft.hpp>
+#include <sirius/tiff_io.hpp>
+using namespace sirius;
+
+const Device dev = cudaAvailable() ? Device::cuda(0) : Device::cpu();
+Stream stream(dev);                                   // no-op on the CPU
+
+TiffFile file("raw.tif");                             // metadata: pages, pyramid levels, tiles, codec
+TiffReadOptions opts;  opts.device = dev;
+Buffer<float> stack = file.readStack<float>(opts, stream);   // (pages, rows, cols), decoded on the GPU by nvTIFF
+
+FFT fft({int(stack.dim(1)), int(stack.dim(2))}, int(stack.dim(0)), PlanRigor::Measure, dev);  // FFTW or cuFFT
+Buffer<std::complex<double>> spectrum(stack.shape(), dev, HostMemory::Pageable, stream);
+// ... convert / fft(view, view, stream) / ifft(..., normalize=true, stream)
+
+auto host = toEigen<3>(stack, stream);                // ImageStack<float> on the host
+copy(host, stack, stream);                            // Eigen tensors are views too
+```
+
+Design rules (see `include/sirius/buffer.hpp`):
+- No implicit copies. `Buffer` is move-only; `clone()`, `to(device)`, `copy()` are explicit.
+- Everything taking a `Stream` is asynchronous and stream-ordered on CUDA; pinned host
+  memory (`HostMemory::Pinned`) makes host<->device copies truly asynchronous.
+- Device memory comes from the per-device CUDA memory pool (`cudaMallocAsync`), so
+  allocating working buffers per frame is cheap. Host memory is 64-byte aligned.
+- Row-major, innermost dimension contiguous: identical to the Eigen `RowMajor` tensors
+  and to TIFF scanlines, so Eigen interop is a pointer reinterpretation.
+
+### TIFF reading (`TiffFile`)
+
+`TiffFile` opens a file once and exposes `info()` (every IFD, the full-resolution
+`pages`, and pyramid `levels` discovered from SubIFDs or reduced-resolution IFDs).
+`readStack`, `readPages`, `readLevel` and `readRegion` decode into a `Buffer` on any
+device; `decode` fills a caller-provided view. Strips and tiles, None/LZW/Deflate
+(with horizontal predictor), classic and BigTIFF are all decoded on the GPU by nvTIFF
+in one batched call per 512 MiB of pages, with pixel conversion on the device. Files
+nvTIFF cannot decode (e.g. the floating-point predictor sirius itself writes for
+compressed float data, or Deflate without nvCOMP) fall back to libtiff plus an
+upload unless `TiffReadOptions::allowCpuFallback` is off; `gpuDecodable()` tells you
+in advance. Read calls return with the data ready (they synchronize the stream).
+
+The Eigen API (`readTiff`, `readTiffStack`, `readTiffStackAny`, `writeTiff*`) is
+unchanged and implemented on top of `TiffFile`; the writers also accept `BufferView`s
+on either device.
+
+### Building with CUDA
+
+```
+cmake --preset linux-cuda-dev        # native GPU arch, tests, python bindings
+cmake --build --preset linux-cuda-dev
+ctest --preset linux-cuda-dev        # GPU cases SKIP when no device is usable
+```
+
+`SIRIUS_ENABLE_CUDA=ON` adds cuFFT and, by default, nvTIFF (`SIRIUS_ENABLE_NVTIFF`)
+plus nvCOMP (`SIRIUS_ENABLE_NVCOMP`, needed for Deflate on the GPU). Both are NVIDIA
+redistributables fetched by `cmake/NvidiaRedist.cmake` from
+developer.download.nvidia.com, pinned by version and SHA256 and selected for the
+toolkit's CUDA major (12 or 13). On a machine that already has them (an HPC module,
+an air-gapped node) point `SIRIUS_NVTIFF_ROOT` / `SIRIUS_NVCOMP_ROOT` at the extracted
+archives instead. CMake prefers the nvcc under `$CUDA_HOME`, `$CUDA_PATH` or
+`/usr/local/cuda` over a distro-packaged one; set `CUDACXX` to pin it. Presets:
+`linux-cuda-dev`, `linux-cuda-release` (portable arch list) and the `fiona-avx2-cuda-*`
+pair for the cluster.
+
+Container images with the full toolchain (identical for Docker locally and Apptainer on
+the cluster) are in [containers/](containers/README.md).
 
 ## Python Bindings
 Dev install
@@ -58,6 +138,26 @@ Run unit tests
 python -m unittest discover -s bindings/tests
 ```
 
+GPU reads return a `sirius.Buffer` that implements DLPack, so PyTorch/CuPy adopt
+the device memory without a copy:
+```python
+import sirius, torch
+f = sirius.TiffFile("raw.tif")
+f.info.shape, f.info.level_count            # (pages, height, width), pyramid levels
+stack = f.read_stack(device="cuda", dtype="float32")   # nvTIFF decode into GPU memory
+t = torch.from_dlpack(stack)                # zero-copy
+region = f.read_region(x, y, w, h, level=1) # numpy on the CPU
+```
+`sirius.read_tiff(path)` keeps returning numpy; pass `device="cuda"` for a Buffer.
+
+Build the extension with the GPU paths enabled (editable or wheel):
+```
+pip install -e . --config-settings=cmake.define.SIRIUS_ENABLE_CUDA=ON \
+                 --config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=native
+```
+The wheel bundles `libnvtiff.so.0` / `libnvcomp.so.5` next to the extension (found
+via `$ORIGIN`); cuFFT and the CUDA runtime are resolved from the toolkit that built it.
+
 ## Benchmarks
 The TIFF benchmark compares the SIRIUS parallel reader against
 [cpp-tiff](https://github.com/abcucberkeley/cpp-tiff) at both the C++ and
@@ -73,6 +173,12 @@ pip install -e . --config-settings=cmake.define.CMAKE_POLICY_VERSION_MINIMUM=3.5
 # SIRIUS C++ bench (built by SIRIUS's CMake)
 cmake --preset linux-gcc-release -DSIRIUS_ENABLE_BENCHMARKS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build --preset linux-gcc-release --target bench_tiff_sirius
+
+# GPU variant: same binary from a CUDA preset, third argument selects the device
+cmake --preset linux-cuda-release -DSIRIUS_ENABLE_BENCHMARKS=ON
+cmake --build --preset linux-cuda-release --target bench_tiff_sirius
+build/linux-cuda-release/benchmarks/bench_tiff_sirius stack.tif 3 cuda   # nvTIFF decode into device memory
+build/linux-cuda-release/benchmarks/bench_tiff_sirius stack.tif 3 cpu
 
 # cpp-tiff C++ bench (standalone; clones latest cpp-tiff, builds libcppTiff.so)
 bash benchmarks/setup_cpptiff.sh

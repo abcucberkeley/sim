@@ -57,10 +57,35 @@ jobs:
       - name: Install python build/test deps
         run: |
           python -m pip install --upgrade pip
-          pip install numpy
+          pip install numpy tifffile
 
       - name: Build & install sirius (editable)
         run: pip install -e . --verbose
 
       - name: Run python tests
         run: python -m unittest discover -s bindings/tests -v
+
+  cuda-build:
+    # Hosted runners have no GPU: this compiles the CUDA paths (cuFFT, nvTIFF,
+    # kernels) inside the same image the containers/ directory uses and runs
+    # the test binary, whose GPU cases SKIP without a device.
+    name: CUDA build (compile only, tests skip GPU cases)
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:13.1.0-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Provision toolchain (same script as the containers)
+        run: bash containers/install-deps.sh
+
+      - name: Configure
+        run: cmake --preset linux-cuda-dev -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF -DCMAKE_CUDA_ARCHITECTURES=89
+
+      - name: Build
+        run: cmake --build --preset linux-cuda-dev
+
+      - name: Test (CPU paths; CUDA cases skip)
+        run: ctest --preset linux-cuda-dev

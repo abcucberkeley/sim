@@ -5,17 +5,26 @@ if(SIRIUS_ENABLE_PYTHON_BINDINGS)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Eigen3
+# Eigen3 (header-only). Its CMake project is deliberately NOT added:
+# Eigen 3.4's CMakeLists probes OpenGL, Python and -- through the legacy
+# FindCUDA module in unsupported/test -- the system CUDA libraries, which
+# pre-seeds CUDA_cufft_LIBRARY & co. in the cache with whatever distro toolkit
+# lives in /usr/lib before our FindCUDAToolkit runs. SOURCE_SUBDIR points at a
+# directory without a CMakeLists.txt, so FetchContent only downloads the
+# sources and we describe the target ourselves.
 FetchContent_Declare(
     Eigen3
     GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
     GIT_TAG        3.4.0
     GIT_SHALLOW    TRUE
-    SYSTEM          # mark its headers as system -> excluded from warnings/analyze
+    SOURCE_SUBDIR  cmake-not-used
 )
-set(EIGEN_BUILD_DOC     OFF)
-set(EIGEN_BUILD_TESTING OFF)
 FetchContent_MakeAvailable(Eigen3)
+add_library(sirius_eigen INTERFACE)
+# SYSTEM: excluded from warnings and MSVC /analyze, like the other deps.
+target_include_directories(sirius_eigen SYSTEM INTERFACE
+    $<BUILD_INTERFACE:${eigen3_SOURCE_DIR}>)
+add_library(Eigen3::Eigen ALIAS sirius_eigen)
 
 # zlib — provides the DEFLATE/ZIP codec for libtiff. Without it, libtiff's
 # internal find_package(ZLIB) fails and ZIP_SUPPORT is left undefined, so
@@ -153,6 +162,35 @@ endif()
 if(SIRIUS_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        message(FATAL_ERROR "SIRIUS_ENABLE_CUDA=ON but no CUDA compiler was found. "
+                            "Set CUDACXX or CMAKE_CUDA_COMPILER to nvcc.")
+    endif()
     enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
+    # Pin the toolkit to the one nvcc came from. Without this FindCUDAToolkit
+    # can pick libraries of a second, distro-packaged toolkit that sits in the
+    # default linker paths (/usr/lib/x86_64-linux-gnu on Ubuntu), and the
+    # binary ends up with cuFFT/cudart from a different CUDA major than the
+    # compiler that built the kernels.
+    if(NOT DEFINED CUDAToolkit_ROOT)
+        get_filename_component(_sirius_cuda_bin "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+        get_filename_component(CUDAToolkit_ROOT "${_sirius_cuda_bin}/.." ABSOLUTE)
+    endif()
+    find_package(CUDAToolkit 12.0 REQUIRED)
+    message(STATUS "CUDA toolkit ${CUDAToolkit_VERSION} (nvcc ${CMAKE_CUDA_COMPILER}), "
+                   "architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    # Every CUDA library we link must come from that same toolkit.
+    foreach(_lib cufft cudart_static)
+        file(REAL_PATH "${CUDA_${_lib}_LIBRARY}" _sirius_lib_real)
+        file(REAL_PATH "${CUDAToolkit_LIBRARY_ROOT}" _sirius_root_real)
+        string(FIND "${_sirius_lib_real}" "${_sirius_root_real}/" _sirius_pos)
+        if(NOT _sirius_pos EQUAL 0)
+            message(FATAL_ERROR "CUDA::${_lib} resolved to ${CUDA_${_lib}_LIBRARY}, outside the toolkit "
+                                "${CUDAToolkit_LIBRARY_ROOT} that provides nvcc. Clear CUDA_*_LIBRARY cache "
+                                "entries (cmake -U 'CUDA_*_LIBRARY') or set CUDAToolkit_ROOT.")
+        endif()
+    endforeach()
+    if(SIRIUS_ENABLE_NVTIFF)
+        include(NvidiaRedist)
+    endif()
 endif()

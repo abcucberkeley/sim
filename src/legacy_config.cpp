@@ -138,20 +138,20 @@ namespace sirius {
                 // camera
                 {"background",       [](auto& c, auto& k, auto& v){ c.constbkgd = parseFloat(k, v); }},
                 {"bgInExtHdr",       [](auto& c, auto& k, auto& v){ c.bBgInExtHdr = parseInt(k, v); }},
-                {"usecorr",          [](auto& c, auto& k, auto& v){ c.corrfiles = v; c.bUsecorr = 1; }},
+                {"usecorr",          [](auto& c, auto&, auto& v){ c.corrfiles = v; c.bUsecorr = 1; }},
                 {"readoutNoiseVar",  [](auto& c, auto& k, auto& v){ c.readoutNoiseVar = parseFloat(k, v); }},
                 {"electrons_per_bit",[](auto& c, auto& k, auto& v){ c.electrons_per_bit = parseFloat(k, v); }},
 
                 // debugging / intermediate output
                 {"makemodel",     [](auto& c, auto& k, auto& v){ c.bMakemodel = parseInt(k, v); }},
-                {"saveprefiltered",[](auto& c, auto& k, auto& v){ c.fileSeparated = v; c.bSaveSeparated = 1; }},
-                {"savealignedraw",[](auto& c, auto& k, auto& v){ c.fileRawAligned = v; c.bSaveAlignedRaw = 1; }},
-                {"saveoverlaps",  [](auto& c, auto& k, auto& v){ c.fileOverlaps = v; c.bSaveOverlaps = 1; }},
+                {"saveprefiltered",[](auto& c, auto&, auto& v){ c.fileSeparated = v; c.bSaveSeparated = 1; }},
+                {"savealignedraw",[](auto& c, auto&, auto& v){ c.fileRawAligned = v; c.bSaveAlignedRaw = 1; }},
+                {"saveoverlaps",  [](auto& c, auto&, auto& v){ c.fileOverlaps = v; c.bSaveOverlaps = 1; }},
 
                 // I/O
-                {"input",  [](auto& c, auto& k, auto& v){ c.ifiles = v; }},
-                {"output", [](auto& c, auto& k, auto& v){ c.ofiles = v; }},
-                {"otf",    [](auto& c, auto& k, auto& v){ c.otffiles = v; }},
+                {"input",  [](auto& c, auto&, auto& v){ c.ifiles = v; }},
+                {"output", [](auto& c, auto&, auto& v){ c.ofiles = v; }},
+                {"otf",    [](auto& c, auto&, auto& v){ c.otffiles = v; }},
             };
             return table;
         }

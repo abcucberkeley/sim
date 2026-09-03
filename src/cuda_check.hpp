@@ -1,0 +1,52 @@
+#ifndef SIRIUS_CUDA_CHECK_HPP
+#define SIRIUS_CUDA_CHECK_HPP
+
+// Internal helpers for translation units that talk to the CUDA runtime.
+// Only included from sources compiled when SIRIUS_HAS_CUDA is defined.
+
+#include <cuda_runtime.h>
+
+#include <string>
+
+#include "sirius/device.hpp"
+
+namespace sirius::cuda {
+
+    inline void check(cudaError_t err, const char* what) {
+        if (err != cudaSuccess) {
+            // Clear the sticky error so later calls see a clean state.
+            (void)cudaGetLastError();
+            throw CudaError(std::string(what) + ": " + cudaGetErrorName(err) + " (" +
+                            cudaGetErrorString(err) + ")");
+        }
+    }
+
+    // RAII cudaSetDevice; restores the previous current device on scope exit
+    // so library calls never leak a device change into caller code.
+    class DeviceGuard {
+    public:
+        explicit DeviceGuard(int index) {
+            check(cudaGetDevice(&previous_), "cudaGetDevice");
+            if (previous_ != index) {
+                check(cudaSetDevice(index), "cudaSetDevice");
+                changed_ = true;
+            }
+        }
+        ~DeviceGuard() {
+            if (changed_) (void)cudaSetDevice(previous_);
+        }
+        DeviceGuard(const DeviceGuard&) = delete;
+        DeviceGuard& operator=(const DeviceGuard&) = delete;
+
+    private:
+        int previous_ = 0;
+        bool changed_ = false;
+    };
+
+    inline cudaStream_t handle(const Stream& s) noexcept {
+        return static_cast<cudaStream_t>(s.handle());
+    }
+
+} // namespace sirius::cuda
+
+#endif // SIRIUS_CUDA_CHECK_HPP

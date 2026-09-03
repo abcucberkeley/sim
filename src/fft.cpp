@@ -1,12 +1,13 @@
 #include "sirius/fft.hpp"
+#include "fft_backend.hpp"
 #include "fftw_internal.hpp"
 
-#include <mutex>
-#include <memory>
-#include <stdexcept>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <new>
+#include <stdexcept>
 #include <fftw3.h>
 
 // TODO: detect/handle int overflow and use
@@ -31,7 +32,7 @@ namespace sirius {
         bool s_fftw_threads_initialized = false;
 
         // safe execution in case unaligned buffers with offset are passed
-        void execute_safe(fftw_plan plan, int plan_alignment, int full_size, 
+        void execute_safe(fftw_plan plan, int plan_alignment, int full_size,
             const std::complex<double>* in, std::complex<double>* out)
         {
             // case to fftw_complex*
@@ -39,9 +40,9 @@ namespace sirius {
             auto* out_ptr = reinterpret_cast<fftw_complex*>(out);
 
             // check if aligned
-            bool aligned = fftw_alignment_of(reinterpret_cast<double*>(in_ptr))  == plan_alignment && 
+            bool aligned = fftw_alignment_of(reinterpret_cast<double*>(in_ptr))  == plan_alignment &&
                            fftw_alignment_of(reinterpret_cast<double*>(out_ptr)) == plan_alignment;
-            
+
             // if aligned, simply execute, otherwise need to copy
             if (aligned) {
                 fftw_execute_dft(plan, in_ptr, out_ptr);
@@ -142,84 +143,165 @@ namespace sirius {
         fftw_free(p);
     }
 
+    // --- FFTW backend --------------------------------------------------------
+
+    namespace {
+        class FftwBackend final : public detail::FftBackend {
+        public:
+            FftwBackend(const std::vector<int>& dims, int howmany, PlanRigor rigor) {
+                const int total = detail::checkedProduct(dims, "FFT");
+                full_size_ = detail::checkedMultiply(total, howmany, "FFT");
+
+                FftwBuf buf_in (static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
+                FftwBuf buf_out(static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
+                alignment_ = fftw_alignment_of(reinterpret_cast<double*>(buf_in.get()));
+
+                const unsigned flags = detail::toFFTWFlag(rigor);
+
+                std::lock_guard<std::mutex> lock(s_planner_mutex);
+                detail::ensureDoubleThreadsInitializedLocked();
+
+                forward_plan_ = PlanPtr(
+                    fftw_plan_many_dft(
+                        static_cast<int>(dims.size()), dims.data(), howmany,
+                        buf_in.get(), nullptr, 1, total,
+                        buf_out.get(), nullptr, 1, total,
+                        FFTW_FORWARD, flags
+                    )
+                );
+
+                inverse_plan_ = PlanPtr(
+                    fftw_plan_many_dft(
+                        static_cast<int>(dims.size()), dims.data(), howmany,
+                        buf_in.get(), nullptr, 1, total,
+                        buf_out.get(), nullptr, 1, total,
+                        FFTW_BACKWARD, flags
+                    )
+                );
+
+                if (!forward_plan_ || !inverse_plan_)
+                    throw std::runtime_error("FFTW failed to create plan.");
+            }
+
+            void execute(const std::complex<double>* in, std::complex<double>* out, bool forward,
+                         const Stream&) const override {
+                execute_safe(forward ? forward_plan_.get() : inverse_plan_.get(), alignment_, full_size_, in, out);
+            }
+
+            void scale(std::complex<double>* out, std::size_t n, double s, const Stream&) const override {
+                Eigen::Map<Eigen::VectorXcd>(out, static_cast<Eigen::Index>(n)) *= s;
+            }
+
+        private:
+            PlanPtr forward_plan_;
+            PlanPtr inverse_plan_;
+            int full_size_ = 0;
+            int alignment_ = 0;
+        };
+    } // anonymous namespace
+
+    namespace detail {
+        std::unique_ptr<FftBackend> makeFftwBackend(const std::vector<int>& dims, int howmany, PlanRigor rigor) {
+            return std::make_unique<FftwBackend>(dims, howmany, rigor);
+        }
+    } // namespace detail
+
+    // --- FFT -------------------------------------------------------------------
+
     struct FFT::Impl {
-        PlanPtr forward_plan;
-        PlanPtr inverse_plan;
+        std::unique_ptr<detail::FftBackend> backend;
+        std::vector<int> dims;
+        Device device;
+        int howmany = 1;
         int total_size = 0; // product of dims
-        int full_size = 0; // total_size * howmany
-        int alignment = 0;
+        Index full_size = 0; // total_size * howmany
     };
 
-    FFT::FFT(std::vector<int> dims, int howmany, PlanRigor rigor): impl_(std::make_unique<Impl>())
+    FFT::FFT(std::vector<int> dims, int howmany, PlanRigor rigor, Device device)
+        : impl_(std::make_unique<Impl>())
     {
         if (dims.empty() || dims.size() > 3)
             throw std::invalid_argument("Only ranks 1, 2 and 3 are supported.");
-
         if (howmany < 1)
             throw std::invalid_argument("howmany must be >= 1");
-        
-        int total = detail::checkedProduct(dims, "FFT");
+
+        // Both planner APIs (FFTW and cuFFT) take int sizes: validate once here.
+        const int total = detail::checkedProduct(dims, "FFT");
+        impl_->dims = std::move(dims);
+        impl_->device = device;
+        impl_->howmany = howmany;
         impl_->total_size = total;
         impl_->full_size = detail::checkedMultiply(total, howmany, "FFT");
 
-        FftwBuf buf_in (static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * impl_->full_size)));
-        FftwBuf buf_out(static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * impl_->full_size)));
-        impl_->alignment = fftw_alignment_of(reinterpret_cast<double*>(buf_in.get()));
-
-        unsigned flags = detail::toFFTWFlag(rigor);
-
-        std::lock_guard<std::mutex> lock(s_planner_mutex);
-        detail::ensureDoubleThreadsInitializedLocked();
-
-        impl_->forward_plan = PlanPtr(
-            fftw_plan_many_dft(
-                (int) dims.size(), dims.data(), howmany,
-                buf_in.get(), nullptr, 1, total,
-                buf_out.get(), nullptr, 1, total,
-                FFTW_FORWARD, flags
-            )
-        );
-
-        impl_->inverse_plan = PlanPtr(
-            fftw_plan_many_dft(
-                (int) dims.size(), dims.data(), howmany,
-                buf_in.get(), nullptr, 1, total,
-                buf_out.get(), nullptr, 1, total,
-                FFTW_BACKWARD, flags
-            )
-        );
-
-        if (!impl_->forward_plan || !impl_->inverse_plan) {
-            throw std::runtime_error("FFTW failed to create plan.");
-        }
+        requireDevice(device);
+        if (device.isCuda())
+            impl_->backend = detail::makeCufftBackend(impl_->dims, howmany, device);
+        else
+            impl_->backend = detail::makeFftwBackend(impl_->dims, howmany, rigor);
     }
 
     FFT::~FFT() = default;
     FFT::FFT(FFT&&) noexcept = default;
     FFT& FFT::operator=(FFT&&) noexcept = default;
 
-    // Raw interface
-    void FFT::fft(const std::complex<double>* in, std::complex<double>* out) const {
-        execute_safe(impl_->forward_plan.get(), impl_->alignment, impl_->full_size, in, out);
+    Device FFT::device() const noexcept { return impl_->device; }
+    const std::vector<int>& FFT::dims() const noexcept { return impl_->dims; }
+    int FFT::howmany() const noexcept { return impl_->howmany; }
+    Index FFT::size() const noexcept { return impl_->full_size; }
+
+    Shape FFT::shape() const {
+        Shape s;
+        if (impl_->howmany > 1) s.push(impl_->howmany);
+        for (int d : impl_->dims) s.push(d);
+        return s;
     }
 
-    void FFT::ifft(const std::complex<double>* in, std::complex<double>* out) const {
-        execute_safe(impl_->inverse_plan.get(), impl_->alignment, impl_->full_size, in, out);
+    // Raw interface
+    void FFT::fft(const std::complex<double>* in, std::complex<double>* out, const Stream& stream) const {
+        impl_->backend->execute(in, out, true, stream);
+    }
+
+    void FFT::ifft(const std::complex<double>* in, std::complex<double>* out, const Stream& stream) const {
+        impl_->backend->execute(in, out, false, stream);
+    }
+
+    namespace {
+        void checkView(const char* what, Index expected, Device device, Index got, Device viewDevice) {
+            if (got != expected)
+                throw std::invalid_argument(std::string(what) + ": view has " + std::to_string(got) +
+                                            " elements, plan expects " + std::to_string(expected));
+            if (viewDevice != device)
+                throw std::invalid_argument(std::string(what) + ": view lives on " + toString(viewDevice) +
+                                            " but the plan targets " + toString(device));
+        }
+    } // namespace
+
+    void FFT::fft(BufferView<const std::complex<double>> in, BufferView<std::complex<double>> out,
+                  const Stream& stream) const {
+        checkView("FFT::fft in", impl_->full_size, impl_->device, in.size(), in.device());
+        checkView("FFT::fft out", impl_->full_size, impl_->device, out.size(), out.device());
+        impl_->backend->execute(in.data(), out.data(), true, stream);
+    }
+
+    void FFT::ifft(BufferView<const std::complex<double>> in, BufferView<std::complex<double>> out,
+                   bool normalize, const Stream& stream) const {
+        checkView("FFT::ifft in", impl_->full_size, impl_->device, in.size(), in.device());
+        checkView("FFT::ifft out", impl_->full_size, impl_->device, out.size(), out.device());
+        impl_->backend->execute(in.data(), out.data(), false, stream);
+        if (normalize)
+            impl_->backend->scale(out.data(), static_cast<std::size_t>(impl_->full_size),
+                                  1.0 / static_cast<double>(impl_->total_size), stream);
     }
 
     // Convenience functions for eigen
     template<int Rank>
     void FFT::fft(const TensorXcd<Rank>& in, TensorXcd<Rank>& out) const {
-        fft(in.data(), out.data());
+        fft(toConstView(in), toView(out));
     }
 
     template<int Rank>
     void FFT::ifft(const TensorXcd<Rank>& in, TensorXcd<Rank>& out, bool normalize) const {
-        ifft(in.data(), out.data());
-        if (normalize) {
-            Eigen::Map<Eigen::VectorXcd>(out.data(), out.size()) /=
-                static_cast<double>(impl_->total_size);
-        }
+        ifft(toConstView(in), toView(out), normalize);
     }
 
     // explicit instantiations to avoid linker errors (templates defined in .cpp must be instantiated there)
@@ -234,5 +316,14 @@ namespace sirius {
     void FFT::loadWisdom(const std::string& path) { loadWisdomImpl(path); }
 
     void FFT::saveWisdom(const std::string& path) { saveWisdomImpl(path); }
+
+#ifndef SIRIUS_HAS_CUDA
+    namespace detail {
+        std::unique_ptr<FftBackend> makeCufftBackend(const std::vector<int>&, int, Device device) {
+            throw std::runtime_error("SIRIUS was built without CUDA support; cannot plan an FFT on " +
+                                     toString(device));
+        }
+    } // namespace detail
+#endif
 
 } // namespace sirius

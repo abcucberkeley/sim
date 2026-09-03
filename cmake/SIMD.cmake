@@ -2,13 +2,16 @@ include(CheckCXXCompilerFlag)
 
 add_library(sirius_simd INTERFACE)
 
+# Host-compiler flags only: nvcc does not understand -m<isa> (it would need
+# -Xcompiler), and CUDA sources never contain the SIMD-sensitive FFTW/Eigen code.
 function(_sirius_enable_simd_flag option flag)
     if(NOT ${option})
         return()
     endif()
     check_cxx_compiler_flag("${flag}" _flag_supported)
     if(_flag_supported)
-        target_compile_options(sirius_simd INTERFACE "${flag}")
+        target_compile_options(sirius_simd INTERFACE
+            $<$<COMPILE_LANGUAGE:C,CXX>:${flag}>)
     else()
         message(WARNING "${option} requested but compiler does not support ${flag}")
     endif()

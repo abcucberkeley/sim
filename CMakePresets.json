@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
@@ -14,7 +18,9 @@
     {
       "name": "dev",
       "hidden": true,
-      "inherits": ["base"],
+      "inherits": [
+        "base"
+      ],
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SIRIUS_ENABLE_TESTS": "ON",
@@ -25,16 +31,19 @@
     {
       "name": "release",
       "hidden": true,
-      "inherits": ["base"],
+      "inherits": [
+        "base"
+      ],
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
     },
-
     {
       "name": "win-msvc-dev",
       "displayName": "Windows (MSVC) Dev",
-      "inherits": ["dev"],
+      "inherits": [
+        "dev"
+      ],
       "generator": "Visual Studio 18 2026",
       "condition": {
         "type": "equals",
@@ -45,7 +54,9 @@
     {
       "name": "win-msvc-release",
       "displayName": "Windows (MSVC) Release",
-      "inherits": ["release"],
+      "inherits": [
+        "release"
+      ],
       "generator": "Visual Studio 18 2026",
       "condition": {
         "type": "equals",
@@ -56,7 +67,9 @@
     {
       "name": "linux-gcc-dev",
       "displayName": "Linux (GCC) Dev",
-      "inherits": ["dev"],
+      "inherits": [
+        "dev"
+      ],
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -70,7 +83,9 @@
     {
       "name": "linux-gcc-release",
       "displayName": "Linux (GCC) Release",
-      "inherits": ["release"],
+      "inherits": [
+        "release"
+      ],
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -84,7 +99,9 @@
     {
       "name": "fiona-avx2-release",
       "displayName": "Fiona HPC (GCC, AVX2, Release)",
-      "inherits": ["linux-gcc-release"],
+      "inherits": [
+        "linux-gcc-release"
+      ],
       "cacheVariables": {
         "SIRIUS_ENABLE_PYTHON_BINDINGS": "ON",
         "SIRIUS_ENABLE_AVX2": "ON"
@@ -93,7 +110,9 @@
     {
       "name": "fiona-avx2-dev",
       "displayName": "Fiona HPC (GCC, AVX2, Dev)",
-      "inherits": ["linux-gcc-dev"],
+      "inherits": [
+        "linux-gcc-dev"
+      ],
       "cacheVariables": {
         "SIRIUS_ENABLE_AVX2": "ON"
       }
@@ -101,7 +120,9 @@
     {
       "name": "linux-clang-dev",
       "displayName": "Linux (Clang) Dev",
-      "inherits": ["dev"],
+      "inherits": [
+        "dev"
+      ],
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -115,7 +136,9 @@
     {
       "name": "linux-clang-release",
       "displayName": "Linux (Clang) Release",
-      "inherits": ["release"],
+      "inherits": [
+        "release"
+      ],
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -125,9 +148,73 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "linux-cuda-dev",
+      "displayName": "Linux CUDA Dev (GCC, nvTIFF, native GPU arch)",
+      "inherits": [
+        "linux-gcc-dev"
+      ],
+      "cacheVariables": {
+        "SIRIUS_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "native"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-cuda-release",
+      "displayName": "Linux CUDA Release (GCC, nvTIFF, portable GPU archs)",
+      "inherits": [
+        "linux-gcc-release"
+      ],
+      "cacheVariables": {
+        "SIRIUS_ENABLE_CUDA": "ON",
+        "SIRIUS_ENABLE_PYTHON_BINDINGS": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "75;80;86;89;90"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "fiona-avx2-cuda-release",
+      "displayName": "Fiona HPC (GCC, AVX2, CUDA, Release)",
+      "inherits": [
+        "fiona-avx2-release"
+      ],
+      "cacheVariables": {
+        "SIRIUS_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "70;80;90"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "fiona-avx2-cuda-dev",
+      "displayName": "Fiona HPC (GCC, AVX2, CUDA, Dev)",
+      "inherits": [
+        "fiona-avx2-dev"
+      ],
+      "cacheVariables": {
+        "SIRIUS_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "native"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
     }
   ],
-
   "buildPresets": [
     {
       "name": "base-build",
@@ -136,76 +223,150 @@
     },
     {
       "name": "win-msvc-dev",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "win-msvc-dev",
       "configuration": "Debug"
     },
     {
       "name": "win-msvc-release",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "win-msvc-release",
       "configuration": "Release"
     },
     {
       "name": "linux-gcc-dev",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "linux-gcc-dev"
     },
     {
       "name": "linux-gcc-release",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "linux-gcc-release"
     },
     {
       "name": "fiona-avx2-release",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "fiona-avx2-release"
     },
     {
       "name": "fiona-avx2-dev",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "fiona-avx2-dev"
     },
     {
       "name": "linux-clang-dev",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "linux-clang-dev"
     },
     {
       "name": "linux-clang-release",
-      "inherits": ["base-build"],
+      "inherits": [
+        "base-build"
+      ],
       "configurePreset": "linux-clang-release"
+    },
+    {
+      "name": "linux-cuda-dev",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "linux-cuda-dev"
+    },
+    {
+      "name": "linux-cuda-release",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "linux-cuda-release"
+    },
+    {
+      "name": "fiona-avx2-cuda-release",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "fiona-avx2-cuda-release"
+    },
+    {
+      "name": "fiona-avx2-cuda-dev",
+      "inherits": [
+        "base-build"
+      ],
+      "configurePreset": "fiona-avx2-cuda-dev"
     }
   ],
-
   "testPresets": [
     {
       "name": "base-test",
       "hidden": true,
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "name": "^sirius::" } },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "name": "^sirius::"
+        }
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": false
+      }
     },
     {
       "name": "win-msvc-dev",
-      "inherits": ["base-test"],
+      "inherits": [
+        "base-test"
+      ],
       "configurePreset": "win-msvc-dev",
       "configuration": "Debug"
     },
     {
       "name": "linux-gcc-dev",
-      "inherits": ["base-test"],
+      "inherits": [
+        "base-test"
+      ],
       "configurePreset": "linux-gcc-dev"
     },
     {
       "name": "linux-clang-dev",
-      "inherits": ["base-test"],
+      "inherits": [
+        "base-test"
+      ],
       "configurePreset": "linux-clang-dev"
     },
     {
       "name": "fiona-avx2-dev",
-      "inherits": ["base-test"],
+      "inherits": [
+        "base-test"
+      ],
       "configurePreset": "fiona-avx2-dev"
+    },
+    {
+      "name": "linux-cuda-dev",
+      "inherits": [
+        "base-test"
+      ],
+      "configurePreset": "linux-cuda-dev"
+    },
+    {
+      "name": "fiona-avx2-cuda-dev",
+      "inherits": [
+        "base-test"
+      ],
+      "configurePreset": "fiona-avx2-cuda-dev"
     }
   ]
 }

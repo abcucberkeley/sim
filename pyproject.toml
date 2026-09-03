@@ -39,6 +39,16 @@ build-dir = "build/{wheel_tag}"
 # Build stable ABI wheels for CPython 3.12+
 wheel.py-api = "cp39"
 
+# Only the extension (and, with CUDA, the nvTIFF/nvCOMP runtime libraries it
+# needs) belong in the wheel. Without this, the FetchContent dependencies
+# (zlib, libtiff, ...) add their own install rules and their headers/libraries
+# leak into the package.
+install.components = ["python"]
+
+# Enable the GPU paths with
+#   pip install -e . --config-settings=cmake.define.SIRIUS_ENABLE_CUDA=ON
+# (add cmake.define.CMAKE_CUDA_ARCHITECTURES=native or an explicit list).
+
 # Editable installs: do NOT auto-rebuild on import. Auto-rebuild calls back
 # into CMake reconfigure, which requires the build env (nanobind, vcpkg deps)
 # to still be present -- pip's isolated build env is torn down after install,

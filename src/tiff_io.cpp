@@ -1,13 +1,44 @@
 #include "sirius/tiff_io.hpp"
-#include <cstring>
-#include <type_traits>
-#include <stdexcept>
-#include <vector>
+#include "tiff_internal.hpp"
+
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
+#include <cstring>
+#include <exception>
+#include <stdexcept>
+#include <type_traits>
+#include <vector>
+
 #include <tiffio.h>
 
 namespace sirius {
+
+    // --- pixel types --------------------------------------------------------
+
+    std::size_t bytesPerPixel(PixelType t) noexcept {
+        switch (t) {
+            case PixelType::UInt8:   case PixelType::Int8:  return 1;
+            case PixelType::UInt16:  case PixelType::Int16: return 2;
+            case PixelType::UInt32:  case PixelType::Int32: case PixelType::Float32: return 4;
+            case PixelType::Float64: return 8;
+        }
+        return 0;
+    }
+
+    const char* toString(PixelType t) noexcept {
+        switch (t) {
+            case PixelType::UInt8:   return "uint8";
+            case PixelType::Int8:    return "int8";
+            case PixelType::UInt16:  return "uint16";
+            case PixelType::Int16:   return "int16";
+            case PixelType::UInt32:  return "uint32";
+            case PixelType::Int32:   return "int32";
+            case PixelType::Float32: return "float32";
+            case PixelType::Float64: return "float64";
+        }
+        return "unknown";
+    }
 
     // anon namespace so stuff isnt seen outside the translation unit
     namespace {
@@ -19,44 +50,95 @@ namespace sirius {
         };
         using TiffPtr = std::unique_ptr<TIFF, TiffDeleter>;
 
-        // openTiff will now return unique_ptr
-        // aaand tiff file will be closed when TiffPtr goes out of scope whether normall or via exception
-        // better safe than sorry
+        // Per-handle warning filter (libtiff >= 4.5). Microscopy TIFFs routinely
+        // carry private tags libtiff does not know (ImageJ 50838/50839, OME, ...);
+        // the resulting "Unknown field" warnings are expected and would otherwise
+        // be printed once per page per reader thread. Anything else falls through
+        // to libtiff's global warning handler, so real warnings stay visible.
+        int warningFilter(TIFF*, void*, const char*, const char* fmt, va_list) {
+            if (fmt && std::strstr(fmt, "Unknown field with tag")) return 1;   // handled
+            return 0;                                                          // let the global handler print it
+        }
+
+        struct OpenOptionsDeleter {
+            void operator()(TIFFOpenOptions* o) const { TIFFOpenOptionsFree(o); }
+        };
+
+        // The file is closed when TiffPtr goes out of scope, normally or via exception.
         TiffPtr openTiff(const std::string& path, const char* mode) {
-            TiffPtr tif(TIFFOpen(path.c_str(), mode));
+            std::unique_ptr<TIFFOpenOptions, OpenOptionsDeleter> opts(TIFFOpenOptionsAlloc());
+            if (opts) TIFFOpenOptionsSetWarningHandlerExtR(opts.get(), warningFilter, nullptr);
+            TiffPtr tif(TIFFOpenExt(path.c_str(), mode, opts.get()));
             if (!tif) throw std::runtime_error("Failed to open TIFF: " + path);
             return tif;
         }
 
-        struct TiffPageInfo {
-            uint32_t width;
-            uint32_t height;
-            uint16_t bps; // bits per sample
-            uint16_t spp; // sample per pixel (channels)
-            uint16_t fmt; // format
-        };
+        PixelType pixelTypeFrom(uint16_t bps, uint16_t fmt) {
+            switch (fmt) {
+                case SAMPLEFORMAT_IEEEFP:
+                    if (bps == 32) return PixelType::Float32;
+                    if (bps == 64) return PixelType::Float64;
+                    throw std::runtime_error("Unsupported float bit depth: " + std::to_string(bps));
+                case SAMPLEFORMAT_INT:
+                    if (bps == 8)  return PixelType::Int8;
+                    if (bps == 16) return PixelType::Int16;
+                    if (bps == 32) return PixelType::Int32;
+                    throw std::runtime_error("Unsupported integer bit depth: " + std::to_string(bps));
+                default: // SAMPLEFORMAT_UINT and the (common) unspecified case
+                    if (bps == 8)  return PixelType::UInt8;
+                    if (bps == 16) return PixelType::UInt16;
+                    if (bps == 32) return PixelType::UInt32;
+                    throw std::runtime_error("Unsupported integer bit depth: " + std::to_string(bps));
+            }
+        }
 
-        TiffPageInfo getPageInfo(TIFF* tif) {
-            TiffPageInfo info{};
-            if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH,      &info.width))
+        // Metadata of the directory `tif` currently points at.
+        TiffImageInfo readImageInfo(TIFF* tif) {
+            TiffImageInfo info;
+            info.ifdOffset = TIFFCurrentDirOffset(tif);
+
+            uint16_t bps = 0, fmt = SAMPLEFORMAT_UINT, planar = PLANARCONFIG_CONTIG;
+            uint32_t subfileType = 0;
+            if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH,    &info.width))
                 throw std::runtime_error("TIFF missing required tag: IMAGEWIDTH");
-            if (!TIFFGetField(tif, TIFFTAG_IMAGELENGTH,     &info.height))
+            if (!TIFFGetField(tif, TIFFTAG_IMAGELENGTH,   &info.height))
                 throw std::runtime_error("TIFF missing required tag: IMAGELENGTH");
-            if (!TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE,   &info.bps))
+            if (!TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bps))
                 throw std::runtime_error("TIFF missing required tag: BITSPERSAMPLE");
-            if (!TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &info.spp))
-                throw std::runtime_error("TIFF missing required tag: SAMPLESPERPIXEL");
-            TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &info.fmt);
+            TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &info.samplesPerPixel);
+            TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT,    &fmt);
+            TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION,     &info.compression);
+            // The predictor tag only exists for codecs that register it
+            // (LZW/Deflate/...); for others libtiff reports nothing.
+            if (!TIFFGetField(tif, TIFFTAG_PREDICTOR, &info.predictor) || info.predictor == 0)
+                info.predictor = 1;
+            TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG,    &planar);
+            TIFFGetFieldDefaulted(tif, TIFFTAG_SUBFILETYPE,     &subfileType);
 
-            if (info.spp != 1)
+            if (info.samplesPerPixel != 1)
                 throw std::runtime_error("Only single-channel (grayscale) TIFFs are supported.");
+            if (planar != PLANARCONFIG_CONTIG)
+                throw std::runtime_error("Only contiguous (chunky) planar configuration is supported.");
+            info.pixelType = pixelTypeFrom(bps, fmt);
 
-            // validate input formats
-            if (info.fmt == SAMPLEFORMAT_IEEEFP && info.bps != 32 && info.bps != 64)
-                throw std::runtime_error("Unsupported float bit depth: " + std::to_string(info.bps));
-            if (info.fmt != SAMPLEFORMAT_IEEEFP && info.bps != 8 && info.bps != 16 && info.bps != 32)
-                throw std::runtime_error("Unsupported integer bit depth: " + std::to_string(info.bps));
+            if (TIFFIsTiled(tif)) {
+                info.layout = TiffLayout::Tiles;
+                if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &info.tileWidth)  || info.tileWidth == 0)
+                    throw std::runtime_error("TIFF missing or invalid TILEWIDTH");
+                if (!TIFFGetField(tif, TIFFTAG_TILELENGTH, &info.tileHeight) || info.tileHeight == 0)
+                    throw std::runtime_error("TIFF missing or invalid TILELENGTH");
+            } else {
+                info.layout = TiffLayout::Strips;
+                TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &info.rowsPerStrip);
+                if (info.rowsPerStrip == 0 || info.rowsPerStrip > info.height)
+                    info.rowsPerStrip = info.height;
+            }
+            info.reducedResolution = (subfileType & FILETYPE_REDUCEDIMAGE) != 0;
 
+            uint16_t subCount = 0;
+            uint64_t* subOffsets = nullptr;
+            if (TIFFGetField(tif, TIFFTAG_SUBIFD, &subCount, &subOffsets) && subOffsets)
+                info.subIfds.assign(subOffsets, subOffsets + subCount);
             return info;
         }
 
@@ -76,166 +158,97 @@ namespace sirius {
             }
         }
 
-        // TIFF stores pixels as raw bytes so need to reinterpret them with the correct type
-        // using "safe type punning"
-        // why not use this instead?: float v = *(float *) src + i*4
-        //      because some cpus will crash
-        // why not use this instead?: *reinterpret_cast<const float*> (src + i*4)
-        //      because of Strict Aliasing rule
-        // but isn't memcpy slow?
-        //      Apparently, compilers recognize this pattern while taking alignment into account.
-        // See eg: https://developer.arm.com/documentation/100748/0624/Writing-Optimized-Code/C-and-C---aliasing
-        template <typename T>
-        void convertScanline(const uint8_t* src, T* dst, uint32_t width,
-                            uint16_t bps, uint16_t fmt) {
-            switch (fmt) {
-                case SAMPLEFORMAT_IEEEFP:
-                    switch (bps) {
-                        case 32: for (uint32_t i = 0; i < width; ++i) { float  v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
-                        case 64: for (uint32_t i = 0; i < width; ++i) { double v; std::memcpy(&v, src+i*8, 8); dst[i] = static_cast<T>(v); } break;
-                    } break;
-                case SAMPLEFORMAT_INT:
-                    switch (bps) {
-                        case  8: for (uint32_t i = 0; i < width; ++i) { int8_t  v; std::memcpy(&v, src+i,   1); dst[i] = static_cast<T>(v); } break;
-                        case 16: for (uint32_t i = 0; i < width; ++i) { int16_t v; std::memcpy(&v, src+i*2, 2); dst[i] = static_cast<T>(v); } break;
-                        case 32: for (uint32_t i = 0; i < width; ++i) { int32_t v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
-                    } break;
-                default: // SAMPLEFORMAT_UINT
-                    switch (bps) {
-                        case  8: for (uint32_t i = 0; i < width; ++i) { dst[i] = static_cast<T>(src[i]); } break;
-                        case 16: for (uint32_t i = 0; i < width; ++i) { uint16_t v; std::memcpy(&v, src+i*2, 2); dst[i] = static_cast<T>(v); } break;
-                        case 32: for (uint32_t i = 0; i < width; ++i) { uint32_t v; std::memcpy(&v, src+i*4, 4); dst[i] = static_cast<T>(v); } break;
-                    } break;
-            }
+        // ------------------------------------------------------------------
+        // Raw region decoding (native pixel type). The libtiff-facing code is
+        // deliberately untemplated: one instantiation decodes every pixel type
+        // as bytes, and conversion -- when the caller wants another type --
+        // runs afterwards on the dense native page (see decodeWithLibtiff).
+        // ------------------------------------------------------------------
+
+        [[noreturn]] void throwReadError(const char* what, uint32_t x, uint32_t y) {
+            throw std::runtime_error(std::string("Failed to read TIFF ") + what + " at (" +
+                                     std::to_string(x) + "," + std::to_string(y) + ")");
         }
 
-        // check if Eigen tensor type T is an exact match
-        // to circumvent the slow "pixel by pixel" conversion process
-        template <typename T>
-        constexpr bool isExactMatch(uint16_t bps, uint16_t fmt) {
-            // Check Floating Point matches
-            if (std::is_same_v<T, float>)    return fmt == SAMPLEFORMAT_IEEEFP && bps == 32;
-            if (std::is_same_v<T, double>)   return fmt == SAMPLEFORMAT_IEEEFP && bps == 64;
-            
-            // Check Unsigned Integer matches
-            if (std::is_same_v<T, uint8_t>)  return fmt == SAMPLEFORMAT_UINT && bps == 8;
-            if (std::is_same_v<T, uint16_t>) return fmt == SAMPLEFORMAT_UINT && bps == 16;
-            if (std::is_same_v<T, uint32_t>) return fmt == SAMPLEFORMAT_UINT && bps == 32;
-            
-            // Check Signed Integer matches
-            if (std::is_same_v<T, int8_t>)   return fmt == SAMPLEFORMAT_INT && bps == 8;
-            if (std::is_same_v<T, int16_t>)  return fmt == SAMPLEFORMAT_INT && bps == 16;
-            if (std::is_same_v<T, int32_t>)  return fmt == SAMPLEFORMAT_INT && bps == 32;
+        // Strips are full-width, so a strip whose wanted rows begin at its own
+        // first row decodes straight into dst (no bounce buffer). Only strips
+        // that start above the region, or when the region is narrower than
+        // the image, go through `scratch`.
+        void readStripsRegion(TIFF* tif, const TiffImageInfo& g, const Region& r, uint8_t* dst,
+                              std::vector<uint8_t>& scratch) {
+            const std::size_t bpp = bytesPerPixel(g.pixelType);
+            const std::size_t dstPitch = static_cast<std::size_t>(r.width) * bpp;
+            const std::size_t srcPitch = static_cast<std::size_t>(g.width) * bpp;
 
-            return false;
-        }
-
-        // Reads a strip-organized TIFF page into dst.
-        //
-        // TIFFReadEncodedStrip reduces API call overhead from O(height) to
-        // O(nStrips) per page and enables one large memcpy per strip instead
-        // of many small ones. On the fast path (T matches the on-disk type
-        // exactly) each strip is decoded directly into dst with no intermediate
-        // buffer.
-        template <typename T>
-        void readScanlinePage(TIFF* tif, T* dst, const TiffPageInfo& info) {
             uint32_t rowsPerStrip = 0;
             TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
+            if (rowsPerStrip == 0 || rowsPerStrip > g.height) rowsPerStrip = g.height;
+            const tmsize_t stripSize = TIFFStripSize(tif);
+            if (stripSize <= 0) throw std::runtime_error("TIFF reports invalid strip size");
 
-            const tstrip_t nStrips = TIFFNumberOfStrips(tif);
-            if (nStrips == 0)
-                throw std::runtime_error("TIFF reports zero strips");
+            const uint32_t yEnd = r.y + r.height;
+            const bool fullWidth = (r.x == 0 && r.width == g.width);
 
-            const tmsize_t maxStripBytes = TIFFStripSize(tif);
-            if (maxStripBytes <= 0)
-                throw std::runtime_error("TIFF reports invalid strip size");
+            for (uint32_t stripRow0 = (r.y / rowsPerStrip) * rowsPerStrip; stripRow0 < yEnd; stripRow0 += rowsPerStrip) {
+                const tstrip_t strip = TIFFComputeStrip(tif, stripRow0, 0);
+                const uint32_t stripRows = std::min(rowsPerStrip, g.height - stripRow0);
+                const uint32_t y0 = std::max(stripRow0, r.y);
+                const uint32_t y1 = std::min(stripRow0 + stripRows, yEnd);
 
-            const bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
-            const size_t bytesPerPixel = info.bps / 8;
-
-            // Conversion path only: one strip-sized buffer, allocated once.
-            std::vector<uint8_t> buf;
-            if (!useFastPath)
-                buf.resize(static_cast<size_t>(maxStripBytes));
-
-            for (tstrip_t s = 0; s < nStrips; ++s) {
-                const uint32_t startRow = s * rowsPerStrip;
-                const uint32_t validRows = std::min(rowsPerStrip, info.height - startRow);
-                // Exact decoded byte count for this strip — handles the partial
-                // last strip without relying on codec-specific padding behavior.
-                const tmsize_t stripDataBytes =
-                    static_cast<tmsize_t>(validRows) * info.width *
-                    static_cast<tmsize_t>(bytesPerPixel);
-
-                if (useFastPath) {
-                    // Decode directly into the caller's buffer — no intermediate copy.
-                    T* stripDst = dst + static_cast<size_t>(startRow) * info.width;
-                    if (TIFFReadEncodedStrip(tif, s, stripDst, stripDataBytes) < 0)
-                        throw std::runtime_error("Failed to read strip " + std::to_string(s));
+                if (fullWidth && y0 == stripRow0) {
+                    uint8_t* out = dst + static_cast<std::size_t>(y0 - r.y) * dstPitch;
+                    const tmsize_t bytes = static_cast<tmsize_t>(y1 - y0) * static_cast<tmsize_t>(srcPitch);
+                    if (TIFFReadEncodedStrip(tif, strip, out, bytes) < 0) throwReadError("strip", 0, stripRow0);
                 } else {
-                    if (TIFFReadEncodedStrip(tif, s, buf.data(), maxStripBytes) < 0)
-                        throw std::runtime_error("Failed to read strip " + std::to_string(s));
-                    for (uint32_t r = 0; r < validRows; ++r) {
-                        const uint8_t* srcRow = buf.data() +
-                            static_cast<size_t>(r) * info.width * bytesPerPixel;
-                        T* dstRow = dst + static_cast<size_t>(startRow + r) * info.width;
-                        convertScanline<T>(srcRow, dstRow, info.width, info.bps, info.fmt);
-                    }
+                    scratch.resize(static_cast<std::size_t>(stripSize));
+                    // Decode only through the last row we need.
+                    const tmsize_t bytes = static_cast<tmsize_t>(y1 - stripRow0) * static_cast<tmsize_t>(srcPitch);
+                    if (TIFFReadEncodedStrip(tif, strip, scratch.data(), bytes) < 0) throwReadError("strip", 0, stripRow0);
+                    for (uint32_t y = y0; y < y1; ++y)
+                        std::memcpy(dst + static_cast<std::size_t>(y - r.y) * dstPitch,
+                                    scratch.data() + static_cast<std::size_t>(y - stripRow0) * srcPitch + r.x * bpp,
+                                    dstPitch);
                 }
             }
         }
 
-        // Tiled layout: stored in blocks (e.g. 256x256).
-        // Using TIFFReadScanline on tiled TIFFs forces libtiff to decompress an entire
-        // tile for every row — O(height * tileH) decompressions instead of O(numTiles).
-        // TIFFReadTile decompresses each tile exactly once.
-        template <typename T>
-        void readTiledPage(TIFF* tif, T* dst, const TiffPageInfo& info) {
+        // Tiled layout: every tile intersecting the region is decoded exactly
+        // once and its intersecting rows are copied out.
+        void readTilesRegion(TIFF* tif, const TiffImageInfo& g, const Region& r, uint8_t* dst,
+                             std::vector<uint8_t>& scratch) {
             uint32_t tileW = 0, tileH = 0;
             if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &tileW) || tileW == 0)
                 throw std::runtime_error("TIFF missing or invalid TILEWIDTH");
             if (!TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH) || tileH == 0)
                 throw std::runtime_error("TIFF missing or invalid TILELENGTH");
+            const tmsize_t tileSize = TIFFTileSize(tif);
+            if (tileSize <= 0) throw std::runtime_error("TIFF reports invalid tile size");
+            scratch.resize(static_cast<std::size_t>(tileSize));
 
-            const tmsize_t tileBytes = TIFFTileSize(tif);
-            if (tileBytes <= 0)
-                throw std::runtime_error("TIFF reports invalid tile size");
+            const std::size_t bpp = bytesPerPixel(g.pixelType);
+            const std::size_t dstPitch = static_cast<std::size_t>(r.width) * bpp;
+            const std::size_t tilePitch = static_cast<std::size_t>(tileW) * bpp;
+            const uint32_t xEnd = r.x + r.width;
+            const uint32_t yEnd = r.y + r.height;
 
-            // allocate once outside the loop
-            std::vector<uint8_t> tileBuf(static_cast<size_t>(tileBytes));
-            const size_t bytesPerPixel = info.bps / 8;
-
-            // use fast path if there is exact match between eigen type and the tiff type
-            const bool useFastPath = isExactMatch<T>(info.bps, info.fmt);
-
-            // Loop counters stay uint32_t to match TIFFReadTile's x/y params
-            // and the TIFF spec (image dims are uint32_t). Any multiplication
-            // that could overflow uint32_t is promoted to size_t at the site.
-            for (uint32_t tileRow = 0; tileRow < info.height; tileRow += tileH) {
-                for (uint32_t tileCol = 0; tileCol < info.width; tileCol += tileW) {
-                    if (TIFFReadTile(tif, tileBuf.data(), tileCol, tileRow, 0, 0) < 0)
-                        throw std::runtime_error("Failed to read tile at (" +
-                            std::to_string(tileCol) + "," + std::to_string(tileRow) + ")");
-
-                    // edge tiles are padded to full tile size — clamp to actual image bounds
-                    const uint32_t validH = std::min(tileH, info.height - tileRow);
-                    const uint32_t validW = std::min(tileW, info.width  - tileCol);
-
-                    for (uint32_t r = 0; r < validH; ++r) {
-                        // promote to size_t before multiplying to avoid overflow on large tiles
-                        const uint8_t* srcRow = tileBuf.data() +
-                            static_cast<size_t>(r) * tileW * bytesPerPixel;
-                        T* dstRow = dst +
-                            (static_cast<size_t>(tileRow) + r) * info.width + tileCol;
-
-                        if (useFastPath) {
-                            std::memcpy(dstRow, srcRow, static_cast<size_t>(validW) * sizeof(T));
-                        } else {
-                            convertScanline<T>(srcRow, dstRow, validW, info.bps, info.fmt);
-                        }
-                    }
+            for (uint32_t ty = (r.y / tileH) * tileH; ty < yEnd; ty += tileH) {
+                for (uint32_t tx = (r.x / tileW) * tileW; tx < xEnd; tx += tileW) {
+                    if (TIFFReadTile(tif, scratch.data(), tx, ty, 0, 0) < 0) throwReadError("tile", tx, ty);
+                    const uint32_t y0 = std::max(ty, r.y), y1 = std::min(ty + tileH, yEnd);
+                    const uint32_t x0 = std::max(tx, r.x), x1 = std::min(tx + tileW, xEnd);
+                    const std::size_t rowBytes = static_cast<std::size_t>(x1 - x0) * bpp;
+                    for (uint32_t y = y0; y < y1; ++y)
+                        std::memcpy(dst + static_cast<std::size_t>(y - r.y) * dstPitch + (x0 - r.x) * bpp,
+                                    scratch.data() + static_cast<std::size_t>(y - ty) * tilePitch + (x0 - tx) * bpp,
+                                    rowBytes);
                 }
             }
+        }
+
+        void readRegionRaw(TIFF* tif, const TiffImageInfo& g, const Region& r, uint8_t* dst,
+                           std::vector<uint8_t>& scratch) {
+            if (TIFFIsTiled(tif)) readTilesRegion(tif, g, r, dst, scratch);
+            else                  readStripsRegion(tif, g, r, dst, scratch);
         }
 
         template <typename T>
@@ -248,11 +261,11 @@ namespace sirius {
             TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, sampleFormat<T>());
             TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
             TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-            
+
             // Setup Compression
             uint16_t tiffComp = mapCompression(comp);
             TIFFSetField(tif, TIFFTAG_COMPRESSION, tiffComp);
-            
+
             // Set predictor for better compression ratios on compressed data
             if (tiffComp == COMPRESSION_LZW || tiffComp == COMPRESSION_ADOBE_DEFLATE) {
                 if constexpr (std::is_integral_v<T>) {
@@ -261,9 +274,9 @@ namespace sirius {
                     TIFFSetField(tif, TIFFTAG_PREDICTOR, PREDICTOR_FLOATINGPOINT);
                 }
             }
-            
+
             TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
-            
+
             if (multiPage)
                 TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_PAGE);
 
@@ -282,219 +295,538 @@ namespace sirius {
             }
         }
 
-    } // anonymous namespace
-
-    // --- Single image ---
-
-    template <typename T>
-    Image<T> readTiff(const std::string& path) {
-        auto tif = openTiff(path, "r");
-        auto info = getPageInfo(tif.get());
-        Image<T> image(info.height, info.width);
-        // check layout once — a file is either tiled or not
-        if (TIFFIsTiled(tif.get()))
-            readTiledPage<T>(tif.get(), image.data(), info);
-        else
-            readScanlinePage<T>(tif.get(), image.data(), info);
-        return image;
-    }
-
-    template <typename T>
-    void writeTiff(const std::string& path, const Image<T>& image, TiffCompression comp) {
-        auto tif = openTiff(path, "w");
-        writePageFrom<T>(tif.get(), image.data(),
-                        static_cast<uint32_t>(image.dimension(0)),
-                        static_cast<uint32_t>(image.dimension(1)), false, comp);
-    }
-
-    // --- Image stack ---
-
-    template <typename T>
-    ImageStack<T> readTiffStack(const std::string& path) {
-        Eigen::Index pageCount = 0;
-        Eigen::Index rows = 0;
-        Eigen::Index cols = 0;
-
-        // Pass 1: walk the directory chain sequentially to validate geometry
-        // and cache each page's on-disk offset. TIFF directories are a linked
-        // list, so repeatedly calling TIFFSetDirectory(z) would be O(n^2).
-        // TIFFSetSubDirectory(offset) is O(1). Validation here keeps the
-        // parallel read path free of per-page tag reads.
-        TiffPageInfo pageInfo{};
-        bool isTiled = false;
-        std::vector<uint64_t> offset;
-        {
-            auto tif = openTiff(path, "r");
-            pageInfo = getPageInfo(tif.get());
-            isTiled  = static_cast<bool>(TIFFIsTiled(tif.get()));
-            rows = static_cast<Eigen::Index>(pageInfo.height);
-            cols = static_cast<Eigen::Index>(pageInfo.width);
-
-            do {
-                offset.push_back(TIFFCurrentDirOffset(tif.get()));
-                if (pageCount > 0) {
-                    auto pi = getPageInfo(tif.get());
-                    if (static_cast<Eigen::Index>(pi.height) != rows ||
-                        static_cast<Eigen::Index>(pi.width)  != cols)
-                        throw std::runtime_error(
-                            "TIFF stack page " + std::to_string(pageCount) +
-                            " dimensions (" + std::to_string(pi.width) + "x" +
-                            std::to_string(pi.height) + ") do not match page 0 (" +
-                            std::to_string(cols) + "x" + std::to_string(rows) + ")");
-                    if (static_cast<bool>(TIFFIsTiled(tif.get())) != isTiled)
-                        throw std::runtime_error(
-                            "TIFF stack page " + std::to_string(pageCount) +
-                            " has mixed tiled/scanline layout");
-                }
-                ++pageCount;
-            } while (TIFFReadDirectory(tif.get()));
+        // Host copy of a view that may live on a device (writers are host-only).
+        template <typename T>
+        Buffer<T> onHost(BufferView<const T> v) {
+            Buffer<T> h(v.shape(), Device::cpu());
+            copy(v, h);            // synchronous: pageable destination
+            return h;
         }
 
-        // Allocate the contiguous memory block once
-        ImageStack<T> stack(pageCount, rows, cols);
-        const Eigen::Index stride = rows * cols;
+        Shape stackShape(const TiffInfo& info) {
+            return Shape{static_cast<Index>(info.pageCount()), static_cast<Index>(info.height()),
+                         static_cast<Index>(info.width())};
+        }
 
-        std::exception_ptr ex;
-        std::atomic<bool> failed{false};
+        Shape levelShape(const TiffLevel& level) {
+            return Shape{static_cast<Index>(level.ifds.size()), static_cast<Index>(level.height),
+                         static_cast<Index>(level.width)};
+        }
 
-        // Each thread opens its own handle once and reuses it across every page
-        // it processes. libtiff handles are not thread-safe (cannot be shared
-        // across threads), but a single handle can navigate between directories
-        // via TIFFSetSubDirectory without reopening the file.
-        #pragma omp parallel
-        {
-            TiffPtr localTif;
-            bool openOk = false;
-            try {
-                localTif = openTiff(path, "r");
-                openOk = true;
-            } catch (...) {
-                #pragma omp critical
-                { if (!ex) ex = std::current_exception(); }
-                failed.store(true, std::memory_order_relaxed);
+    } // anonymous namespace
+
+    // --- metadata ------------------------------------------------------------
+
+    const TiffImageInfo& TiffInfo::image(std::uint64_t ifdOffset) const {
+        for (const auto& i : images)
+            if (i.ifdOffset == ifdOffset) return i;
+        throw std::out_of_range("TIFF has no image directory at offset " + std::to_string(ifdOffset));
+    }
+
+    bool TiffInfo::uniformPages() const noexcept {
+        if (pages.empty()) return false;
+        const auto& p0 = page(0);
+        for (std::size_t i = 1; i < pages.size(); ++i) {
+            const auto& p = page(i);
+            if (p.width != p0.width || p.height != p0.height || p.pixelType != p0.pixelType) return false;
+        }
+        return true;
+    }
+
+    Region Region::resolve(std::uint32_t imageWidth, std::uint32_t imageHeight) const {
+        if (x >= imageWidth || y >= imageHeight)
+            throw std::out_of_range("Region origin (" + std::to_string(x) + "," + std::to_string(y) +
+                                    ") lies outside a " + std::to_string(imageWidth) + "x" +
+                                    std::to_string(imageHeight) + " image");
+        Region r = *this;
+        if (r.width == 0)  r.width  = imageWidth - x;
+        if (r.height == 0) r.height = imageHeight - y;
+        if (static_cast<std::uint64_t>(x) + r.width > imageWidth ||
+            static_cast<std::uint64_t>(y) + r.height > imageHeight)
+            throw std::out_of_range("Region " + std::to_string(r.width) + "x" + std::to_string(r.height) +
+                                    " at (" + std::to_string(x) + "," + std::to_string(y) + ") exceeds a " +
+                                    std::to_string(imageWidth) + "x" + std::to_string(imageHeight) + " image");
+        return r;
+    }
+
+    TiffInfo inspectTiff(const std::string& path) {
+        auto tif = openTiff(path, "r");
+        TiffInfo info;
+        info.bigTiff = TIFFIsBigTIFF(tif.get()) != 0;
+
+        // Walk the main IFD chain sequentially: directories are a linked list,
+        // so this is the only O(n) way to see them all. Offsets are cached so
+        // later decodes seek in O(1) with TIFFSetSubDirectory.
+        do {
+            info.images.push_back(readImageInfo(tif.get()));
+        } while (TIFFReadDirectory(tif.get()));
+        const std::size_t chainCount = info.images.size();
+
+        // SubIFDs (pyramid levels hanging off a page) are not on the chain.
+        for (std::size_t i = 0; i < chainCount; ++i) {
+            for (std::uint64_t off : info.images[i].subIfds) {
+                if (!TIFFSetSubDirectory(tif.get(), off))
+                    throw std::runtime_error("Failed to read SubIFD at offset " + std::to_string(off) + " in " + path);
+                info.images.push_back(readImageInfo(tif.get()));
             }
+        }
 
-            #pragma omp for schedule(dynamic, 4)
-            for (Eigen::Index z = 0; z < pageCount; ++z) {
-                if (failed.load(std::memory_order_relaxed) || !openOk) continue;
+        for (std::size_t i = 0; i < chainCount; ++i)
+            if (!info.images[i].reducedResolution) info.pages.push_back(info.images[i].ifdOffset);
+        if (info.pages.empty())   // every IFD flagged reduced: treat the chain as pages anyway
+            for (std::size_t i = 0; i < chainCount; ++i) info.pages.push_back(info.images[i].ifdOffset);
+
+        // Level 0: the full-resolution pages.
+        {
+            TiffLevel l0;
+            l0.width = info.page(0).width;
+            l0.height = info.page(0).height;
+            l0.ifds = info.pages;
+            info.levels.push_back(std::move(l0));
+        }
+
+        // Levels from SubIFDs: the k-th SubIFD of every page forms level k+1,
+        // provided every page has one and they agree in size.
+        for (std::size_t k = 0;; ++k) {
+            TiffLevel level;
+            bool complete = true;
+            for (std::uint64_t pageOff : info.pages) {
+                const auto& p = info.image(pageOff);
+                if (p.subIfds.size() <= k) { complete = false; break; }
+                const auto& sub = info.image(p.subIfds[k]);
+                if (level.ifds.empty()) { level.width = sub.width; level.height = sub.height; }
+                else if (sub.width != level.width || sub.height != level.height) { complete = false; break; }
+                level.ifds.push_back(sub.ifdOffset);
+            }
+            if (!complete || level.ifds.empty()) break;
+            info.levels.push_back(std::move(level));
+        }
+
+        // Levels from reduced-resolution IFDs on the main chain (GDAL/Aperio
+        // style): consecutive reduced IFDs of one size form a level.
+        for (std::size_t i = 0; i < chainCount; ++i) {
+            const auto& img = info.images[i];
+            if (!img.reducedResolution) continue;
+            TiffLevel* last = info.levels.size() > 1 ? &info.levels.back() : nullptr;
+            const bool sameAsLast = last && last->width == img.width && last->height == img.height &&
+                                    info.image(last->ifds.back()).reducedResolution &&
+                                    info.image(last->ifds.back()).subIfds.empty() &&
+                                    std::find(info.pages.begin(), info.pages.end(), last->ifds.back()) == info.pages.end();
+            if (sameAsLast && last->ifds.size() < info.pages.size()) {
+                last->ifds.push_back(img.ifdOffset);
+            } else {
+                TiffLevel level;
+                level.width = img.width;
+                level.height = img.height;
+                level.ifds.push_back(img.ifdOffset);
+                info.levels.push_back(std::move(level));
+            }
+        }
+        return info;
+    }
+
+    // --- type-erased conversion ------------------------------------------------
+
+    namespace detail {
+
+        void convertPixels(const void* src, PixelType srcType, void* dst, PixelType dstType, Index n,
+                           Device device, const Stream& stream) {
+            const Shape shape{n};
+            auto toAll = [&](auto fromTag) {
+                using From = decltype(fromTag);
+                BufferView<const From> s(static_cast<const From*>(src), shape, device);
+                switch (dstType) {
+                    case PixelType::UInt8:   convert<From, std::uint8_t >(s, BufferView<std::uint8_t >(static_cast<std::uint8_t *>(dst), shape, device), stream); break;
+                    case PixelType::Int8:    convert<From, std::int8_t  >(s, BufferView<std::int8_t  >(static_cast<std::int8_t  *>(dst), shape, device), stream); break;
+                    case PixelType::UInt16:  convert<From, std::uint16_t>(s, BufferView<std::uint16_t>(static_cast<std::uint16_t*>(dst), shape, device), stream); break;
+                    case PixelType::Int16:   convert<From, std::int16_t >(s, BufferView<std::int16_t >(static_cast<std::int16_t *>(dst), shape, device), stream); break;
+                    case PixelType::UInt32:  convert<From, std::uint32_t>(s, BufferView<std::uint32_t>(static_cast<std::uint32_t*>(dst), shape, device), stream); break;
+                    case PixelType::Int32:   convert<From, std::int32_t >(s, BufferView<std::int32_t >(static_cast<std::int32_t *>(dst), shape, device), stream); break;
+                    case PixelType::Float32: convert<From, float        >(s, BufferView<float        >(static_cast<float        *>(dst), shape, device), stream); break;
+                    case PixelType::Float64: convert<From, double       >(s, BufferView<double       >(static_cast<double       *>(dst), shape, device), stream); break;
+                }
+            };
+            switch (srcType) {
+                case PixelType::UInt8:   toAll(std::uint8_t{});  break;
+                case PixelType::Int8:    toAll(std::int8_t{});   break;
+                case PixelType::UInt16:  toAll(std::uint16_t{}); break;
+                case PixelType::Int16:   toAll(std::int16_t{});  break;
+                case PixelType::UInt32:  toAll(std::uint32_t{}); break;
+                case PixelType::Int32:   toAll(std::int32_t{});  break;
+                case PixelType::Float32: toAll(float{});         break;
+                case PixelType::Float64: toAll(double{});        break;
+            }
+        }
+
+        // Parallel over pages. Each thread opens its own handle once and
+        // reuses it for every page it processes: libtiff handles are not
+        // thread-safe, but one handle can hop between directories with
+        // TIFFSetSubDirectory without reopening the file.
+        void decodeWithLibtiff(const std::string& path, const DecodeJob& job, void* dstHost) {
+            const auto& ifds = *job.ifds;
+            const TiffImageInfo& g = *job.geometry;
+            const Region r = job.region;
+            const auto n = static_cast<std::ptrdiff_t>(ifds.size());
+            const std::size_t pixels = static_cast<std::size_t>(r.width) * r.height;
+            const std::size_t nativePageBytes = pixels * bytesPerPixel(g.pixelType);
+            const std::size_t dstPageBytes = pixels * bytesPerPixel(job.dstType);
+            const bool needConvert = g.pixelType != job.dstType;
+            auto* dst = static_cast<std::uint8_t*>(dstHost);
+
+            std::exception_ptr ex;
+            std::atomic<bool> failed{false};
+
+            #pragma omp parallel
+            {
+                TiffPtr localTif;
+                bool openOk = false;
                 try {
-                    if (!TIFFSetSubDirectory(localTif.get(), offset[z]))
-                        throw std::runtime_error(
-                            "Failed to seek to TIFF directory " + std::to_string(z));
-
-                    T* dst = stack.data() + z * stride;
-                    if (isTiled)
-                        readTiledPage<T>(localTif.get(), dst, pageInfo);
-                    else
-                        readScanlinePage<T>(localTif.get(), dst, pageInfo);
+                    localTif = openTiff(path, "r");
+                    openOk = true;
                 } catch (...) {
                     #pragma omp critical
                     { if (!ex) ex = std::current_exception(); }
                     failed.store(true, std::memory_order_relaxed);
                 }
+
+                std::vector<std::uint8_t> scratch;      // one strip / tile
+                std::vector<std::uint8_t> nativePage;   // conversion path only
+
+                #pragma omp for schedule(dynamic, 4)
+                for (std::ptrdiff_t z = 0; z < n; ++z) {
+                    if (failed.load(std::memory_order_relaxed) || !openOk) continue;
+                    try {
+                        if (!TIFFSetSubDirectory(localTif.get(), ifds[static_cast<std::size_t>(z)]))
+                            throw std::runtime_error("Failed to seek to TIFF directory at offset " +
+                                                     std::to_string(ifds[static_cast<std::size_t>(z)]));
+                        std::uint8_t* out = dst + static_cast<std::size_t>(z) * dstPageBytes;
+                        if (needConvert) {
+                            nativePage.resize(nativePageBytes);
+                            readRegionRaw(localTif.get(), g, r, nativePage.data(), scratch);
+                            convertPixels(nativePage.data(), g.pixelType, out, job.dstType,
+                                          static_cast<Index>(pixels), Device::cpu(), Stream::null());
+                        } else {
+                            readRegionRaw(localTif.get(), g, r, out, scratch);
+                        }
+                    } catch (...) {
+                        #pragma omp critical
+                        { if (!ex) ex = std::current_exception(); }
+                        failed.store(true, std::memory_order_relaxed);
+                    }
+                }
+            }
+            if (ex) std::rethrow_exception(ex);
+        }
+
+#ifndef SIRIUS_HAS_NVTIFF
+        bool decodeWithNvTiff(TiffFile::Impl&, const DecodeJob&, void*, Device, const Stream&, std::string& reason) {
+            reason = "SIRIUS was built without nvTIFF (SIRIUS_ENABLE_NVTIFF=OFF)";
+            return false;
+        }
+        bool nvTiffSupports(TiffFile::Impl&, const DecodeJob&, Device, std::string& reason) {
+            reason = "SIRIUS was built without nvTIFF (SIRIUS_ENABLE_NVTIFF=OFF)";
+            return false;
+        }
+#endif
+
+    } // namespace detail
+
+    // --- TiffFile ----------------------------------------------------------------
+
+    namespace {
+
+        // Untyped core of every read: CPU decode in place, or GPU decode via
+        // nvTIFF with a libtiff+upload fallback.
+        void decodeInto(TiffFile::Impl& impl, const detail::DecodeJob& job, void* dst, Device device,
+                        const TiffReadOptions& opts, const Stream& stream) {
+            if (device.isCpu()) {
+                detail::decodeWithLibtiff(impl.path, job, dst);
+                return;
+            }
+            requireDevice(device);
+            std::string reason;
+            if (detail::decodeWithNvTiff(impl, job, dst, device, stream, reason)) return;
+            if (!opts.allowCpuFallback)
+                throw std::runtime_error("GPU decode of " + impl.path + " is not possible: " + reason +
+                                         " (TiffReadOptions::allowCpuFallback is off)");
+
+            // Fallback: libtiff into pinned staging, uploaded chunk by chunk so
+            // arbitrarily large stacks never need a stack-sized host buffer.
+            const auto& ifds = *job.ifds;
+            const std::size_t n = ifds.size();
+            const std::size_t pageBytes = static_cast<std::size_t>(job.region.width) * job.region.height *
+                                          bytesPerPixel(job.dstType);
+            constexpr std::size_t kChunkBytes = std::size_t{512} << 20;
+            const std::size_t chunk = std::min(n, std::max<std::size_t>(1, kChunkBytes / std::max<std::size_t>(pageBytes, 1)));
+            Buffer<std::uint8_t> staging(Shape{static_cast<Index>(chunk * pageBytes)}, Device::cpu(),
+                                         HostMemory::Pinned);
+            for (std::size_t first = 0; first < n; first += chunk) {
+                const std::size_t count = std::min(chunk, n - first);
+                const std::vector<std::uint64_t> part(ifds.begin() + static_cast<std::ptrdiff_t>(first),
+                                                      ifds.begin() + static_cast<std::ptrdiff_t>(first + count));
+                detail::DecodeJob sub = job;
+                sub.ifds = &part;
+                detail::decodeWithLibtiff(impl.path, sub, staging.data());
+                detail::copyBytes(staging.data(), Device::cpu(), static_cast<std::uint8_t*>(dst) + first * pageBytes,
+                                  device, count * pageBytes, stream);
+                stream.synchronize();   // staging is reused by the next chunk
             }
         }
-        if (ex) std::rethrow_exception(ex);
 
-        return stack;
+        const TiffLevel& levelAt(const TiffInfo& info, std::size_t level) {
+            if (level >= info.levels.size())
+                throw std::out_of_range("TIFF has " + std::to_string(info.levels.size()) +
+                                        " pyramid level(s); level " + std::to_string(level) + " requested");
+            return info.levels[level];
+        }
+
+    } // namespace
+
+    TiffFile::TiffFile(std::string path) : impl_(std::make_unique<Impl>()) {
+        impl_->path = std::move(path);
+        impl_->info = inspectTiff(impl_->path);
+    }
+
+    TiffFile::~TiffFile() = default;
+    TiffFile::TiffFile(TiffFile&&) noexcept = default;
+    TiffFile& TiffFile::operator=(TiffFile&&) noexcept = default;
+
+    const std::string& TiffFile::path() const noexcept { return impl_->path; }
+    const TiffInfo& TiffFile::info() const noexcept { return impl_->info; }
+
+    bool TiffFile::gpuDecodable(Device device, std::string* reason) const {
+        std::string why;
+        bool ok = false;
+        if (!device.isCuda()) {
+            why = "not a CUDA device";
+        } else if (!builtWithNvTiff()) {
+            why = "SIRIUS was built without nvTIFF";
+        } else if (device.index < 0 || device.index >= cudaDeviceCount()) {
+            why = "CUDA device " + toString(device) + " is not available";
+        } else {
+            const TiffInfo& info = impl_->info;
+            detail::DecodeJob job;
+            job.ifds = &info.pages;
+            job.geometry = &info.page(0);
+            job.region = Region{}.resolve(info.width(), info.height());
+            job.dstType = info.pixelType();
+            try {
+                ok = detail::nvTiffSupports(*impl_, job, device, why);
+            } catch (const std::exception& e) {
+                why = e.what();
+            }
+        }
+        if (reason) *reason = why;
+        return ok;
     }
 
     template <typename T>
-    void writeTiffStack(const std::string& path, const ImageStack<T>& stack, TiffCompression comp) {
+    void TiffFile::decode(const std::vector<std::uint64_t>& ifds, Region region, BufferView<T> dst,
+                          const TiffReadOptions& opts, const Stream& stream) const {
+        if (ifds.empty()) throw std::invalid_argument("TiffFile::decode: no image directories given");
+        const TiffInfo& info = impl_->info;
+        const TiffImageInfo& g = info.image(ifds[0]);
+        for (std::uint64_t off : ifds) {
+            const auto& i = info.image(off);
+            if (i.width != g.width || i.height != g.height || i.pixelType != g.pixelType)
+                throw std::runtime_error("TIFF image at offset " + std::to_string(off) + " (" +
+                                         std::to_string(i.width) + "x" + std::to_string(i.height) + " " +
+                                         toString(i.pixelType) + ") does not match the first one (" +
+                                         std::to_string(g.width) + "x" + std::to_string(g.height) + " " +
+                                         toString(g.pixelType) + ")");
+        }
+        const Region r = region.resolve(g.width, g.height);
+        const Shape expected{static_cast<Index>(ifds.size()), static_cast<Index>(r.height), static_cast<Index>(r.width)};
+        if (dst.shape() != expected) detail::throwShapeMismatch("TiffFile::decode destination", dst.shape(), expected);
+
+        detail::DecodeJob job;
+        job.ifds = &ifds;
+        job.geometry = &g;
+        job.region = r;
+        job.dstType = pixelTypeOf<T>();
+        decodeInto(*impl_, job, dst.data(), dst.device(), opts, stream);
+    }
+
+    template <typename T>
+    Buffer<T> TiffFile::readStack(const TiffReadOptions& opts, const Stream& stream) const {
+        if (!impl_->info.uniformPages())
+            throw std::runtime_error("TIFF pages differ in size or pixel type; read them individually: " + impl_->path);
+        Buffer<T> out(stackShape(impl_->info), opts.device, opts.hostMemory, stream);
+        decode<T>(impl_->info.pages, Region{}, out.view(), opts, stream);
+        return out;
+    }
+
+    template <typename T>
+    Buffer<T> TiffFile::readPages(std::size_t first, std::size_t count, const TiffReadOptions& opts,
+                                  const Stream& stream) const {
+        const auto& pages = impl_->info.pages;
+        if (first + count > pages.size() || count == 0)
+            throw std::out_of_range("Pages [" + std::to_string(first) + ", " + std::to_string(first + count) +
+                                    ") requested from a TIFF with " + std::to_string(pages.size()) + " page(s)");
+        const std::vector<std::uint64_t> ifds(pages.begin() + static_cast<std::ptrdiff_t>(first),
+                                              pages.begin() + static_cast<std::ptrdiff_t>(first + count));
+        const auto& g = impl_->info.image(ifds[0]);
+        Buffer<T> out(Shape{static_cast<Index>(count), static_cast<Index>(g.height), static_cast<Index>(g.width)},
+                      opts.device, opts.hostMemory, stream);
+        decode<T>(ifds, Region{}, out.view(), opts, stream);
+        return out;
+    }
+
+    template <typename T>
+    Buffer<T> TiffFile::readLevel(std::size_t level, const TiffReadOptions& opts, const Stream& stream) const {
+        const TiffLevel& l = levelAt(impl_->info, level);
+        Buffer<T> out(levelShape(l), opts.device, opts.hostMemory, stream);
+        decode<T>(l.ifds, Region{}, out.view(), opts, stream);
+        return out;
+    }
+
+    template <typename T>
+    Buffer<T> TiffFile::readRegion(Region region, std::size_t level, const TiffReadOptions& opts,
+                                   const Stream& stream) const {
+        const TiffLevel& l = levelAt(impl_->info, level);
+        const Region r = region.resolve(l.width, l.height);
+        Buffer<T> out(Shape{static_cast<Index>(l.ifds.size()), static_cast<Index>(r.height), static_cast<Index>(r.width)},
+                      opts.device, opts.hostMemory, stream);
+        decode<T>(l.ifds, r, out.view(), opts, stream);
+        return out;
+    }
+
+    AnyBuffer readTiffAny(const std::string& path, const TiffReadOptions& opts, const Stream& stream) {
+        TiffFile file(path);
+        switch (file.info().pixelType()) {
+            case PixelType::UInt8:   return file.readStack<std::uint8_t >(opts, stream);
+            case PixelType::Int8:    return file.readStack<std::int8_t  >(opts, stream);
+            case PixelType::UInt16:  return file.readStack<std::uint16_t>(opts, stream);
+            case PixelType::Int16:   return file.readStack<std::int16_t >(opts, stream);
+            case PixelType::UInt32:  return file.readStack<std::uint32_t>(opts, stream);
+            case PixelType::Int32:   return file.readStack<std::int32_t >(opts, stream);
+            case PixelType::Float32: return file.readStack<float        >(opts, stream);
+            case PixelType::Float64: return file.readStack<double       >(opts, stream);
+        }
+        throw std::runtime_error("Unsupported TIFF format");
+    }
+
+    // --- Eigen convenience API -------------------------------------------------
+
+    template <typename T>
+    Image<T> readTiff(const std::string& path) {
+        TiffFile file(path);
+        const auto& p = file.info().page(0);
+        Image<T> image(p.height, p.width);
+        file.decode<T>({p.ifdOffset}, Region{}, toView(image).asStack());
+        return image;
+    }
+
+    template <typename T>
+    ImageStack<T> readTiffStack(const std::string& path) {
+        TiffFile file(path);
+        const TiffInfo& info = file.info();
+        if (!info.uniformPages())
+            throw std::runtime_error("TIFF pages differ in size or pixel type: " + path);
+        ImageStack<T> stack(static_cast<Eigen::Index>(info.pageCount()), info.height(), info.width());
+        file.decode<T>(info.pages, Region{}, toView(stack));
+        return stack;
+    }
+
+    AnyImageStack readTiffStackAny(const std::string& path) {
+        TiffFile file(path);
+        const TiffInfo& info = file.info();
+        if (!info.uniformPages())
+            throw std::runtime_error("TIFF pages differ in size or pixel type: " + path);
+        auto read = [&](auto tag) -> AnyImageStack {
+            using T = decltype(tag);
+            ImageStack<T> stack(static_cast<Eigen::Index>(info.pageCount()), info.height(), info.width());
+            file.decode<T>(info.pages, Region{}, toView(stack));
+            return stack;
+        };
+        switch (info.pixelType()) {
+            case PixelType::UInt8:   return read(std::uint8_t{});
+            case PixelType::Int8:    return read(std::int8_t{});
+            case PixelType::UInt16:  return read(std::uint16_t{});
+            case PixelType::Int16:   return read(std::int16_t{});
+            case PixelType::UInt32:  return read(std::uint32_t{});
+            case PixelType::Int32:   return read(std::int32_t{});
+            case PixelType::Float32: return read(float{});
+            case PixelType::Float64: return read(double{});
+        }
+        throw std::runtime_error("Unsupported TIFF format");
+    }
+
+    template <typename T>
+    void writeTiff(const std::string& path, BufferView<const T> image, TiffCompression comp) {
+        if (image.rank() != 2)
+            throw std::invalid_argument("writeTiff expects a rank-2 (rows, cols) view, got " + image.shape().toString());
+        if (!image.device().isCpu()) {
+            writeTiff<T>(path, onHost(image).view(), comp);
+            return;
+        }
+        auto tif = openTiff(path, "w");
+        writePageFrom<T>(tif.get(), image.data(),
+                         static_cast<uint32_t>(image.dim(0)), static_cast<uint32_t>(image.dim(1)), false, comp);
+    }
+
+    template <typename T>
+    void writeTiff(const std::string& path, const Image<T>& image, TiffCompression comp) {
+        writeTiff<T>(path, toConstView(image), comp);
+    }
+
+    template <typename T>
+    void writeTiffStack(const std::string& path, BufferView<const T> stack, TiffCompression comp) {
+        if (stack.rank() != 3)
+            throw std::invalid_argument("writeTiffStack expects a rank-3 (pages, rows, cols) view, got " + stack.shape().toString());
         if (stack.size() == 0)
             throw std::runtime_error("Cannot write empty stack");
+        if (!stack.device().isCpu()) {
+            writeTiffStack<T>(path, onHost(stack).view(), comp);
+            return;
+        }
 
         // BigTIFF ("w8") lifts the 4 GiB offset limit. For small stacks this
         // is mild overhead; for large ones it is the only option that works.
         auto tif = openTiff(path, "w8");
 
-        const Eigen::Index pages  = stack.dimension(0);
-        const Eigen::Index rows   = stack.dimension(1);
-        const Eigen::Index cols   = stack.dimension(2);
-        const Eigen::Index stride = rows * cols; // 64-bit: safe for huge pages
+        const Index pages  = stack.dim(0);
+        const Index rows   = stack.dim(1);
+        const Index cols   = stack.dim(2);
+        const Index stride = rows * cols; // 64-bit: safe for huge pages
 
-        const auto height = static_cast<uint32_t>(rows);
-        const auto width  = static_cast<uint32_t>(cols);
-
-        for (Eigen::Index z = 0; z < pages; ++z) {
+        for (Index z = 0; z < pages; ++z) {
             writePageFrom<T>(tif.get(), stack.data() + z * stride,
-                             height, width, true, comp);
+                             static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), true, comp);
             if (!TIFFWriteDirectory(tif.get()))
                 throw std::runtime_error(
                     "Failed to finalize TIFF directory for page " + std::to_string(z));
         }
     }
 
-    AnyImageStack readTiffStackAny(const std::string& path) {
-        auto tif = openTiff(path, "r");
-        auto info = getPageInfo(tif.get());
-
-        switch(info.fmt) {
-            case SAMPLEFORMAT_INT:
-                switch(info.bps) {
-                    case 8 : return readTiffStack<int8_t>(path);
-                    case 16: return readTiffStack<int16_t>(path);
-                    case 32: return readTiffStack<int32_t>(path);
-                    default: break;
-                }
-                break;
-            case SAMPLEFORMAT_UINT:
-                switch(info.bps) {
-                    case 8 : return readTiffStack<uint8_t>(path);
-                    case 16: return readTiffStack<uint16_t>(path);
-                    case 32: return readTiffStack<uint32_t>(path);
-                    default: break;
-                }
-                break;
-            case SAMPLEFORMAT_IEEEFP:
-                switch(info.bps) {
-                    case 32: return readTiffStack<float>(path);
-                    case 64: return readTiffStack<double>(path);
-                    default: break;
-                }
-                break;
-            default:
-                break;
-        }
-
-        throw std::runtime_error("Unsupported TIFF format");
+    template <typename T>
+    void writeTiffStack(const std::string& path, const ImageStack<T>& stack, TiffCompression comp) {
+        writeTiffStack<T>(path, toConstView(stack), comp);
     }
 
-    // Explicit instantiations
-    template Image<uint8_t> readTiff(const std::string&);
-    template Image<int8_t> readTiff(const std::string&);
-    template Image<uint16_t> readTiff(const std::string&);
-    template Image<int16_t> readTiff(const std::string&);
-    template Image<uint32_t> readTiff(const std::string&);
-    template Image<int32_t> readTiff(const std::string&);
-    template Image<float> readTiff(const std::string&);
-    template Image<double> readTiff(const std::string&);
+    // Explicit instantiations for every supported pixel type.
+#define SIRIUS_TIFF_INSTANTIATE(T)                                                                         \
+    template void TiffFile::decode<T>(const std::vector<std::uint64_t>&, Region, BufferView<T>,             \
+                                      const TiffReadOptions&, const Stream&) const;                         \
+    template Buffer<T> TiffFile::readStack<T>(const TiffReadOptions&, const Stream&) const;                 \
+    template Buffer<T> TiffFile::readPages<T>(std::size_t, std::size_t, const TiffReadOptions&, const Stream&) const; \
+    template Buffer<T> TiffFile::readLevel<T>(std::size_t, const TiffReadOptions&, const Stream&) const;    \
+    template Buffer<T> TiffFile::readRegion<T>(Region, std::size_t, const TiffReadOptions&, const Stream&) const; \
+    template Image<T> readTiff<T>(const std::string&);                                                      \
+    template ImageStack<T> readTiffStack<T>(const std::string&);                                            \
+    template void writeTiff<T>(const std::string&, BufferView<const T>, TiffCompression);                   \
+    template void writeTiff<T>(const std::string&, const Image<T>&, TiffCompression);                       \
+    template void writeTiffStack<T>(const std::string&, BufferView<const T>, TiffCompression);              \
+    template void writeTiffStack<T>(const std::string&, const ImageStack<T>&, TiffCompression);
 
-    template ImageStack<uint8_t> readTiffStack(const std::string&);
-    template ImageStack<int8_t> readTiffStack(const std::string&);
-    template ImageStack<uint16_t> readTiffStack(const std::string&);
-    template ImageStack<int16_t> readTiffStack(const std::string&);
-    template ImageStack<uint32_t> readTiffStack(const std::string&);
-    template ImageStack<int32_t> readTiffStack(const std::string&);
-    template ImageStack<float> readTiffStack(const std::string&);
-    template ImageStack<double> readTiffStack(const std::string&);
-
-    template void writeTiff(const std::string&, const Image<uint8_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<int8_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<uint16_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<int16_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<uint32_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<int32_t>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<float>&, TiffCompression);
-    template void writeTiff(const std::string&, const Image<double>&, TiffCompression);
-
-    template void writeTiffStack(const std::string&, const ImageStack<uint8_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<int8_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<uint16_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<int16_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<uint32_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<int32_t>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<float>&, TiffCompression);
-    template void writeTiffStack(const std::string&, const ImageStack<double>&, TiffCompression);
+    SIRIUS_TIFF_INSTANTIATE(std::uint8_t)
+    SIRIUS_TIFF_INSTANTIATE(std::int8_t)
+    SIRIUS_TIFF_INSTANTIATE(std::uint16_t)
+    SIRIUS_TIFF_INSTANTIATE(std::int16_t)
+    SIRIUS_TIFF_INSTANTIATE(std::uint32_t)
+    SIRIUS_TIFF_INSTANTIATE(std::int32_t)
+    SIRIUS_TIFF_INSTANTIATE(float)
+    SIRIUS_TIFF_INSTANTIATE(double)
+#undef SIRIUS_TIFF_INSTANTIATE
 
 } // namespace sirius

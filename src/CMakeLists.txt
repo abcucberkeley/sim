@@ -18,6 +18,8 @@ target_sources(sirius
         BASE_DIRS
             ${PROJECT_SOURCE_DIR}/include
         FILES
+            ${PROJECT_SOURCE_DIR}/include/sirius/device.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/buffer.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/tiff_io.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/tensor_util.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/fft.hpp
@@ -30,6 +32,8 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include/sirius/preprocess.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/constants.hpp
     PRIVATE
+        device.cpp
+        buffer.cpp
         tiff_io.cpp
         fft.cpp
         real_fft.cpp
@@ -49,6 +53,25 @@ target_link_libraries(sirius
         sirius_simd
         tomlplusplus::tomlplusplus
 )
+
+# The public headers never depend on these macros (see device.hpp); they only
+# select implementation paths inside the library.
+if(SIRIUS_ENABLE_CUDA)
+    target_compile_definitions(sirius PRIVATE SIRIUS_HAS_CUDA=1)
+    target_sources(sirius PRIVATE
+        cuda/kernels.cu
+        fft_cufft.cpp
+    )
+    target_link_libraries(sirius PRIVATE CUDA::cudart_static CUDA::cufft)
+    if(SIRIUS_ENABLE_NVTIFF)
+        target_compile_definitions(sirius PRIVATE SIRIUS_HAS_NVTIFF=1)
+        target_sources(sirius PRIVATE tiff_nvtiff.cpp)
+        target_link_libraries(sirius PRIVATE nvtiff::nvtiff)
+        if(SIRIUS_ENABLE_NVCOMP)
+            target_link_libraries(sirius PRIVATE sirius_nvcomp_runtime)
+        endif()
+    endif()
+endif()
 
 if(SIRIUS_ENABLE_WARNINGS)
     target_set_warnings(sirius)

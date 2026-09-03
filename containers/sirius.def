@@ -1,0 +1,49 @@
+# Apptainer definition for the cluster. Same base image and provisioning
+# script as containers/Dockerfile, so the two environments are identical.
+#
+#   apptainer build sirius.sif containers/sirius.def
+#   apptainer exec --nv sirius.sif bash -c \
+#       "cmake --preset linux-cuda-release && cmake --build --preset linux-cuda-release"
+#
+# --nv binds the host driver; the CUDA toolkit inside the image must not be
+# newer than what the host driver supports (13.x needs driver >= 580).
+# Override the CUDA line at build time when needed:
+#   apptainer build --build-arg CUDA_VERSION=12.8.1 sirius.sif containers/sirius.def
+
+Bootstrap: docker
+From: nvidia/cuda:{{ CUDA_VERSION }}-devel-ubuntu{{ UBUNTU_VERSION }}
+
+%arguments
+    CUDA_VERSION=13.1.0
+    UBUNTU_VERSION=24.04
+
+%files
+    containers/install-deps.sh /tmp/install-deps.sh
+
+%post
+    bash /tmp/install-deps.sh
+    rm /tmp/install-deps.sh
+
+%environment
+    export CUDA_HOME=/usr/local/cuda
+    export CUDACXX=/usr/local/cuda/bin/nvcc
+    export PATH=/usr/local/cuda/bin:$PATH
+    # OpenMP/MPI defaults sensible for a single node; override per job.
+    export OMP_PROC_BIND=close
+    export OMP_PLACES=cores
+
+%runscript
+    exec "$@"
+
+%labels
+    org.opencontainers.image.title SIRIUS build environment
+    org.opencontainers.image.source https://github.com/abcucberkeley/sirius
+
+%help
+    SIRIUS build/runtime environment (CUDA {{ CUDA_VERSION }}, Ubuntu {{ UBUNTU_VERSION }}).
+    Bind-mount the source tree and build with the CMake presets, e.g.
+        apptainer exec --nv sirius.sif cmake --preset linux-cuda-release
+        apptainer exec --nv sirius.sif cmake --build --preset linux-cuda-release
+    nvTIFF/nvCOMP are downloaded by CMake at configure time; on an air-gapped
+    node pass -DSIRIUS_NVTIFF_ROOT/-DSIRIUS_NVCOMP_ROOT pointing at extracted
+    redistributables instead.

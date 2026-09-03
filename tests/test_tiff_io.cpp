@@ -109,6 +109,7 @@ TEST_CASE("ImageStack memory layout and slicing", "[ImageStack]") {
         s0(0, 0) = 111;
         REQUIRE(stack(0, 0, 0) == 111);
         REQUIRE(stack(2, 0, 0) == 200); // untouched
+        REQUIRE(s2(0, 0) == 200);
     }
 
     SECTION("Move semantics work") {
