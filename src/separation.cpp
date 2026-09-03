@@ -1,6 +1,8 @@
 #include "sirius/separation.hpp"
 #include "sirius/constants.hpp"
 
+#include "sim_cpu_stages.hpp"
+
 #include <cmath>
 #include <stdexcept>
 
@@ -87,19 +89,13 @@ namespace sirius {
         const Index nbands = matrix.rows();
         const Index n = nz * ny * nx;
 
-        Eigen::Tensor<double, 4, Eigen::RowMajor> bands(nbands, nz, ny, nx);
-        const double* src = phaseStack.data();
-        double* dst = bands.data();
+        // the shared kernel takes the matrix row-major and contiguous
+        const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> rowMajor = matrix;
 
-        #pragma omp parallel for schedule(static)
-        for (Index i = 0; i < n; ++i) {
-            for (Index b = 0; b < nbands; ++b) {
-                double acc = 0.0;
-                for (Index p = 0; p < nphases; ++p)
-                    acc += matrix(b, p) * src[p * n + i];
-                dst[b * n + i] = acc;
-            }
-        }
+        Eigen::Tensor<double, 4, Eigen::RowMajor> bands(nbands, nz, ny, nx);
+        if (n > 0)
+            simdetail::cpu::separate(phaseStack.data(), bands.data(), rowMajor.data(),
+                                     static_cast<int>(nphases), static_cast<int>(nbands), n);
         return bands;
     }
 

@@ -16,6 +16,7 @@
 #include "sirius/real_fft.hpp"
 #include "sirius/separation.hpp"
 
+#include "sim_cpu_stages.hpp"
 #include "sim_internal.hpp"
 
 #include <algorithm>
@@ -74,6 +75,7 @@ namespace sirius {
 
         int norders = 0;
         int nbands = 0;
+        std::vector<double> sepMatrix;   // row-major (nbands, nphases) separation matrix
 
         // OTF table (device copy for CUDA; the host tensor itself for CPU)
         Buffer<Cplx> otfDev;
@@ -120,6 +122,13 @@ namespace sirius {
                 throw std::invalid_argument("SimReconstructor: OTF has " +
                                             std::to_string(otf.data().dimension(0)) +
                                             " orders, need " + std::to_string(norders));
+
+            // depends only on the parameters: flatten once, reuse for every volume
+            const Eigen::MatrixXd sepM = separationMatrix(p.nphases, norders);
+            sepMatrix.resize(static_cast<std::size_t>(nbands) * p.nphases);
+            for (int b = 0; b < nbands; ++b)
+                for (int j = 0; j < p.nphases; ++j)
+                    sepMatrix[static_cast<std::size_t>(b) * p.nphases + j] = sepM(b, j);
 
             if (dev.isCuda()) {
                 otfDev = toDevice(otf.data(), dev, stream);
@@ -525,19 +534,10 @@ namespace sirius {
             const Index nplanes = static_cast<Index>(p.ndirs) * p.nphases * nz;
             if (p.do_rescale) {
                 std::vector<double> sums(static_cast<std::size_t>(nplanes));
+                std::vector<double> factors(sums.size());
                 backend->planeSums(frames.data(), nplanes, sec, sums.data());
-                std::vector<double> factors(static_cast<std::size_t>(nplanes), 1.0);
-                auto sumAt = [&](Index d, Index ph, Index z) {
-                    return sums[static_cast<std::size_t>((d * p.nphases + ph) * nz + z)];
-                };
-                for (Index d = 0; d < p.ndirs; ++d)
-                    for (Index ph = 0; ph < p.nphases; ++ph)
-                        for (Index z = 0; z < nz; ++z) {
-                            const double ref = p.equalizez ? sumAt(0, 0, 0) : sumAt(0, 0, z);
-                            const double s = sumAt(d, ph, z);
-                            if (s != 0.0)
-                                factors[static_cast<std::size_t>((d * p.nphases + ph) * nz + z)] = ref / s;
-                        }
+                simdetail::cpu::bleachFactors(sums.data(), p.ndirs, p.nphases, nz, p.equalizez,
+                                              factors.data());
                 backend->scalePlanes(frames.data(), nplanes, sec, factors.data());
             }
 
@@ -553,15 +553,10 @@ namespace sirius {
             }
 
             // 5-6. band separation + 3D real FFT, per direction (batched)
-            const Eigen::MatrixXd sepM = separationMatrix(p.nphases, norders);
-            std::vector<double> matFlat(static_cast<std::size_t>(nbands) * p.nphases);
-            for (int b = 0; b < nbands; ++b)
-                for (int j = 0; j < p.nphases; ++j)
-                    matFlat[static_cast<std::size_t>(b) * p.nphases + j] = sepM(b, j);
             const Index volN = nz * sec;
             for (int d = 0; d < p.ndirs; ++d) {
                 backend->separate(frames.data() + static_cast<Index>(d) * p.nphases * volN,
-                                  realBands.data(), matFlat.data(), p.nphases, nbands, volN);
+                                  realBands.data(), sepMatrix.data(), p.nphases, nbands, volN);
                 bandFft->rfft(realBands.data(), dirBands(d), stream);
             }
 
