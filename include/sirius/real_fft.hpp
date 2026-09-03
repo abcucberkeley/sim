@@ -1,6 +1,7 @@
 #ifndef SIRIUS_REAL_FFT_HPP
 #define SIRIUS_REAL_FFT_HPP
 
+#include "sirius/device.hpp"
 #include "sirius/fft_common.hpp"
 #include "sirius/tensor_util.hpp"
 
@@ -59,6 +60,10 @@ namespace sirius {
         Tensor values_;
     };
 
+    // Planned real-to-complex / complex-to-real double precision FFT, batched
+    // over `howmany` contiguous transforms. Backed by FFTW on Device::cpu()
+    // and by cuFFT (D2Z/Z2D) on Device::cuda(n) -- the same object API for
+    // both, mirroring sirius::FFT. PlanRigor only affects the FFTW backend.
     class RealFFT {
     public:
         using Real = double;
@@ -66,7 +71,8 @@ namespace sirius {
 
         // dims: {n}, {rows, cols}, or {depth, rows, cols}; the last dimension
         // is the real axis compressed to n/2 + 1 complex samples on output.
-        explicit RealFFT(std::vector<int> dims, int howmany=1, PlanRigor rigor = PlanRigor::Measure);
+        explicit RealFFT(std::vector<int> dims, int howmany = 1, PlanRigor rigor = PlanRigor::Measure,
+                         Device device = Device::cpu());
         ~RealFFT();
 
         RealFFT(const RealFFT&) = delete;
@@ -74,6 +80,7 @@ namespace sirius {
         RealFFT(RealFFT&&) noexcept;
         RealFFT& operator=(RealFFT&&) noexcept;
 
+        Device device() const noexcept;
         int rank() const;            // dims.size()
         int howmany() const;         // batch count
         int realSize() const;        // product(dims), e.g. depth*rows*cols
@@ -82,8 +89,12 @@ namespace sirius {
         int fullComplexSize() const; // complexSize() * howmany()
         const std::vector<int>& dims() const;  // original real dims, e.g. {depth, rows, cols}
 
-        void rfft(const Real* in, Complex* out) const;
-        void irfft(const Complex* in, Real* out, bool normalize = false) const;
+        // Pointers must reference memory on device(): host memory for a CPU
+        // plan, device memory for a CUDA plan (where calls are asynchronous
+        // on `stream`). The complex input of irfft is preserved.
+        void rfft(const Real* in, Complex* out, const Stream& stream = Stream::null()) const;
+        void irfft(const Complex* in, Real* out, bool normalize = false,
+                   const Stream& stream = Stream::null()) const;
 
         template<int Rank>
         void rfft(const TensorXr<double, Rank>& in, TensorXc<double, Rank>& out) const;

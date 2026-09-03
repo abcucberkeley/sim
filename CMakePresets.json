@@ -65,6 +65,24 @@
       }
     },
     {
+      "name": "win-msvc-cuda-dev",
+      "displayName": "Windows CUDA Dev (MSVC 2022, nvTIFF, native GPU arch)",
+      "inherits": [
+        "dev"
+      ],
+      "generator": "Visual Studio 17 2022",
+      "cacheVariables": {
+        "SIRIUS_ENABLE_CUDA": "ON",
+        "SIRIUS_ENABLE_PYTHON_BINDINGS": "OFF",
+        "CMAKE_CUDA_ARCHITECTURES": "native"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
       "name": "linux-gcc-dev",
       "displayName": "Linux (GCC) Dev",
       "inherits": [

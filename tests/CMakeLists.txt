@@ -12,7 +12,9 @@ target_sources(sirius_tests
         test_fft3d.cpp
         test_real_fft.cpp
         test_fft_cuda.cpp
+        test_real_fft_cuda.cpp
         test_sim_parameters.cpp
+        test_separation.cpp
         test_reconstruction.cpp
         test_otf.cpp
         test_preprocess.cpp

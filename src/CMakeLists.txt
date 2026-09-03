@@ -30,6 +30,9 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include/sirius/legacy_config.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/otf.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/preprocess.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/separation.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/illumination.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/sim_reconstruction.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/constants.hpp
     PRIVATE
         device.cpp
@@ -41,6 +44,9 @@ target_sources(sirius
         legacy_config.cpp
         otf.cpp
         preprocess.cpp
+        separation.cpp
+        sim_cpu.cpp
+        sim_reconstruction.cpp
 )
 
 target_link_libraries(sirius
@@ -60,6 +66,7 @@ if(SIRIUS_ENABLE_CUDA)
     target_compile_definitions(sirius PRIVATE SIRIUS_HAS_CUDA=1)
     target_sources(sirius PRIVATE
         cuda/kernels.cu
+        cuda/sim_kernels.cu
         fft_cufft.cpp
     )
     target_link_libraries(sirius PRIVATE CUDA::cudart_static CUDA::cufft)

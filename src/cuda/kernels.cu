@@ -2,6 +2,8 @@
 
 #include <cuComplex.h>
 
+#include <cstring>
+
 namespace sirius::cuda {
 
     namespace {
@@ -38,6 +40,12 @@ namespace sirius::cuda {
             }
         }
 
+        __global__ void scaleRealKernel(double* __restrict__ p, std::size_t n, double s) {
+            for (std::size_t i = blockIdx.x * (std::size_t)blockDim.x + threadIdx.x; i < n;
+                 i += (std::size_t)gridDim.x * blockDim.x)
+                p[i] *= s;
+        }
+
         // std::complex is not usable in device code; fill it via the
         // layout-compatible CUDA complex types.
         template <typename T> struct DeviceRep { using type = T; };
@@ -51,7 +59,7 @@ namespace sirius::cuda {
         using R = typename DeviceRep<T>::type;
         R v;
         static_assert(sizeof(R) == sizeof(T), "device representation must match");
-        __builtin_memcpy(&v, &value, sizeof(T));
+        std::memcpy(&v, &value, sizeof(T));   // host-side bit copy; MSVC has no __builtin_memcpy
         fillKernel<R><<<gridFor(n), kBlock, 0, stream>>>(reinterpret_cast<R*>(dst), n, v);
     }
 
@@ -64,6 +72,11 @@ namespace sirius::cuda {
     void scaleComplexDouble(std::complex<double>* p, std::size_t n, double scale, cudaStream_t stream) {
         if (n == 0) return;
         scaleKernel<<<gridFor(n), kBlock, 0, stream>>>(reinterpret_cast<cuDoubleComplex*>(p), n, scale);
+    }
+
+    void scaleDouble(double* p, std::size_t n, double scale, cudaStream_t stream) {
+        if (n == 0) return;
+        scaleRealKernel<<<gridFor(n), kBlock, 0, stream>>>(p, n, scale);
     }
 
     // Explicit instantiations for the SIRIUS pixel/scalar types.

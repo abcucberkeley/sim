@@ -1,64 +1,79 @@
 #ifndef SIRIUS_SIM_RECONSTRUCTION_HPP
 #define SIRIUS_SIM_RECONSTRUCTION_HPP
 
-#include "sirius/sim_parameters.hpp"
-#include "sirius/preprocess.hpp"
-#include "sirius/otf.hpp"
+#include <array>
+#include <complex>
+#include <memory>
+#include <string>
+#include <vector>
 
-#include <Eigen/Core>
-#include <unsupported/Eigen/CXX11/Tensor>
+#include "sirius/buffer.hpp"
+#include "sirius/device.hpp"
+#include "sirius/fft_common.hpp"
+#include "sirius/otf.hpp"
+#include "sirius/sim_parameters.hpp"
 
 namespace sirius {
-    template <typename Scalar>
-    Eigen::Tensor<Scalar, 3, Eigen::RowMajor>
-    reconstruct(Eigen::Tensor<Scalar, 5, Eigen::RowMajor>& data,
-                const OTFRadiallyAveraged& otf,
-                const SIMParameters& p)
-    {
-        using Index = Eigen::Index;
-        const Index ndirs   = data.dimension(0);
-        const Index nphases = data.dimension(1);
-        const Index nz      = data.dimension(2);
-        const Index ny      = data.dimension(3);
-        const Index nx      = data.dimension(4);
 
-        // Background subtraction and pre-scale (compensate un-normalied ffts)
-        // Reconstruction can be sensitive to background since it could affect various estimates
-        // such as
-        // - the noise floor for Wiener filtering
-        // - the relative scaling of different orders which affects order weighting and phase estimation
-        // - wavevector estimation
-        // - bleach correction
-        Scalar pre_scale = 1.0 / (nx * ny * nz * p.zoomfact * p.zoomfact * p.z_zoom * p.ndirs);
-        data = (data - p.background) * pre_scale;
+    // Per-direction results of the pattern-vector search and modulation
+    // amplitude fit of the last reconstruct() call.
+    struct SimFit {
+        std::vector<std::array<double, 2>> k0;                // (ndirs) fitted {kx, ky}, 1/um
+        std::vector<std::vector<std::complex<double>>> amps;  // (ndirs, norders); amps[d][0] == 1
+    };
 
-        // Bleach correction
-        if (p.do_rescale) bleach_rescale(data, p.equalizez);
+    // 3-beam structured illumination reconstruction (Gustafsson et al. 2008),
+    // matching the cudasirecon algorithm: preprocessing, band separation,
+    // pattern-vector / modulation-amplitude fitting, generalized Wiener
+    // filtering and real-space assembly.
+    //
+    // The same object API runs on the CPU (FFTW + OpenMP) or on a CUDA device
+    // (cuFFT + kernels); pass Device::cuda(n) and device-resident input to
+    // run on the GPU -- everything else is identical. FFT plans and work
+    // buffers are created lazily for the input shape and reused across calls
+    // (e.g. over a time series), so construct once and reconstruct many.
+    class SimReconstructor {
+    public:
+        // The OTF must be radially averaged with at least norders orders
+        // (see loadOTF below). PlanRigor affects only the FFTW backend.
+        SimReconstructor(SIMParameters params, OTFRadiallyAveraged otf,
+                         Device device = Device::cpu(), PlanRigor rigor = PlanRigor::Measure);
+        ~SimReconstructor();
 
-        // Real-space apodization to suppress FFT edge-wraparound artifacts.
-        // Triangle blends a napodize-wide border; Cosine applies a full sine
-        // window; None skips it. (Distinct from p.apodize_output, applied later.)
-        switch (p.apodize_input) {
-            case ApodizationType::None:                                break;
-            case ApodizationType::Cosine:   cosine_apodization(data); break;
-            case ApodizationType::Triangle: edge_apodization(data, p.napodize); break;
+        SimReconstructor(const SimReconstructor&) = delete;
+        SimReconstructor& operator=(const SimReconstructor&) = delete;
+        SimReconstructor(SimReconstructor&&) noexcept;
+        SimReconstructor& operator=(SimReconstructor&&) noexcept;
+
+        Device device() const noexcept;
+
+        // raw: (ndirs*nphases*nz, ny, nx) camera frames on device(), in the
+        // standard direction->z->phase section order (fast_si selects the
+        // z->direction->phase order instead). nx and ny must be even.
+        // Returns the (z_zoom*nz, zoomfact*ny, zoomfact*nx) super-resolution
+        // volume on device(); all enqueued work has completed on return.
+        Buffer<double> reconstruct(BufferView<const double> raw);
+
+        // Convenience for Buffers and host Eigen tensors.
+        template <typename Src>
+        Buffer<double> reconstruct(const Src& src) {
+            return reconstruct(BufferView<const double>(toConstView(src)));
         }
 
-        // TODO: Separate bands
-        // Analytical inverse or solve lsq
+        // Fit diagnostics of the last reconstruct() call.
+        const SimFit& lastFit() const noexcept;
 
-        // TODO: k0 correction
-        // Whiten each band by each other's OTF
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
 
-        // TODO: Using k0, compute modulation amplitude
+    // Load a radially averaged OTF TIFF, deriving its reciprocal-space
+    // sampling from the file dimensions and the acquisition parameters
+    // (dkr = 1/(dx*(nkr-1)*2), dkz = 1/(dz_psf*nzotf)), as cudasirecon's
+    // determine_otf_dimensions does for otfRA files.
+    OTFRadiallyAveraged loadOTF(const std::string& filename, const SIMParameters& p);
 
-        // TODO: Refine k0 and amplitude estimates
-
-        // TODO: Generalized Wiener filtering
-
-        // TODO: Assembly into the super-resolution volume.
-
-    }
-}
+} // namespace sirius
 
 #endif // SIRIUS_SIM_RECONSTRUCTION_HPP

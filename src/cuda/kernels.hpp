@@ -22,6 +22,9 @@ namespace sirius::cuda {
     // Multiply n complex<double> by a real scalar (used by ifft normalization).
     void scaleComplexDouble(std::complex<double>* p, std::size_t n, double scale, cudaStream_t stream);
 
+    // Multiply n doubles by a scalar (used by irfft normalization).
+    void scaleDouble(double* p, std::size_t n, double scale, cudaStream_t stream);
+
 } // namespace sirius::cuda
 
 #endif // SIRIUS_CUDA_KERNELS_HPP
