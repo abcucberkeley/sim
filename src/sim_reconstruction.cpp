@@ -511,17 +511,8 @@ namespace sirius {
 
             // 1. frame ordering: sections -> frames[(d*nphases + p)*nz + z]
             const Index sec = ny * nx;
-            const std::size_t secBytes = static_cast<std::size_t>(sec) * sizeof(double);
-            for (Index d = 0; d < p.ndirs; ++d)
-                for (Index z = 0; z < nz; ++z)
-                    for (Index ph = 0; ph < p.nphases; ++ph) {
-                        const Index src = p.fast_si
-                            ? (z * p.ndirs + d) * p.nphases + ph
-                            : (d * nz + z) * p.nphases + ph;
-                        const Index dst = (d * p.nphases + ph) * nz + z;
-                        detail::copyBytes(raw.data() + src * sec, raw.device(),
-                                          frames.data() + dst * sec, dev, secBytes, stream);
-                    }
+            backend->reorderFrames(raw.data(), frames.data(), p.ndirs, p.nphases,
+                                   nz, sec, p.fast_si);
 
             // 2. background subtraction + global input scale
             const double inscale = 1.0 / (static_cast<double>(nx) * static_cast<double>(ny) *

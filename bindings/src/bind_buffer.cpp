@@ -13,7 +13,7 @@ namespace sirius_py {
     std::optional<PixelType> pixelTypeFromDtype(nb::handle dtype) {
         if (dtype.is_none()) return std::nullopt;
         nb::object np = nb::module_::import_("numpy");
-        const std::string name = nb::cast<std::string>(nb::str(np.attr("dtype")(dtype).attr("name")));
+        const std::string name = nb::cast<std::string>(np.attr("dtype")(dtype).attr("name"));
         if (name == "uint8")   return PixelType::UInt8;
         if (name == "int8")    return PixelType::Int8;
         if (name == "uint16")  return PixelType::UInt16;

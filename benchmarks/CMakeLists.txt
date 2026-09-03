@@ -6,6 +6,7 @@
 # `tiff` target SIRIUS pulls in via FetchContent and risk duplicate-libtiff ODR.
 
 add_executable(bench_tiff_sirius bench_tiff_sirius.cpp)
+add_executable(bench_sim bench_sim.cpp)
 
 target_include_directories(bench_tiff_sirius
     PRIVATE
@@ -18,10 +19,15 @@ target_link_libraries(bench_tiff_sirius
         OpenMP::OpenMP_CXX
 )
 
+target_include_directories(bench_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bench_sim PRIVATE sirius OpenMP::OpenMP_CXX)
+
 if(SIRIUS_ENABLE_WARNINGS)
     target_set_warnings(bench_tiff_sirius)
+    target_set_warnings(bench_sim)
 endif()
 
 if(SIRIUS_ENABLE_SANITIZERS)
     target_enable_sanitizers(bench_tiff_sirius)
+    target_enable_sanitizers(bench_sim)
 endif()

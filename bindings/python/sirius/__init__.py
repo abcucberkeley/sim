@@ -3,13 +3,25 @@ from pathlib import Path
 
 if os.name == "nt":
     os.add_dll_directory(str(Path(__file__).parent))
+    # CUDA-enabled wheels link to the user's toolkit, matching native CUDA
+    # applications. Python 3.8+ no longer searches PATH for dependent DLLs,
+    # so explicitly register CUDA_PATH/bin when the toolkit is installed.
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        for cuda_bin in (Path(cuda_path) / "bin", Path(cuda_path) / "bin" / "x64"):
+            if cuda_bin.is_dir():
+                os.add_dll_directory(str(cuda_bin))
 
 from sirius._sirius_ext import (
     Buffer,
+    ApodizationType,
     Device,
     DeviceProperties,
     DeviceType,
     FFT,
+    SIMParameters,
+    SimFit,
+    SimReconstructor,
     PixelType,
     PlanRigor,
     Stream,
@@ -25,18 +37,25 @@ from sirius._sirius_ext import (
     cuda_device_count,
     device_properties,
     inspect_tiff,
+    load_legacy_parameters,
+    load_parameters,
     read_tiff,
     synchronize_device,
+    save_parameters,
     to_device,
     write_tiff,
 )
 
 __all__ = [
     "Buffer",
+    "ApodizationType",
     "Device",
     "DeviceProperties",
     "DeviceType",
     "FFT",
+    "SIMParameters",
+    "SimFit",
+    "SimReconstructor",
     "PixelType",
     "PlanRigor",
     "Stream",
@@ -52,8 +71,11 @@ __all__ = [
     "cuda_device_count",
     "device_properties",
     "inspect_tiff",
+    "load_legacy_parameters",
+    "load_parameters",
     "read_tiff",
     "synchronize_device",
+    "save_parameters",
     "to_device",
     "write_tiff",
 ]

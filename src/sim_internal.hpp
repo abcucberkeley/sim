@@ -33,6 +33,13 @@ namespace sirius::simdetail {
         // data[i] = (data[i] - sub) * mul (background + inscale)
         virtual void scaleShift(double* data, IndexT n, double sub, double mul) = 0;
 
+        // Convert TIFF section order to contiguous (direction, phase, z, y, x).
+        // Keeping this as one backend operation avoids ndirs*nphases*nz tiny
+        // cudaMemcpy launches on the GPU.
+        virtual void reorderFrames(const double* raw, double* frames,
+                                   IndexT ndirs, IndexT nphases, IndexT nz,
+                                   IndexT planeElems, bool fastSi) = 0;
+
         // hostSums[p] = sum over plane p; data is (nplanes, planeElems)
         virtual void planeSums(const double* data, IndexT nplanes, IndexT planeElems,
                                double* hostSums) = 0;

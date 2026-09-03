@@ -4,6 +4,7 @@
 #include "sim_internal.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -15,6 +16,22 @@ namespace sirius::simdetail {
 
         class CpuSimBackend final : public SimBackend {
         public:
+            void reorderFrames(const double* raw, double* frames,
+                               IndexT ndirs, IndexT nphases, IndexT nz,
+                               IndexT planeElems, bool fastSi) override {
+                const IndexT nplanes = ndirs * nphases * nz;
+                #pragma omp parallel for schedule(static)
+                for (IndexT dst = 0; dst < nplanes; ++dst) {
+                    const IndexT z = dst % nz;
+                    const IndexT ph = (dst / nz) % nphases;
+                    const IndexT d = dst / (nz * nphases);
+                    const IndexT src = fastSi ? (z * ndirs + d) * nphases + ph
+                                             : (d * nz + z) * nphases + ph;
+                    std::memcpy(frames + dst * planeElems, raw + src * planeElems,
+                                static_cast<std::size_t>(planeElems) * sizeof(double));
+                }
+            }
+
             void scaleShift(double* data, IndexT n, double sub, double mul) override {
                 #pragma omp parallel for schedule(static)
                 for (IndexT i = 0; i < n; ++i) data[i] = (data[i] - sub) * mul;

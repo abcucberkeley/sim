@@ -32,6 +32,24 @@ namespace sirius::simdetail {
                 d[i] = (d[i] - sub) * mul;
         }
 
+        __global__ void reorderFramesKernel(const double* __restrict__ raw,
+                                            double* __restrict__ frames,
+                                            IndexT ndirs, IndexT nphases, IndexT nz,
+                                            IndexT planeElems, bool fastSi) {
+            const IndexT total = ndirs * nphases * nz * planeElems;
+            for (IndexT t = blockIdx.x * (IndexT)blockDim.x + threadIdx.x; t < total;
+                 t += (IndexT)gridDim.x * blockDim.x) {
+                const IndexT pixel = t % planeElems;
+                const IndexT dst = t / planeElems;
+                const IndexT z = dst % nz;
+                const IndexT ph = (dst / nz) % nphases;
+                const IndexT d = dst / (nz * nphases);
+                const IndexT src = fastSi ? (z * ndirs + d) * nphases + ph
+                                         : (d * nz + z) * nphases + ph;
+                frames[t] = raw[src * planeElems + pixel];
+            }
+        }
+
         // one block per plane; sequential per-thread accumulation + tree reduce
         __global__ void planeSumsKernel(const double* __restrict__ data, IndexT planeElems,
                                         double* __restrict__ sums) {
@@ -258,6 +276,16 @@ namespace sirius::simdetail {
             CudaSimBackend(Device device, const Stream& stream)
                 : device_(device), stream_(stream) {
                 requireDevice(device);
+            }
+
+            void reorderFrames(const double* raw, double* frames,
+                               IndexT ndirs, IndexT nphases, IndexT nz,
+                               IndexT planeElems, bool fastSi) override {
+                cuda::DeviceGuard g(device_.index);
+                const IndexT n = ndirs * nphases * nz * planeElems;
+                reorderFramesKernel<<<gridFor(n), kBlock, 0, cuda::handle(stream_)>>>(
+                    raw, frames, ndirs, nphases, nz, planeElems, fastSi);
+                cuda::check(cudaGetLastError(), "reorderFrames kernel");
             }
 
             void scaleShift(double* data, IndexT n, double sub, double mul) override {
