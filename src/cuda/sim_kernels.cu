@@ -414,6 +414,13 @@ namespace sirius::simdetail {
 
             void synchronize() override { stream_.synchronize(); }
 
+            ~CudaSimBackend() override {
+                if (scratch_) {
+                    cuda::DeviceGuard g(device_.index);
+                    (void)cudaFree(scratch_);
+                }
+            }
+
         private:
             // small per-call staging area (plane sums, reduction partials,
             // separation matrix); grown once, reused for the whole run
@@ -425,13 +432,6 @@ namespace sirius::simdetail {
                     scratchElems_ = n;
                 }
                 return scratch_;
-            }
-
-            ~CudaSimBackend() override {
-                if (scratch_) {
-                    cuda::DeviceGuard g(device_.index);
-                    (void)cudaFree(scratch_);
-                }
             }
 
             Device device_;

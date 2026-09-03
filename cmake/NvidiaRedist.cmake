@@ -89,9 +89,16 @@ set_target_properties(nvtiff::nvtiff PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${_nvtiff_dir}/include")
 if(WIN32)
     file(GLOB _nvtiff_dll "${_nvtiff_dir}/bin/nvtiff*.dll")
+    # archive layouts differ between nvTIFF releases: the import library sits
+    # under lib/x64/ in some and directly under lib/ in others
+    file(GLOB _nvtiff_implib "${_nvtiff_dir}/lib/x64/nvtiff.lib" "${_nvtiff_dir}/lib/nvtiff.lib")
+    if(NOT _nvtiff_implib)
+        message(FATAL_ERROR "nvtiff.lib not found under ${_nvtiff_dir}/lib")
+    endif()
+    list(GET _nvtiff_implib 0 _nvtiff_implib)
     set_target_properties(nvtiff::nvtiff PROPERTIES
         IMPORTED_LOCATION "${_nvtiff_dll}"
-        IMPORTED_IMPLIB   "${_nvtiff_dir}/lib/x64/nvtiff.lib")
+        IMPORTED_IMPLIB   "${_nvtiff_implib}")
     set(SIRIUS_NVTIFF_RUNTIME_LIBS "${_nvtiff_dll}")
 else()
     set_target_properties(nvtiff::nvtiff PROPERTIES

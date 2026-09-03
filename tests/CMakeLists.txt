@@ -32,6 +32,18 @@ target_compile_definitions(sirius_tests
         SIRIUS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
 )
 
+# Windows has no RPATH: the nvTIFF/nvCOMP runtime DLLs live in their
+# FetchContent trees, so put copies next to the test binary or it cannot
+# even start (0xC0000135) -- which also breaks Catch2 test discovery.
+if(WIN32 AND SIRIUS_NVTIFF_RUNTIME_LIBS)
+    foreach(_runtime_dll IN LISTS SIRIUS_NVTIFF_RUNTIME_LIBS SIRIUS_NVCOMP_RUNTIME_LIBS)
+        add_custom_command(TARGET sirius_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_runtime_dll}" "$<TARGET_FILE_DIR:sirius_tests>"
+            VERBATIM)
+    endforeach()
+endif()
+
 include(Catch)
 # GPU-only cases SKIP at run time when no CUDA device is usable, so the same
 # binary passes on CPU-only CI. `ctest -L cuda` / the [cuda] tag select them.
