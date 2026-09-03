@@ -2,11 +2,12 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/generators/catch_generators.hpp>
-#include <atomic>
 #include <cstdio>
 #include <tiffio.h>
 
 #include "sirius/tiff_io.hpp"
+
+#include "temp_path.hpp"
 
 using namespace sirius;
 
@@ -62,10 +63,9 @@ struct TempFile {
     ~TempFile() { std::remove(path.c_str()); }
 };
 
-// Returns a unique temp path with the given suffix, safe for parallel test runs
+// Unique scratch path in the temp directory, safe for parallel test processes
 inline std::string uniqueTempPath(const char* suffix) {
-    static std::atomic<int> counter{0};
-    return std::string("sirius_test_") + std::to_string(counter.fetch_add(1)) + suffix;
+    return sirius::test::uniqueTempPath("tiffio", suffix).string();
 }
 
 // -----------------------------------------------------------------------

@@ -6,9 +6,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
-#include <atomic>
 #include <cstdio>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -17,17 +15,15 @@
 #include "sirius/buffer.hpp"
 #include "sirius/tiff_io.hpp"
 
+#include "temp_path.hpp"
+
 using namespace sirius;
 
 namespace {
 
     struct TempFile {
         std::string path;
-        explicit TempFile(const char* suffix) {
-            static std::atomic<int> counter{0};
-            path = (std::filesystem::temp_directory_path() /
-                    ("sirius_tifffile_" + std::to_string(counter.fetch_add(1)) + suffix)).string();
-        }
+        explicit TempFile(const char* suffix) : path(test::uniqueTempPath("tifffile", suffix).string()) {}
         ~TempFile() { std::remove(path.c_str()); }
     };
 

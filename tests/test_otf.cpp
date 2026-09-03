@@ -10,6 +10,8 @@
 #include "sirius/otf.hpp"
 #include "sirius/tiff_io.hpp"
 
+#include "temp_path.hpp"
+
 using namespace sirius;
 using Catch::Matchers::WithinAbs;
 using Cplx = std::complex<double>;
@@ -33,8 +35,7 @@ namespace {
     };
 
     std::string tempTiffPath(const char* tag) {
-        return (std::filesystem::temp_directory_path() /
-                ("sirius_otf_" + std::string(tag) + ".tif")).string();
+        return test::uniqueTempPath((std::string("otf_") + tag).c_str(), ".tif").string();
     }
 }
 

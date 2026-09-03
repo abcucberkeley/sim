@@ -10,6 +10,8 @@
 #include "sirius/sim_parameters.hpp"
 #include "sirius/legacy_config.hpp"
 
+#include "temp_path.hpp"
+
 using namespace sirius;
 using Catch::Approx;
 
@@ -19,10 +21,8 @@ namespace {
     struct TempFile {
         std::filesystem::path path;
 
-        explicit TempFile(const std::string& suffix, const std::string& contents = "") {
-            static int counter = 0;
-            path = std::filesystem::temp_directory_path() /
-                   ("sirius_test_" + std::to_string(counter++) + suffix);
+        explicit TempFile(const std::string& suffix, const std::string& contents = "")
+            : path(test::uniqueTempPath("params", suffix.c_str())) {
             if (!contents.empty()) {
                 std::ofstream f(path);
                 f << contents;
