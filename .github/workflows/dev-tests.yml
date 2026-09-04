@@ -57,7 +57,7 @@ jobs:
       - name: Install python build/test deps
         run: |
           python -m pip install --upgrade pip
-          pip install numpy tifffile
+          pip install numpy tifffile imagecodecs
 
       - name: Build & install sirius (editable)
         run: pip install -e . --verbose
@@ -74,6 +74,15 @@ jobs:
     container:
       image: nvidia/cuda:13.1.0-devel-ubuntu24.04
     steps:
+      # actions/checkout shells out to git and git-lfs, and the CUDA image
+      # ships neither, so this has to run before the checkout step (the
+      # toolchain script below cannot: it lives in the repository).
+      - name: Install git for actions/checkout
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git git-lfs
+          rm -rf /var/lib/apt/lists/*
+
       - uses: actions/checkout@v4
         with:
           lfs: true

@@ -239,28 +239,54 @@ namespace sirius::simdetail {
             ModampSums modampReduce(const Cd* ov0, const Cd* ov1,
                                     IndexT nz, IndexT ny, IndexT nx,
                                     double angleX, double angleY) override {
-                double xyRe = 0, xyIm = 0, sumX = 0, sumY = 0;
+                // Deterministic reduction. `reduction(+:...)` combines the
+                // per-thread partials in completion order, so the rounding of
+                // this sum -- and with it the |modamp|^2 that the k0 bracket
+                // search maximizes -- varies from run to run. Instead reduce
+                // fixed-size blocks of the plane and combine them serially in
+                // block order: the summation tree then depends only on `sec`,
+                // not on the thread count or the schedule, so two
+                // reconstructions of the same input agree bit for bit (this
+                // matches what the CUDA backend already does with its
+                // per-block partials).
+                constexpr IndexT kBlock = 1024;
                 const IndexT sec = ny * nx;
-                #pragma omp parallel for schedule(static) reduction(+:xyRe, xyIm, sumX, sumY)
-                for (IndexT i = 0; i < sec; ++i) {
-                    const IndexT iy = i / nx;
-                    const IndexT ix = i % nx;
-                    const double angle = angleX * (static_cast<double>(ix) - 0.5 * static_cast<double>(nx)) +
-                                         angleY * (static_cast<double>(iy) - 0.5 * static_cast<double>(ny));
-                    const Cd ramp = cd(cos(angle), sin(angle));
-                    Cd acc = cd(0, 0);
-                    for (IndexT z = 0; z < nz; ++z) {
-                        const Cd a = ov0[z * sec + i];
-                        const Cd b = ov1[z * sec + i];
-                        acc = cadd(acc, cmul(cconj(a), b));
-                        sumX += cabs2(a);
-                        sumY += cabs2(b);
+                const IndexT nblocks = (sec + kBlock - 1) / kBlock;
+                struct Partial { double xyRe, xyIm, sumX, sumY; };
+                std::vector<Partial> partials(static_cast<std::size_t>(nblocks));
+
+                #pragma omp parallel for schedule(static)
+                for (IndexT b = 0; b < nblocks; ++b) {
+                    const IndexT begin = b * kBlock;
+                    const IndexT end = std::min(begin + kBlock, sec);
+                    double xyRe = 0, xyIm = 0, sumX = 0, sumY = 0;
+                    for (IndexT i = begin; i < end; ++i) {
+                        const IndexT iy = i / nx;
+                        const IndexT ix = i % nx;
+                        const double angle = angleX * (static_cast<double>(ix) - 0.5 * static_cast<double>(nx)) +
+                                             angleY * (static_cast<double>(iy) - 0.5 * static_cast<double>(ny));
+                        const Cd ramp = cd(cos(angle), sin(angle));
+                        Cd acc = cd(0, 0);
+                        for (IndexT z = 0; z < nz; ++z) {
+                            const Cd a = ov0[z * sec + i];
+                            const Cd b2 = ov1[z * sec + i];
+                            acc = cadd(acc, cmul(cconj(a), b2));
+                            sumX += cabs2(a);
+                            sumY += cabs2(b2);
+                        }
+                        const Cd t = cmul(acc, ramp);
+                        xyRe += t.re;
+                        xyIm += t.im;
                     }
-                    const Cd t = cmul(acc, ramp);
-                    xyRe += t.re;
-                    xyIm += t.im;
+                    partials[static_cast<std::size_t>(b)] = {xyRe, xyIm, sumX, sumY};
                 }
+
                 ModampSums s;
+                double xyRe = 0, xyIm = 0, sumX = 0, sumY = 0;
+                for (const Partial& p : partials) {
+                    xyRe += p.xyRe; xyIm += p.xyIm;
+                    sumX += p.sumX; sumY += p.sumY;
+                }
                 s.xy = cd(xyRe, xyIm);
                 s.sumX = sumX;
                 s.sumY = sumY;

@@ -91,6 +91,33 @@ TEST_CASE("CPU reconstruction reproduces the cudasirecon reference output", "[re
     CHECK(rel < 1e-4);
 }
 
+TEST_CASE("Repeated CPU reconstructions of the same input are bit-identical",
+          "[reconstruction]") {
+    // The k0 bracket search maximizes |modamp|^2, so a reduction whose
+    // rounding depends on the OpenMP thread schedule moves the fitted pattern
+    // vector and, through it, every output voxel. Reproducibility is required
+    // by the Python API contract (recon.reconstruct(x) twice) and is what
+    // makes CPU/GPU comparisons meaningful.
+    TestData t = loadTestData();
+
+    SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+    const auto first = toEigen<3>(recon.reconstruct(t.raw));
+    const SimFit fit = recon.lastFit();
+    const auto second = toEigen<3>(recon.reconstruct(t.raw));
+
+    REQUIRE(first.size() == second.size());
+    Eigen::Index differing = 0;
+    for (Eigen::Index i = 0; i < first.size(); ++i)
+        if (first.data()[i] != second.data()[i]) ++differing;
+    INFO(differing << " of " << first.size() << " voxels differ between runs");
+    CHECK(differing == 0);
+
+    for (std::size_t d = 0; d < fit.k0.size(); ++d) {
+        CHECK(fit.k0[d][0] == recon.lastFit().k0[d][0]);
+        CHECK(fit.k0[d][1] == recon.lastFit().k0[d][1]);
+    }
+}
+
 TEST_CASE("GPU reconstruction reproduces the cudasirecon reference output",
           "[reconstruction][cuda]") {
     if (!cudaAvailable()) SKIP("no CUDA device available");

@@ -20,7 +20,15 @@ def _write(path, arr, **kw):
             raise unittest.SkipTest("tifffile is required for this test")
         sirius.write_tiff(path, arr)
         return
-    tifffile.imwrite(path, arr, photometric="minisblack", **kw)
+    try:
+        tifffile.imwrite(path, arr, photometric="minisblack", **kw)
+    except KeyError as exc:
+        # tifffile delegates most codecs to imagecodecs and raises KeyError
+        # naming the missing package. The reader under test is sirius's, so
+        # skip rather than fail when the fixture cannot be produced.
+        if "imagecodecs" not in str(exc):
+            raise
+        raise unittest.SkipTest(f"imagecodecs is required to write {kw}") from exc
 
 
 class TestInspect(unittest.TestCase):
