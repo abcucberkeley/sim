@@ -1,15 +1,18 @@
 #include "qt/main_window.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenuBar>
@@ -19,13 +22,17 @@
 #include <QScrollArea>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTime>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <sirius/tiff_io.hpp>
 
+#include "core/volume_ops.hpp"
+#include "qt/band_view.hpp"
 #include "qt/parameter_panel.hpp"
 #include "qt/qt_strings.hpp"
 #include "qt/recon_worker.hpp"
@@ -50,11 +57,22 @@ namespace sirius::app {
             return i < 0 ? Device::cpu() : Device::cuda(i);
         }
 
+        // Non-owning shared_ptr to a buffer the session keeps alive; the
+        // views are cleared before the session replaces it.
+        std::shared_ptr<const Buffer<double>> borrow(const Buffer<double>& b) {
+            return std::shared_ptr<const Buffer<double>>(&b, [](const Buffer<double>*) {});
+        }
+
     } // namespace
 
     MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         setWindowTitle(tr("Sirius SIM reconstruction"));
-        resize(1400, 900);
+        resize(1500, 950);
+
+        otfRefresh_ = new QTimer(this);
+        otfRefresh_->setSingleShot(true);
+        otfRefresh_->setInterval(400);
+        connect(otfRefresh_, &QTimer::timeout, this, &MainWindow::refreshOtfView);
 
         buildMenus();
         buildDock();
@@ -71,7 +89,8 @@ namespace sirius::app {
 
         session_.setParameters(params_->parameters());
         refreshState();
-        log(tr("Ready. CUDA %1, %2 device(s).")
+        refreshOtfView();
+        log(tr("Ready. CUDA %1, %2 device(s). Without an OTF file the theoretical OTF for the NA is used.")
                 .arg(builtWithCuda() ? tr("enabled") : tr("not compiled in"))
                 .arg(cudaDeviceCount()));
     }
@@ -89,6 +108,7 @@ namespace sirius::app {
         QMenu* file = menuBar()->addMenu(tr("&File"));
         file->addAction(tr("Open &raw stack..."), this, &MainWindow::chooseRaw, QKeySequence::Open);
         file->addAction(tr("Open &OTF..."), this, &MainWindow::chooseOtf);
+        file->addAction(tr("Use &ideal OTF (from NA)"), this, &MainWindow::useIdealOtf);
         file->addSeparator();
         file->addAction(tr("&Load parameters..."), this, &MainWindow::chooseParameters);
         file->addAction(tr("&Save parameters..."), this, &MainWindow::saveParameters);
@@ -107,12 +127,28 @@ namespace sirius::app {
         auto* body = new QWidget(dock);
         auto* layout = new QVBoxLayout(body);
 
-        auto* inputs = new QFormLayout;
+        // inputs: name, open button (and the ideal-OTF button)
+        auto* inputs = new QGridLayout;
         rawLabel_ = new QLabel(tr("(none)"), body);
         otfLabel_ = new QLabel(tr("(none)"), body);
-        inputs->addRow(tr("Raw stack"), rawLabel_);
-        inputs->addRow(tr("OTF"), otfLabel_);
+        for (QLabel* l : {rawLabel_, otfLabel_}) l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto* rawOpen = new QPushButton(tr("Open..."), body);
+        auto* otfOpen = new QPushButton(tr("Open..."), body);
+        otfIdeal_ = new QPushButton(tr("Ideal"), body);
+        otfIdeal_->setToolTip(tr("Drop the OTF file and use the theoretical OTF computed from NA, "
+                                 "immersion index and wavelength"));
+        inputs->addWidget(new QLabel(tr("Raw stack"), body), 0, 0);
+        inputs->addWidget(rawLabel_, 0, 1);
+        inputs->addWidget(rawOpen, 0, 2);
+        inputs->addWidget(new QLabel(tr("OTF"), body), 1, 0);
+        inputs->addWidget(otfLabel_, 1, 1);
+        inputs->addWidget(otfOpen, 1, 2);
+        inputs->addWidget(otfIdeal_, 1, 3);
+        inputs->setColumnStretch(1, 1);
         layout->addLayout(inputs);
+        connect(rawOpen, &QPushButton::clicked, this, &MainWindow::chooseRaw);
+        connect(otfOpen, &QPushButton::clicked, this, &MainWindow::chooseOtf);
+        connect(otfIdeal_, &QPushButton::clicked, this, &MainWindow::useIdealOtf);
 
         params_ = new ParameterPanel(body);
         connect(params_, &ParameterPanel::changed, this, &MainWindow::onParametersEdited);
@@ -133,6 +169,12 @@ namespace sirius::app {
         runForm->addRow(tr("FFT planning"), rigor_);
         layout->addLayout(runForm);
 
+        capture_ = new QCheckBox(tr("Capture intermediate spectra"), body);
+        capture_->setToolTip(tr("Keep the separated and Wiener-filtered band spectra of the next run for the "
+                                "Bands tab. Costs memory (two copies of every band) and time."));
+        connect(capture_, &QCheckBox::toggled, this, &MainWindow::onCaptureToggled);
+        layout->addWidget(capture_);
+
         validation_ = new QLabel(body);
         validation_->setWordWrap(true);
         validation_->setStyleSheet(QStringLiteral("color: #b00020;"));
@@ -144,16 +186,29 @@ namespace sirius::app {
         layout->addWidget(run_);
 
         dock->setWidget(body);
-        dock->setMinimumWidth(360);
+        dock->setMinimumWidth(400);
         addDockWidget(Qt::LeftDockWidgetArea, dock);
     }
 
     void MainWindow::buildCentral() {
         views_ = new QTabWidget(this);
         rawView_ = new StackView(views_);
+        otfView_ = new OtfView(views_);
         resultView_ = new StackView(views_);
+        bandView_ = new BandView(views_);
         views_->addTab(rawView_, tr("Raw"));
+        views_->addTab(otfView_, tr("OTF"));
         views_->addTab(resultView_, tr("Reconstruction"));
+        views_->addTab(bandView_, tr("Bands"));
+        fixedTabs_ = views_->count();
+        views_->setTabsClosable(true);
+        for (int i = 0; i < fixedTabs_; ++i) {   // only crop tabs get a close button
+            views_->tabBar()->setTabButton(i, QTabBar::RightSide, nullptr);
+            views_->tabBar()->setTabButton(i, QTabBar::LeftSide, nullptr);
+        }
+        connect(views_, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
+        connect(rawView_, &StackView::cropRequested, this, &MainWindow::onCropRequested);
+        connect(resultView_, &StackView::cropRequested, this, &MainWindow::onCropRequested);
 
         fitTable_ = new QTableWidget(0, 5, this);
         fitTable_->setHorizontalHeaderLabels(
@@ -173,7 +228,7 @@ namespace sirius::app {
         auto* splitter = new QSplitter(Qt::Vertical, this);
         splitter->addWidget(views_);
         splitter->addWidget(bottom);
-        splitter->setStretchFactor(0, 4);
+        splitter->setStretchFactor(0, 5);
         splitter->setStretchFactor(1, 1);
         setCentralWidget(splitter);
     }
@@ -205,14 +260,14 @@ namespace sirius::app {
             return;
         }
         const Buffer<double>& raw = session_.raw();
-        // non-owning: the session keeps the buffer alive; openRaw() clears the
-        // view before replacing it
-        rawView_->setVolume(std::shared_ptr<const Buffer<double>>(&raw, [](const Buffer<double>*) {}));
+        rawView_->setVolume(borrow(raw));
+        applyRawGeometry();
         views_->setCurrentWidget(rawView_);
         lastDir_ = QFileInfo(path).absolutePath();
         log(tr("Loaded %1: %2 sections of %3 x %4")
                 .arg(path).arg(raw.dim(0)).arg(raw.dim(1)).arg(raw.dim(2)));
         refreshState();
+        refreshOtfView();   // the OTF is rendered on the stack's grid (and 2D vs 3D may change)
     }
 
     void MainWindow::openOtf(const QString& path) {
@@ -220,6 +275,17 @@ namespace sirius::app {
         lastDir_ = QFileInfo(path).absolutePath();
         log(tr("OTF: %1").arg(path));
         refreshState();
+        refreshOtfView();
+    }
+
+    void MainWindow::useIdealOtf() {
+        if (session_.usesIdealOtf()) return;
+        session_.setOtfPath({});
+        log(tr("OTF: theoretical OTF from NA %1, n %2, %3 nm")
+                .arg(session_.parameters().na).arg(session_.parameters().nimm)
+                .arg(session_.parameters().wavelength_nm));
+        refreshState();
+        refreshOtfView();
     }
 
     void MainWindow::openParameters(const QString& path) {
@@ -234,7 +300,9 @@ namespace sirius::app {
             log(tr("Failed to load parameters %1: %2").arg(path, QString::fromUtf8(e.what())));
         }
         lastDir_ = QFileInfo(path).absolutePath();
+        applyRawGeometry();
         refreshState();
+        refreshOtfView();
     }
 
     void MainWindow::chooseRaw() {
@@ -287,6 +355,95 @@ namespace sirius::app {
         }
     }
 
+    // --- viewers ---------------------------------------------------------
+
+    SpectrumOverlay MainWindow::rawOverlay() const {
+        const SIMParameters& p = session_.parameters();
+        SpectrumOverlay o;
+        o.supportRadius = otfSupportRadius(p);
+        o.norders = p.norders > 0 ? p.norders : p.nphases / 2 + 1;
+        o.predictedK0 = predictedK0(p, std::max<Index>(session_.inferredNz(), 1));
+        if (result_) {
+            o.fittedK0 = result_->fit.k0;
+            for (const auto& amps : result_->fit.amps) {
+                std::vector<double> mags;
+                for (const auto& a : amps) mags.push_back(std::abs(a));
+                o.ampMagnitude.push_back(std::move(mags));
+            }
+        }
+        return o;
+    }
+
+    void MainWindow::applyRawGeometry() {
+        const SIMParameters& p = session_.parameters();
+        rawView_->setPixelSize(p.dx, p.dy, p.dz);
+        rawView_->setOverlay(rawOverlay());
+        if (result_) {
+            resultView_->setPixelSize(p.dx / p.zoomfact, p.dy / p.zoomfact, p.dz / p.z_zoom);
+            resultView_->setOverlay(rawOverlay());
+        }
+    }
+
+    void MainWindow::refreshOtfView() {
+        otfRefresh_->stop();
+        std::shared_ptr<const OTFRadiallyAveraged> otf;
+        try {
+            otf = session_.otf();
+        } catch (const std::exception& e) {
+            otfView_->clear();
+            statusBar()->showMessage(tr("OTF unavailable: %1").arg(QString::fromUtf8(e.what())), 10000);
+            return;
+        }
+        Index nx = 256, ny = 256, nz = 1;
+        if (session_.hasRaw()) {
+            nx = session_.raw().dim(2);
+            ny = session_.raw().dim(1);
+            nz = std::max<Index>(session_.inferredNz(), 1);
+        } else if (otf->data().dimension(2) > 1) {
+            nz = otf->data().dimension(2);
+        }
+        const QString source = session_.usesIdealOtf()
+                                   ? tr("Ideal OTF (NA %1, n %2, %3 nm)")
+                                         .arg(session_.parameters().na).arg(session_.parameters().nimm)
+                                         .arg(session_.parameters().wavelength_nm)
+                                   : fileName(session_.otfPath());
+        otfView_->setOtf(otf, session_.parameters(), nx, ny, nz, source);
+    }
+
+    void MainWindow::onCropRequested(QRect r) {
+        auto* source = qobject_cast<StackView*>(sender());
+        if (!source || !source->volume()) return;
+        const Buffer<double>& v = *source->volume();
+        try {
+            auto crop = std::make_shared<Buffer<double>>(
+                cropVolume(v.view(), 0, v.dim(0), r.top(), r.bottom() + 1, r.left(), r.right() + 1));
+            auto* view = new StackView(views_);
+            const auto px = source->pixelSize();
+            view->setPixelSize(px[0], px[1], px[2]);
+            view->setVolumeIsSpectrum(source->volumeIsSpectrum());
+            view->setLogScale(source->logScale());
+            view->setVolume(crop);
+            connect(view, &StackView::cropRequested, this, &MainWindow::onCropRequested);
+            const int i = views_->addTab(view, tr("%1 [%2,%3 %4x%5]")
+                                                   .arg(views_->tabText(views_->indexOf(source)))
+                                                   .arg(r.left()).arg(r.top()).arg(r.width()).arg(r.height()));
+            views_->setCurrentIndex(i);
+            log(tr("Cropped %1 x %2 x %3 at (x %4, y %5)")
+                    .arg(crop->dim(0)).arg(crop->dim(1)).arg(crop->dim(2)).arg(r.left()).arg(r.top()));
+        } catch (const std::exception& e) {
+            log(tr("Crop failed: %1").arg(QString::fromUtf8(e.what())));
+        }
+    }
+
+    void MainWindow::onTabCloseRequested(int index) {
+        if (index < fixedTabs_) return;
+        QWidget* w = views_->widget(index);
+        views_->removeTab(index);
+        delete w;
+    }
+
+    void MainWindow::onCaptureToggled(bool on) { session_.setCaptureDiagnostics(on); }
+
     // --- reconstruction --------------------------------------------------
 
     Device MainWindow::selectedDevice() const { return deviceFrom(device_->currentData()); }
@@ -306,7 +463,10 @@ namespace sirius::app {
         setBusy(true);
         const Device device = selectedDevice();
         const PlanRigor rigor = selectedRigor();
-        log(tr("Reconstructing on %1 ...").arg(fromStd(toString(device))));
+        log(tr("Reconstructing on %1 with %2%3 ...")
+                .arg(fromStd(toString(device)))
+                .arg(session_.usesIdealOtf() ? tr("the ideal OTF") : tr("OTF %1").arg(fileName(session_.otfPath())))
+                .arg(session_.captureDiagnostics() ? tr(", capturing intermediate spectra") : QString()));
         // queued to the worker thread; run() emits started/finished/failed
         QMetaObject::invokeMethod(worker_, [w = worker_, device, rigor] { w->run(device, rigor); },
                                   Qt::QueuedConnection);
@@ -321,15 +481,27 @@ namespace sirius::app {
 
         // the viewer shares the volume; the ReconResult keeps the fit and timings
         resultVolume_ = std::make_shared<Buffer<double>>(std::move(result_->volume));
+        const SIMParameters& p = session_.parameters();
+        resultView_->setPixelSize(p.dx / p.zoomfact, p.dy / p.zoomfact, p.dz / p.z_zoom);
         resultView_->setVolume(resultVolume_);
-        views_->setCurrentWidget(resultView_);
+        applyRawGeometry();   // fitted pattern vectors now overlay both spectra
         showFit(result_->fit);
         saveResultAction_->setEnabled(true);
 
-        const QString msg = tr("Done in %1 s on %2 (%3)")
+        if (result_->diagnostics.captured) {
+            diagnostics_ = std::make_shared<SimDiagnostics>(std::move(result_->diagnostics));
+            bandView_->setResult(diagnostics_, result_->fit, p);
+        } else {
+            diagnostics_.reset();
+            bandView_->clear();
+        }
+        views_->setCurrentWidget(resultView_);
+
+        const QString msg = tr("Done in %1 s on %2 (%3, %4)")
                                 .arg(result_->seconds, 0, 'f', 2)
                                 .arg(fromStd(toString(result_->device)))
-                                .arg(result_->plansReused ? tr("plans reused") : tr("plans rebuilt"));
+                                .arg(result_->plansReused ? tr("plans reused") : tr("plans rebuilt"))
+                                .arg(result_->idealOtf ? tr("ideal OTF") : tr("measured OTF"));
         log(msg);
         statusBar()->showMessage(msg, 10000);
     }
@@ -343,7 +515,9 @@ namespace sirius::app {
 
     void MainWindow::onParametersEdited() {
         session_.setParameters(params_->parameters());
+        applyRawGeometry();
         refreshState();
+        otfRefresh_->start();   // recompute the OTF once the edits settle
     }
 
     // --- state -----------------------------------------------------------
@@ -354,14 +528,17 @@ namespace sirius::app {
         params_->setEnabled(!busy);
         device_->setEnabled(!busy);
         rigor_->setEnabled(!busy);
+        capture_->setEnabled(!busy);
         run_->setEnabled(!busy);
+        otfIdeal_->setEnabled(!busy);
         menuBar()->setEnabled(!busy);
         if (!busy) refreshState();
     }
 
     void MainWindow::refreshState() {
         rawLabel_->setText(fileName(session_.rawPath()));
-        otfLabel_->setText(fileName(session_.otfPath()));
+        otfLabel_->setText(session_.usesIdealOtf() ? tr("ideal (from NA)") : fileName(session_.otfPath()));
+        otfIdeal_->setEnabled(!busy_ && !session_.usesIdealOtf());
         const std::string problem = session_.validate();
         validation_->setText(fromStd(problem));
         run_->setEnabled(!busy_ && problem.empty());

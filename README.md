@@ -205,19 +205,38 @@ sub-voxel placement would need a resampling step that does not exist yet.
 ## Desktop application (`app/`)
 
 `sirius-app` is a Qt Widgets front end for the reconstruction pipeline: load a raw
-stack, an OTF and a parameter file (TOML or legacy cudasirecon `key=value`), edit the
-parameters, reconstruct on the CPU or any CUDA device, browse the raw and reconstructed
-volumes slice by slice, read off the fitted pattern vectors and save the result as a
-float32 TIFF. Reconstructions run on a worker thread; the `SimReconstructor` (FFT
-plans) and the device copy of the raw stack are kept between runs and only rebuilt
-when the parameters, OTF or device change.
+stack, optionally an OTF, and a parameter file (TOML or legacy cudasirecon `key=value`),
+edit the parameters, reconstruct on the CPU or any CUDA device, inspect the volumes,
+read off the fitted pattern vectors and save the result as a float32 TIFF.
+Reconstructions run on a worker thread; the `SimReconstructor` (FFT plans) and the
+device copy of the raw stack are kept between runs and only rebuilt when the
+parameters, OTF or device change.
+
+- **OTF is optional.** Without a file the theoretical OTF of an aberration-free objective
+  is computed from NA, immersion index and emission wavelength (`sirius::idealOTF`; 3D
+  with the missing cone when the stack has several z planes, in-focus 2D otherwise).
+  The `Ideal` button next to the OTF drops a loaded file again.
+- **Viewers** (Raw, OTF, Reconstruction, crops): mouse-wheel zoom around the cursor,
+  drag to pan, `Fit`/`1:1`, min/max contrast sliders with `Auto` (percentiles) and
+  `Reset`, `Log` display, `Select` + `Crop` to open a rectangle (all slices) in a new
+  closable tab, `Ortho` for XZ/YZ views through a click-positioned crosshair
+  (`Physical z` scales them by dz/dx), and `Spectrum` to show the centered |FFT| of the
+  displayed planes. In spectrum mode the raw and result views overlay the OTF support
+  circle (2NA/λ), the pattern vectors predicted from the parameters (yellow crosses)
+  and, after a run, the fitted ones with their modulation amplitudes (cyan circles).
+- **OTF tab**: one order of the OTF (loaded or ideal) resampled onto the stack's grid,
+  exactly as the reconstruction interpolates it; step through kz with the slice slider.
+- **Bands tab**: with `Capture intermediate spectra` ticked, a run keeps the separated
+  band spectra and their Wiener-filtered versions (`SimReconstructor::setCaptureDiagnostics`),
+  browsable by direction, order (± side bands) and stage. Off by default: it holds two
+  host copies of every band volume.
 
 ```
 export SIRIUS_QT_DIR=/path/to/Qt/6.x/gcc_64        # any Qt 6 or Qt 5.15 prefix
 cmake --preset linux-gcc-app-dev
 cmake --build --preset linux-gcc-app-dev
 ctest --preset linux-gcc-app-dev                    # includes the app core tests
-./build/linux-gcc-app-dev/app/sirius-app --raw raw.tif --otf otf.tif --params config.txt [--reconstruct]
+./build/linux-gcc-app-dev/app/sirius-app --raw raw.tif [--otf otf.tif] --params config.txt [--reconstruct]
 ```
 
 `SIRIUS_ENABLE_APP=ON` locates Qt with `find_package` (Qt is a system dependency

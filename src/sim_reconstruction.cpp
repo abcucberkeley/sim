@@ -72,6 +72,8 @@ namespace sirius {
         Stream stream;
         std::unique_ptr<simdetail::SimBackend> backend;
         SimFit fit;
+        bool capture = false;
+        SimDiagnostics diag;
 
         int norders = 0;
         int nbands = 0;
@@ -501,6 +503,13 @@ namespace sirius {
             }
         }
 
+        // Host copy of the whole band storage for the diagnostics.
+        void captureBands(Buffer<Cplx>& dst) {
+            dst = Buffer<Cplx>(bands.shape(), Device::cpu());
+            detail::copyBytes(bands.data(), dev, dst.data(), Device::cpu(), bands.bytes(), stream);
+            stream.synchronize();
+        }
+
         // ---- pipeline -----------------------------------------------------
 
         Buffer<double> run(BufferView<const double> raw) {
@@ -517,6 +526,17 @@ namespace sirius {
                                             " sections is not a multiple of ndirs*nphases = " +
                                             std::to_string(perZ));
             bindShape(raw.dim(2), raw.dim(1), nsec / perZ);
+
+            diag = SimDiagnostics{};
+            if (capture) {
+                diag.captured = true;
+                diag.ndirs = p.ndirs;
+                diag.nbands = nbands;
+                diag.nx = nx; diag.ny = ny; diag.nz = nz;
+                diag.dkx = dkx; diag.dky = dky; diag.dkz = dkz;
+                diag.rdistcutoff = rdistcutoff;
+                diag.zdistcutoff = zdistcutoff;
+            }
 
             // 1. frame ordering: sections -> frames[(d*nphases + p)*nz + z]
             const Index sec = ny * nx;
@@ -559,6 +579,7 @@ namespace sirius {
                                   realBands.data(), sepMatrix.data(), p.nphases, nbands, volN);
                 bandFft->rfft(realBands.data(), dirBands(d), stream);
             }
+            if (capture) captureBands(diag.separated);
 
             // 7. pattern vector + modulation amplitudes, per direction
             fit.k0.assign(static_cast<std::size_t>(p.ndirs), {0.0, 0.0});
@@ -586,6 +607,7 @@ namespace sirius {
             Buffer<double> out(Shape{zdim, ydim, xdim}, dev, HostMemory::Pageable, stream);
             detail::memsetBytes(out.data(), dev, 0, out.bytes(), stream);
             filterAndAssemble(out);
+            if (capture) captureBands(diag.filtered);   // the filter runs in place on `bands`
 
             backend->synchronize();
             return out;
@@ -602,6 +624,15 @@ namespace sirius {
 
     Device SimReconstructor::device() const noexcept { return impl_->dev; }
     const SimFit& SimReconstructor::lastFit() const noexcept { return impl_->fit; }
+
+    void SimReconstructor::setCaptureDiagnostics(bool on) noexcept { impl_->capture = on; }
+    bool SimReconstructor::captureDiagnostics() const noexcept { return impl_->capture; }
+    const SimDiagnostics& SimReconstructor::lastDiagnostics() const noexcept { return impl_->diag; }
+    SimDiagnostics SimReconstructor::takeDiagnostics() noexcept {
+        SimDiagnostics out = std::move(impl_->diag);
+        impl_->diag = SimDiagnostics{};
+        return out;
+    }
 
     Buffer<double> SimReconstructor::reconstruct(BufferView<const double> raw) {
         return impl_->run(raw);

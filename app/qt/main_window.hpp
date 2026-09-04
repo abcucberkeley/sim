@@ -1,9 +1,10 @@
 #ifndef SIRIUS_APP_MAIN_WINDOW_HPP
 #define SIRIUS_APP_MAIN_WINDOW_HPP
 
-// Top-level window: parameter dock on the left, raw/result stack viewers in
-// the middle, fit table and log at the bottom. Owns the ReconSession and the
-// worker thread that runs reconstructions on it.
+// Top-level window: parameter dock on the left, tabbed viewers in the middle
+// (raw stack, OTF, reconstruction, captured band spectra, crops), fit table
+// and log at the bottom. Owns the ReconSession and the worker thread that
+// runs reconstructions on it.
 //
 // Threading contract: the session is edited only from the GUI thread and only
 // while no reconstruction is running (the controls are disabled meanwhile), so
@@ -12,6 +13,7 @@
 #include <memory>
 
 #include <QMainWindow>
+#include <QRect>
 #include <QString>
 #include <QThread>
 
@@ -20,18 +22,23 @@
 #include "core/session.hpp"
 
 class QAction;
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
 class QTabWidget;
 class QTableWidget;
+class QTimer;
 
 namespace sirius::app {
 
+    class BandView;
+    class OtfView;
     class ParameterPanel;
     class ReconWorker;
     class StackView;
+    struct SpectrumOverlay;
 
     class MainWindow : public QMainWindow {
         Q_OBJECT
@@ -51,6 +58,7 @@ namespace sirius::app {
     private slots:
         void chooseRaw();
         void chooseOtf();
+        void useIdealOtf();
         void chooseParameters();
         void saveParameters();
         void saveResult();
@@ -58,6 +66,9 @@ namespace sirius::app {
         void onReconFinished();
         void onReconFailed(const QString& message);
         void onParametersEdited();
+        void onCaptureToggled(bool on);
+        void onCropRequested(QRect selection);
+        void onTabCloseRequested(int index);
 
     private:
         void buildMenus();
@@ -66,6 +77,9 @@ namespace sirius::app {
         void buildDevices();
         void setBusy(bool busy);
         void refreshState();     // validate() -> run button + status
+        void refreshOtfView();   // recompute / reload the OTF shown in its tab
+        void applyRawGeometry(); // pixel sizes + overlays of the raw viewer
+        SpectrumOverlay rawOverlay() const;
         void log(const QString& line);
         void showFit(const SimFit& fit);
         Device selectedDevice() const;
@@ -74,6 +88,7 @@ namespace sirius::app {
         ReconSession session_;
         std::unique_ptr<ReconResult> result_;
         std::shared_ptr<const Buffer<double>> resultVolume_;
+        std::shared_ptr<const SimDiagnostics> diagnostics_;
 
         QThread workerThread_;
         ReconWorker* worker_ = nullptr;   // lives on workerThread_
@@ -82,13 +97,19 @@ namespace sirius::app {
         ParameterPanel* params_ = nullptr;
         QComboBox* device_ = nullptr;
         QComboBox* rigor_ = nullptr;
+        QCheckBox* capture_ = nullptr;
         QPushButton* run_ = nullptr;
         QLabel* rawLabel_ = nullptr;
         QLabel* otfLabel_ = nullptr;
+        QPushButton* otfIdeal_ = nullptr;
         QLabel* validation_ = nullptr;
         QTabWidget* views_ = nullptr;
         StackView* rawView_ = nullptr;
+        OtfView* otfView_ = nullptr;
         StackView* resultView_ = nullptr;
+        BandView* bandView_ = nullptr;
+        int fixedTabs_ = 0;               // tabs before the first crop tab
+        QTimer* otfRefresh_ = nullptr;    // debounces parameter edits
         QTableWidget* fitTable_ = nullptr;
         QPlainTextEdit* log_ = nullptr;
         QAction* saveResultAction_ = nullptr;

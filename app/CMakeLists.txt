@@ -11,6 +11,7 @@
 add_library(sirius_app_core STATIC
     core/display_mapping.cpp
     core/session.cpp
+    core/volume_ops.cpp
 )
 add_library(sirius::app_core ALIAS sirius_app_core)
 target_include_directories(sirius_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -36,6 +37,8 @@ add_executable(sirius-app WIN32 MACOSX_BUNDLE
     qt/image_canvas.hpp
     qt/stack_view.cpp
     qt/stack_view.hpp
+    qt/band_view.cpp
+    qt/band_view.hpp
     qt/recon_worker.cpp
     qt/recon_worker.hpp
 )

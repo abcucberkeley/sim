@@ -22,6 +22,26 @@ namespace sirius {
         std::vector<std::vector<std::complex<double>>> amps;  // (ndirs, norders); amps[d][0] == 1
     };
 
+    // Intermediate spectra of a reconstruct() call, captured only when
+    // SimReconstructor::setCaptureDiagnostics(true). Both volumes are host
+    // copies of the band storage: (ndirs * nbands * nz, ny, nx / 2 + 1)
+    // half spectra of the real band volumes in r2c layout and FFT ordering
+    // (band b of direction d starts at plane (d * nbands + b) * nz). Band 0
+    // is order 0; bands 2o - 1 and 2o are the cosine and sine parts of order
+    // o, so the +o side band is re + i * im and the -o side band re - i * im,
+    // with the kx < 0 half following from conjugate symmetry.
+    struct SimDiagnostics {
+        bool captured = false;
+        int ndirs = 0;
+        int nbands = 0;                      // 2 * norders - 1
+        Index nx = 0, ny = 0, nz = 0;        // data grid
+        double dkx = 0.0, dky = 0.0, dkz = 0.0;   // its frequency steps [1/um]
+        double rdistcutoff = 0.0;            // lateral OTF support radius the filter used [1/um]
+        int zdistcutoff = 0;                 // axial support used by the overlaps [planes]
+        Buffer<std::complex<double>> separated;   // after band separation and the band FFT
+        Buffer<std::complex<double>> filtered;    // after the generalized Wiener filter
+    };
+
     // 3-beam structured illumination reconstruction (Gustafsson et al. 2008),
     // matching the cudasirecon algorithm: preprocessing, band separation,
     // pattern-vector / modulation-amplitude fitting, generalized Wiener
@@ -62,6 +82,16 @@ namespace sirius {
 
         // Fit diagnostics of the last reconstruct() call.
         const SimFit& lastFit() const noexcept;
+
+        // Capture the intermediate spectra of reconstruct() (see
+        // SimDiagnostics). Off by default: it keeps two host copies of every
+        // band volume and, on CUDA, transfers them mid-pipeline.
+        void setCaptureDiagnostics(bool on) noexcept;
+        bool captureDiagnostics() const noexcept;
+        // Diagnostics of the last reconstruct(); `captured` is false unless
+        // capture was on for that call. takeDiagnostics() moves them out.
+        const SimDiagnostics& lastDiagnostics() const noexcept;
+        SimDiagnostics takeDiagnostics() noexcept;
 
     private:
         struct Impl;

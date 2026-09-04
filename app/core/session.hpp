@@ -16,6 +16,7 @@
 #include <sirius/buffer.hpp>
 #include <sirius/device.hpp>
 #include <sirius/fft_common.hpp>
+#include <sirius/otf.hpp>
 #include <sirius/sim_parameters.hpp>
 #include <sirius/sim_reconstruction.hpp>
 #include <sirius/tiff_io.hpp>
@@ -53,9 +54,11 @@ namespace sirius::app {
     struct ReconResult {
         Buffer<double> volume;    // host copy, (z_zoom*nz, zoomfact*ny, zoomfact*nx)
         SimFit fit;
+        SimDiagnostics diagnostics;   // captured only when the session asks for them
         Device device;
         double seconds = 0.0;     // wall time of SimReconstructor::reconstruct
         bool plansReused = false; // false when the reconstructor had to be rebuilt
+        bool idealOtf = false;    // the OTF was computed from NA, not loaded from a file
     };
 
     class ReconSession {
@@ -75,9 +78,23 @@ namespace sirius::app {
         const std::string& rawPath() const noexcept;
 
         // Radially averaged OTF TIFF; validated against the parameters when a
-        // reconstructor is built.
+        // reconstructor is built. An empty path (the default) means no
+        // measured OTF: the theoretical OTF of an aberration-free objective
+        // with the parameters' NA, immersion index and wavelength is used
+        // instead (sirius::idealOTF), in 3D when the stack has several planes.
         void setOtfPath(std::string path);
         const std::string& otfPath() const noexcept;
+        bool usesIdealOtf() const noexcept;
+
+        // The OTF a reconstruction would use right now (loaded or ideal),
+        // cached until the parameters, OTF path or stack dimensionality
+        // change. Throws when the file cannot be read.
+        std::shared_ptr<const OTFRadiallyAveraged> otf() const;
+
+        // Capture intermediate spectra (SimDiagnostics) during reconstruct().
+        // Costs memory and time, so it is off by default.
+        void setCaptureDiagnostics(bool on) noexcept;
+        bool captureDiagnostics() const noexcept;
 
         void setParameters(const SIMParameters& p);
         const SIMParameters& parameters() const noexcept;

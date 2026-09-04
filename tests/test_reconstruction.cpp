@@ -10,6 +10,7 @@
 
 #include "sirius/buffer.hpp"
 #include "sirius/legacy_config.hpp"
+#include "sirius/otf.hpp"
 #include "sirius/sim_reconstruction.hpp"
 #include "sirius/tiff_io.hpp"
 
@@ -53,18 +54,28 @@ namespace {
         return diff / peak;
     }
 
-    void checkFit(const SimFit& fit, const SIMParameters& params) {
+    // Pattern vectors: the reference fit lands at ~0.407 um in all three
+    // directions, at the angles of the config.
+    void checkK0(const SimFit& fit, const SIMParameters& params) {
         REQUIRE(fit.k0.size() == 3);
         REQUIRE(params.k0_angles.has_value());
         for (int d = 0; d < 3; ++d) {
             const double mag = std::hypot(fit.k0[d][0], fit.k0[d][1]);
             const double spacing = 1.0 / mag;
             INFO("direction " << d << ": spacing " << spacing << " um");
-            // the reference fit lands at ~0.407 um in all three directions
             CHECK(spacing > 0.40);
             CHECK(spacing < 0.415);
             const double angle = std::atan2(fit.k0[d][1], fit.k0[d][0]);
             CHECK(std::abs(angle - (*params.k0_angles)[d]) < 0.05);
+        }
+    }
+
+    // Modulation amplitudes are measured relative to the OTF, so these
+    // bounds hold for the measured OTF the reference used.
+    void checkFit(const SimFit& fit, const SIMParameters& params) {
+        checkK0(fit, params);
+        for (int d = 0; d < 3; ++d) {
+            INFO("direction " << d);
             // |amp1| ~ 0.21-0.24, |amp2| ~ 0.72-0.77 for this data
             CHECK(std::abs(fit.amps[d][0]) == 1.0);
             CHECK(std::abs(fit.amps[d][1]) > 0.1);
@@ -161,4 +172,85 @@ TEST_CASE("CPU and GPU reconstructions agree closely", "[reconstruction][cuda]")
     }
     INFO("max |cpu-gpu| / max |cpu| = " << diff / peak);
     CHECK(diff / peak < 1e-6);
+}
+
+// --- diagnostics and the ideal OTF ------------------------------------------
+
+TEST_CASE("Diagnostics capture the separated and filtered band spectra", "[reconstruction][diagnostics]") {
+    TestData t = loadTestData();
+    SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+
+    // off by default: nothing captured, and the result is unaffected
+    const auto plain = toEigen<3>(recon.reconstruct(t.raw));
+    CHECK_FALSE(recon.lastDiagnostics().captured);
+    CHECK(recon.lastDiagnostics().separated.empty());
+
+    recon.setCaptureDiagnostics(true);
+    const auto withDiag = toEigen<3>(recon.reconstruct(t.raw));
+    for (Eigen::Index i = 0; i < plain.size(); ++i) REQUIRE(withDiag.data()[i] == plain.data()[i]);
+
+    const SimDiagnostics& d = recon.lastDiagnostics();
+    REQUIRE(d.captured);
+    CHECK(d.ndirs == 3);
+    CHECK(d.nbands == 5);
+    CHECK(d.nx == 64);
+    CHECK(d.ny == 64);
+    CHECK(d.nz == 9);
+    CHECK(d.dkx > 0.0);
+    CHECK(d.rdistcutoff > 0.0);
+    const Shape expected{3 * 5 * 9, 64, 33};
+    REQUIRE(d.separated.shape() == expected);
+    REQUIRE(d.filtered.shape() == expected);
+    REQUIRE(d.separated.device().isCpu());
+
+    // Band 0 of direction 0 at DC is the (scaled) sum of the frames: real and
+    // positive. The filter changes the bands, so the two captures differ.
+    const std::complex<double> dc = d.separated.data()[0];
+    CHECK(dc.real() > 0.0);
+    CHECK(std::abs(dc.imag()) < 1e-9 * dc.real());
+    bool differ = false;
+    for (Index i = 0; i < d.separated.size() && !differ; ++i)
+        differ = d.separated.data()[i] != d.filtered.data()[i];
+    CHECK(differ);
+    for (Index i = 0; i < d.filtered.size(); ++i)
+        REQUIRE(std::isfinite(std::abs(d.filtered.data()[i])));
+
+    SimDiagnostics taken = recon.takeDiagnostics();
+    CHECK(taken.captured);
+    CHECK_FALSE(recon.lastDiagnostics().captured);
+    CHECK(recon.lastDiagnostics().separated.empty());
+}
+
+TEST_CASE("Reconstruction with the ideal OTF resembles the reference", "[reconstruction][ideal]") {
+    TestData t = loadTestData();
+    const OTFRadiallyAveraged ideal = idealOTF(t.params, /*threeD=*/true);
+    REQUIRE(ideal.data().dimension(0) >= 3);
+
+    SimReconstructor recon(t.params, ideal, Device::cpu(), PlanRigor::Estimate);
+    const auto out = toEigen<3>(recon.reconstruct(t.raw));
+    REQUIRE(out.dimension(0) == 9);
+    REQUIRE(out.dimension(1) == 128);
+    REQUIRE(out.dimension(2) == 128);
+    // the pattern vectors do not depend on the OTF's fine shape; the amplitudes do
+    checkK0(recon.lastFit(), t.params);
+    for (const auto& amps : recon.lastFit().amps) {
+        REQUIRE(amps.size() == 3);
+        CHECK(std::abs(amps[0]) == 1.0);
+        CHECK(std::abs(amps[1]) > 0.0);
+        CHECK(std::abs(amps[2]) > 0.0);
+    }
+
+    // Pearson correlation with the measured-OTF reference: same object, so
+    // the two reconstructions must agree strongly even though the ideal OTF
+    // ignores aberrations of the real system.
+    double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+    const double n = static_cast<double>(out.size());
+    for (Eigen::Index i = 0; i < out.size(); ++i) {
+        const double a = out.data()[i], b = t.expected.data()[i];
+        REQUIRE(std::isfinite(a));
+        sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+    }
+    const double corr = (n * sab - sa * sb) / std::sqrt((n * saa - sa * sa) * (n * sbb - sb * sb));
+    INFO("correlation with the reference reconstruction: " << corr);
+    CHECK(corr > 0.8);
 }

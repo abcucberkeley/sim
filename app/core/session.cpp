@@ -85,10 +85,20 @@ namespace sirius::app {
         // error-prone than comparing every parameter field.
         std::uint64_t setupGeneration = 0;   // parameters or OTF
         std::uint64_t rawGeneration = 0;
+        bool capture = false;
+
+        // OTF built for (setupGeneration, threeD); shared with the viewer
+        struct OtfCache {
+            std::uint64_t setupGeneration = 0;
+            bool threeD = false;
+            std::shared_ptr<const OTFRadiallyAveraged> otf;
+        };
+        mutable std::optional<OtfCache> otfCache;
 
         struct Cache {
             std::uint64_t setupGeneration = 0;
             std::uint64_t rawGeneration = 0;
+            bool threeD = false;   // the ideal OTF differs between 2D and 3D stacks
             Device device;
             PlanRigor rigor = PlanRigor::Measure;
             std::unique_ptr<SimReconstructor> recon;
@@ -99,6 +109,14 @@ namespace sirius::app {
         Index sectionsPerZ() const noexcept {
             return static_cast<Index>(params.ndirs) * params.nphases;
         }
+        Index inferredNz() const noexcept {
+            if (raw.empty()) return 0;
+            const Index perZ = sectionsPerZ();
+            const Index nsec = raw.dim(0);
+            return (perZ > 0 && nsec % perZ == 0) ? nsec / perZ : 0;
+        }
+        // Without a stack the 3D OTF is the informative one to show.
+        bool threeD() const noexcept { return raw.empty() ? true : inferredNz() > 1; }
     };
 
     ReconSession::ReconSession() : impl_(std::make_unique<Impl>()) {}
@@ -134,6 +152,21 @@ namespace sirius::app {
         ++impl_->setupGeneration;
     }
     const std::string& ReconSession::otfPath() const noexcept { return impl_->otfPath; }
+    bool ReconSession::usesIdealOtf() const noexcept { return impl_->otfPath.empty(); }
+
+    std::shared_ptr<const OTFRadiallyAveraged> ReconSession::otf() const {
+        const Impl& s = *impl_;
+        const bool threeD = s.threeD();
+        if (s.otfCache && s.otfCache->setupGeneration == s.setupGeneration && s.otfCache->threeD == threeD)
+            return s.otfCache->otf;
+        auto built = std::make_shared<const OTFRadiallyAveraged>(
+            s.otfPath.empty() ? idealOTF(s.params, threeD) : loadOTF(s.otfPath, s.params));
+        s.otfCache = Impl::OtfCache{s.setupGeneration, threeD, built};
+        return built;
+    }
+
+    void ReconSession::setCaptureDiagnostics(bool on) noexcept { impl_->capture = on; }
+    bool ReconSession::captureDiagnostics() const noexcept { return impl_->capture; }
 
     void ReconSession::setParameters(const SIMParameters& p) {
         impl_->params = p;
@@ -141,16 +174,10 @@ namespace sirius::app {
     }
     const SIMParameters& ReconSession::parameters() const noexcept { return impl_->params; }
 
-    Index ReconSession::inferredNz() const noexcept {
-        if (!hasRaw()) return 0;
-        const Index perZ = impl_->sectionsPerZ();
-        const Index nsec = impl_->raw.dim(0);
-        return (perZ > 0 && nsec % perZ == 0) ? nsec / perZ : 0;
-    }
+    Index ReconSession::inferredNz() const noexcept { return impl_->inferredNz(); }
 
     std::string ReconSession::validate() const {
         if (!hasRaw()) return "No raw stack loaded.";
-        if (impl_->otfPath.empty()) return "No OTF file selected.";
         try {
             impl_->params.validate();
         } catch (const std::exception& e) {
@@ -173,18 +200,20 @@ namespace sirius::app {
 
         // Reuse the reconstructor (FFT plans, work buffers) whenever the setup
         // it was built from is unchanged.
+        const bool threeD = s.threeD();
         const bool reuse = s.cache && s.cache->setupGeneration == s.setupGeneration &&
-                           s.cache->device == device && s.cache->rigor == rigor;
+                           s.cache->threeD == threeD && s.cache->device == device && s.cache->rigor == rigor;
         if (!reuse) {
             Impl::Cache c;
             c.setupGeneration = s.setupGeneration;
+            c.threeD = threeD;
             c.device = device;
             c.rigor = rigor;
-            c.recon = std::make_unique<SimReconstructor>(s.params, loadOTF(s.otfPath, s.params),
-                                                         device, rigor);
+            c.recon = std::make_unique<SimReconstructor>(s.params, *otf(), device, rigor);
             s.cache.emplace(std::move(c));
         }
         Impl::Cache& c = *s.cache;
+        c.recon->setCaptureDiagnostics(s.capture);
 
         BufferView<const double> input = s.raw.view();
         if (device.isCuda()) {
@@ -204,9 +233,11 @@ namespace sirius::app {
         r.volume = device.isCuda() ? out.to(Device::cpu()) : std::move(out);
         if (device.isCuda()) synchronizeDevice(device);
         r.fit = c.recon->lastFit();
+        if (s.capture) r.diagnostics = c.recon->takeDiagnostics();
         r.device = device;
         r.seconds = std::chrono::duration<double>(t1 - t0).count();
         r.plansReused = reuse;
+        r.idealOtf = s.otfPath.empty();
         return r;
     }
 

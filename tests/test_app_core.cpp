@@ -10,15 +10,21 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <complex>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
 #include "core/display_mapping.hpp"
 #include "core/session.hpp"
+#include "core/volume_ops.hpp"
 
 #include "sirius/constants.hpp"
+#include "sirius/fft.hpp"
 #include "sirius/legacy_config.hpp"
+#include "sirius/otf.hpp"
+#include "sirius/real_fft.hpp"
 #include "sirius/tiff_io.hpp"
 
 #include "temp_path.hpp"
@@ -175,9 +181,11 @@ TEST_CASE("ReconSession validates its inputs before reconstructing", "[app][sess
     CHECK(s.hasRaw());
     CHECK(s.rawPath() == "synthetic");
     CHECK(s.inferredNz() == 1);   // 15 sections / (3 dirs * 5 phases)
-    CHECK(s.validate() == "No OTF file selected.");
+    CHECK(s.validate().empty());  // no OTF file needed: the ideal OTF stands in
+    CHECK(s.usesIdealOtf());
 
     s.setOtfPath((kData / "otf.tif").string());
+    CHECK_FALSE(s.usesIdealOtf());
     CHECK(s.validate().empty());
 
     SECTION("section count must match ndirs * nphases") {
@@ -268,4 +276,195 @@ TEST_CASE("ReconSession reconstructs on the GPU and returns a host volume", "[ap
         diff = std::max(diff, std::abs(cpu.volume.data()[i] - gpu.volume.data()[i]));
     }
     CHECK(diff / peak < 1e-6);
+}
+
+// --- volume helpers ------------------------------------------------------
+
+namespace {
+    Buffer<double> rampVolume(Index nz, Index ny, Index nx) {
+        Buffer<double> v(Shape{nz, ny, nx});
+        for (Index z = 0; z < nz; ++z)
+            for (Index y = 0; y < ny; ++y)
+                for (Index x = 0; x < nx; ++x)
+                    v.data()[(z * ny + y) * nx + x] = static_cast<double>(z * 10000 + y * 100 + x);
+        return v;
+    }
+}
+
+TEST_CASE("cropVolume copies the box and rejects bad boxes", "[app][volume]") {
+    const Buffer<double> v = rampVolume(3, 5, 7);
+    const Buffer<double> c = cropVolume(v.view(), 1, 3, 2, 4, 3, 7);
+    REQUIRE(c.shape() == Shape{2, 2, 4});
+    CHECK(c.data()[0] == 1 * 10000 + 2 * 100 + 3);
+    CHECK(c.data()[c.size() - 1] == 2 * 10000 + 3 * 100 + 6);
+    REQUIRE_THROWS_AS(cropVolume(v.view(), 0, 3, 0, 5, 0, 8), std::out_of_range);
+    REQUIRE_THROWS_AS(cropVolume(v.view(), 0, 3, 2, 2, 0, 7), std::out_of_range);
+    REQUIRE_THROWS_AS(cropVolume(v.view(), -1, 3, 0, 5, 0, 7), std::out_of_range);
+}
+
+TEST_CASE("sliceXZ and sliceYZ re-slice in display layout", "[app][volume]") {
+    const Buffer<double> v = rampVolume(3, 5, 7);
+    std::vector<double> xz(3 * 7), yz(5 * 3);
+    sliceXZ(v.view(), 4, xz.data());                 // (nz, nx) at y = 4
+    CHECK(xz[0] == 0 * 10000 + 4 * 100 + 0);
+    CHECK(xz[2 * 7 + 6] == 2 * 10000 + 4 * 100 + 6);
+    sliceYZ(v.view(), 3, yz.data());                 // (ny, nz) at x = 3
+    CHECK(yz[0] == 0 * 10000 + 0 * 100 + 3);
+    CHECK(yz[4 * 3 + 2] == 2 * 10000 + 4 * 100 + 3);
+    REQUIRE_THROWS_AS(sliceXZ(v.view(), 5, xz.data()), std::out_of_range);
+    REQUIRE_THROWS_AS(sliceYZ(v.view(), 7, yz.data()), std::out_of_range);
+}
+
+TEST_CASE("PlaneSpectrum centers the zero frequency", "[app][volume][spectrum]") {
+    PlaneSpectrum spec;
+    // constant plane: all energy at DC, which must land at (rows/2, cols/2)
+    std::vector<double> plane(6 * 8, 2.0), out(6 * 8);
+    spec.magnitude(plane.data(), 6, 8, out.data());
+    for (Index r = 0; r < 6; ++r)
+        for (Index c = 0; c < 8; ++c) {
+            const double expected = (r == 3 && c == 4) ? 2.0 * 48 : 0.0;
+            CHECK_THAT(out[static_cast<std::size_t>(r * 8 + c)], WithinAbs(expected, 1e-9));
+        }
+    // a delta: flat spectrum; the plan is reused for the same size and rebuilt for another
+    std::fill(plane.begin(), plane.end(), 0.0);
+    plane[0] = 1.0;
+    spec.magnitude(plane.data(), 6, 8, out.data());
+    for (double v : out) CHECK_THAT(v, WithinAbs(1.0, 1e-12));
+    std::vector<double> small(4 * 4, 1.0), smallOut(16);
+    spec.magnitude(small.data(), 4, 4, smallOut.data());
+    CHECK_THAT(smallOut[2 * 4 + 2], WithinAbs(16.0, 1e-9));
+}
+
+TEST_CASE("bandPlaneMagnitude expands a half spectrum like a full FFT", "[app][volume][spectrum]") {
+    // a real (nz, ny, nx) volume: its r2c half spectrum, expanded with
+    // conjugate symmetry, must match the centered magnitude of the full FFT
+    const Index nz = 3, ny = 4, nx = 6, nxh = nx / 2 + 1;
+    std::vector<double> vol(static_cast<std::size_t>(nz * ny * nx));
+    std::mt19937 gen(3);
+    std::uniform_real_distribution<double> d(-1.0, 1.0);
+    for (double& v : vol) v = d(gen);
+
+    RealFFT rfft({static_cast<int>(nz), static_cast<int>(ny), static_cast<int>(nx)}, 1, PlanRigor::Estimate);
+    std::vector<std::complex<double>> half(static_cast<std::size_t>(nz * ny * nxh));
+    rfft.rfft(vol.data(), half.data());
+
+    FFT fft({static_cast<int>(nz), static_cast<int>(ny), static_cast<int>(nx)}, 1, PlanRigor::Estimate);
+    std::vector<std::complex<double>> in(vol.begin(), vol.end()), full(in.size());
+    fft.fft(in.data(), full.data());
+
+    std::vector<double> plane(static_cast<std::size_t>(ny * nx));
+    for (Index z = 0; z < nz; ++z) {
+        bandPlaneMagnitude(half.data(), nullptr, nz, ny, nx, z, BandSide::ReOnly, plane.data());
+        for (Index y = 0; y < ny; ++y)
+            for (Index x = 0; x < nx; ++x) {
+                const double expected = std::abs(full[static_cast<std::size_t>((z * ny + y) * nx + x)]);
+                const double got = plane[static_cast<std::size_t>(((y + ny / 2) % ny) * nx + (x + nx / 2) % nx)];
+                CHECK_THAT(got, WithinAbs(expected, 1e-9));
+            }
+    }
+    // a side band combines the two parts: with im = re the +side doubles the
+    // magnitude where re is real... just check Plus/Minus differ from ReOnly
+    std::vector<double> plus(plane.size()), minus(plane.size());
+    bandPlaneMagnitude(half.data(), half.data(), nz, ny, nx, 0, BandSide::Plus, plus.data());
+    bandPlaneMagnitude(half.data(), half.data(), nz, ny, nx, 0, BandSide::Minus, minus.data());
+    bandPlaneMagnitude(half.data(), nullptr, nz, ny, nx, 0, BandSide::ReOnly, plane.data());
+    // re + i re = (1 + i) re and re - i re = (1 - i) re: both sqrt(2) |re|
+    for (std::size_t i = 0; i < plane.size(); ++i) {
+        CHECK_THAT(plus[i], WithinAbs(std::sqrt(2.0) * plane[i], 1e-9));
+        CHECK_THAT(minus[i], WithinAbs(std::sqrt(2.0) * plane[i], 1e-9));
+    }
+    REQUIRE_THROWS_AS(bandPlaneMagnitude(half.data(), nullptr, nz, ny, nx, 0, BandSide::Plus, plane.data()),
+                      std::invalid_argument);
+}
+
+TEST_CASE("predictedK0 follows the reconstruction's initial guess", "[app][volume][overlay]") {
+    SIMParameters p = testParameters();   // 3 dirs, explicit angles, ls 0.2035
+    const auto k2d = predictedK0(p, 1);
+    REQUIRE(k2d.size() == 3);
+    for (std::size_t d = 0; d < 3; ++d) {
+        CHECK_THAT(std::hypot(k2d[d][0], k2d[d][1]), WithinRel(1.0 / p.linespacing_um, 1e-12));
+        CHECK_THAT(std::atan2(k2d[d][1], k2d[d][0]), WithinAbs((*p.k0_angles)[d], 1e-12));
+    }
+    const auto k3d = predictedK0(p, 9);   // 3D: order-1 spacing is half the finest pattern's
+    CHECK_THAT(std::hypot(k3d[0][0], k3d[0][1]), WithinRel(0.5 / p.linespacing_um, 1e-12));
+
+    p.k0_angles.reset();
+    p.k0_start_angle = 0.25;
+    const auto k = predictedK0(p, 1);
+    CHECK_THAT(std::atan2(k[1][1], k[1][0]), WithinAbs(0.25 + kPi / 3.0, 1e-12));
+    CHECK_THAT(otfSupportRadius(p), WithinRel(2.0 * p.na / (p.wavelength_nm * 1e-3), 1e-12));
+}
+
+TEST_CASE("SpectrumGeometry maps frequencies to centered pixels", "[app][volume][overlay]") {
+    const SpectrumGeometry g{64, 128, 0.1, 0.2};
+    const auto dc = g.pixelOf(0.0, 0.0);
+    CHECK(dc[0] == 64.0);
+    CHECK(dc[1] == 32.0);
+    const auto p = g.pixelOf(1.0, -0.4);
+    CHECK_THAT(p[0], WithinAbs(74.0, 1e-12));
+    CHECK_THAT(p[1], WithinAbs(30.0, 1e-12));
+    const auto r = g.radiusPixels(2.0);
+    CHECK_THAT(r[0], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(r[1], WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("otfDisplayVolume renders a centered OTF whose peak is the DC voxel", "[app][volume][otf]") {
+    SIMParameters p = testParameters();
+    const OTFRadiallyAveraged otf = idealOTF(p, /*threeD=*/false);
+    const Buffer<double> v = otfDisplayVolume(otf, 0, p, 64, 48, 1);
+    REQUIRE(v.shape() == Shape{1, 48, 64});
+    const double* d = v.data();
+    Index best = 0;
+    for (Index i = 1; i < v.size(); ++i)
+        if (d[i] > d[best]) best = i;
+    CHECK(best == 24 * 64 + 32);
+    CHECK_THAT(d[best], WithinAbs(1.0, 1e-9));
+    // outside the support the OTF is zero: the corner voxel
+    CHECK_THAT(d[0], WithinAbs(0.0, 1e-9));
+    REQUIRE_THROWS_AS(otfDisplayVolume(otf, 7, p, 64, 48, 1), std::out_of_range);
+}
+
+// --- session without an OTF file ------------------------------------------
+
+TEST_CASE("ReconSession falls back to the ideal OTF and captures diagnostics", "[app][session][ideal]") {
+    ReconSession s;
+    s.setParameters(testParameters());
+    CHECK(s.usesIdealOtf());
+    s.loadRaw((kData / "raw.tif").string());
+    CHECK(s.validate().empty());   // no OTF file is not an error any more
+
+    // the OTF shown to the user is the ideal 3D one for this 9-plane stack
+    auto otf = s.otf();
+    REQUIRE(otf);
+    CHECK(otf->data().dimension(0) == 3);
+    CHECK(otf->data().dimension(2) > 1);
+    CHECK(s.otf() == otf);   // cached until the setup changes
+    s.setParameters(testParameters());
+    CHECK(s.otf() != otf);
+
+    s.setCaptureDiagnostics(true);
+    ReconResult r = s.reconstruct(Device::cpu(), PlanRigor::Estimate);
+    CHECK(r.idealOtf);
+    REQUIRE(r.volume.shape() == Shape{9, 128, 128});
+    REQUIRE(r.diagnostics.captured);
+    CHECK(r.diagnostics.separated.shape() == Shape{3 * 5 * 9, 64, 33});
+    CHECK(r.diagnostics.filtered.shape() == Shape{3 * 5 * 9, 64, 33});
+    for (Index i = 0; i < r.volume.size(); ++i) REQUIRE(std::isfinite(r.volume.data()[i]));
+
+    // the captured bands feed the viewer's band volumes
+    const Buffer<double> band = bandMagnitudeVolume(r.diagnostics, r.diagnostics.separated, 0, 0, BandSide::ReOnly);
+    REQUIRE(band.shape() == Shape{9, 64, 64});
+    const Buffer<double> side = bandMagnitudeVolume(r.diagnostics, r.diagnostics.filtered, 2, 1, BandSide::Minus);
+    REQUIRE(side.shape() == Shape{9, 64, 64});
+    REQUIRE_THROWS_AS(bandMagnitudeVolume(r.diagnostics, r.diagnostics.separated, 3, 0, BandSide::ReOnly),
+                      std::out_of_range);
+
+    // a measured OTF path switches back and the next run reports it
+    s.setOtfPath((kData / "otf.tif").string());
+    CHECK_FALSE(s.usesIdealOtf());
+    s.setCaptureDiagnostics(false);
+    ReconResult m = s.reconstruct(Device::cpu(), PlanRigor::Estimate);
+    CHECK_FALSE(m.idealOtf);
+    CHECK_FALSE(m.diagnostics.captured);
+    CHECK_FALSE(m.plansReused);
 }
