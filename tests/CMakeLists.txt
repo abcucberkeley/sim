@@ -19,6 +19,8 @@ target_sources(sirius_tests
         test_otf.cpp
         test_preprocess.cpp
         test_sim_cpu_stages.cpp
+        test_registration.cpp
+        test_stitching.cpp
 )
 
 target_link_libraries(sirius_tests

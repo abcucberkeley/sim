@@ -122,6 +122,87 @@ pair for the cluster.
 Container images with the full toolchain (identical for Docker locally and Apptainer on
 the cluster) are in [containers/](containers/README.md).
 
+## Masked registration and stitching
+
+`registration.hpp` implements the masked FFT translation registration of
+D. Padfield, *Masked Object Registration in the Fourier Domain*, IEEE TIP 21(5),
+2012, generalized from the paper's 2D derivation to 2D **and** 3D volumes. Each
+image carries a mask of the voxels that may take part in the match, and the
+masking is folded into the correlation rather than applied afterwards, so the
+score at every candidate displacement is the true normalized cross-correlation
+of exactly the overlapping unmasked voxels -- which is what makes it usable on
+tiles whose overlap strip contains saturated pixels, an illumination roll-off,
+or the zero fill a deskew leaves behind.
+
+```cpp
+#include <sirius/registration.hpp>
+using namespace sirius;
+
+MaskedNccOptions opts;
+opts.maxShift = {2, 40, 40};              // the stage cannot be further off than this
+opts.requiredOverlapFraction = 0.25;      // reject displacements that barely touch
+
+TranslationResult t = registerTranslationMasked<float>(fixed, moving, fixedMask, movingMask, opts);
+// moving[p] matches fixed[p + t.shift]; t.shift is sub-voxel, t.integerShift is not
+```
+
+`maskedNormalizedCrossCorrelation` returns the whole map (coefficients plus the
+per-displacement overlap counts) when you want to inspect it, and
+`MaskedCorrelator` keeps the plans and padded buffers alive across many pairs of
+the same size. The cost is 6 forward and 6 inverse **real** FFTs of the volume
+padded to the next 2/3/5/7-smooth size (`nextFastFFTSize`), batched into two
+planned transforms, so it does not grow with the size of the search range. All
+of it is double precision: the algorithm forms differences of large, nearly
+equal sums and is not usable in single precision.
+
+`stitching.hpp` builds a mosaic on top of it in three steps -- pairwise
+registration of every nominally overlapping tile pair (only the overlap strip is
+correlated, grown by the search radius), a global least-squares fit of the tile
+origins from all the pairwise displacements at once (one sparse Cholesky
+factorization shared by the three axes, anchored on one tile), and a blended
+fusion pass (`Overwrite`, `Average`, `Feather`, `Maximum`).
+
+```cpp
+#include <sirius/stitching.hpp>
+
+StitchOptions options;
+options.searchRadius = {2, 64, 64};
+options.maskBackground = true;            // ignore the deskew fill when correlating
+options.blend = BlendMode::Feather;
+
+StitchLayout layout;
+Buffer<float> mosaic = stitchTiffTiles<float>(
+    {{"tile0.tif", {0, 0, 0}}, {"tile1.tif", {0, 0, 1800}}}, options, &layout, "mosaic.tif");
+for (const TileMatch& m : layout.matches)
+    std::printf("%zu->%zu  r=%.3f  dx=%.2f
+", m.fixed, m.moving, m.correlation, m.displacement[2]);
+```
+
+From Python:
+
+```python
+import numpy as np, sirius
+
+r = sirius.register_translation_masked(fixed, moving, moving_mask=mask)
+r.shift, r.correlation, r.valid
+
+options = sirius.StitchOptions()
+options.search_radius = [2, 64, 64]
+mosaic, layout = sirius.stitch_tiff_tiles(
+    ["tile0.tif", "tile1.tif"], [(0, 0, 0), (0, 0, 1800)], options, output_path="mosaic.tif")
+layout.positions      # refined tile origins, (z, y, x) voxels
+```
+
+Scope, relative to [PetaKit5D](https://github.com/abcucberkeley/PetaKit5D): what is
+here is the registration and the translation-only mosaic (planning, global fit,
+fusion, TIFF in and out). Not here yet: deskew/rotate of the raw light-sheet
+frames, flat-field correction, Zarr and the large-scale out-of-core paths,
+deconvolution, cross-channel and multi-round registration, and the cluster job
+distribution. `stitchTiffTiles` holds every tile and the canvas in memory;
+larger mosaics need `planStitch`/`fuseTiles` driven over a tile-at-a-time
+reader. Tiles are placed on the voxel grid (positions are rounded), so
+sub-voxel placement would need a resampling step that does not exist yet.
+
 ## Desktop application (`app/`)
 
 `sirius-app` is a Qt Widgets front end for the reconstruction pipeline: load a raw

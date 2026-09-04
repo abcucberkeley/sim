@@ -5,6 +5,7 @@ set(SIRIUS_BINDING_SOURCES
     src/bind_fft.cpp
     src/bind_tiff_io.cpp
     src/bind_sim.cpp
+    src/bind_registration.cpp
 )
 
 # We are now ready to compile the actual extension module

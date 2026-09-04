@@ -33,6 +33,8 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include/sirius/separation.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/illumination.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/sim_reconstruction.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/registration.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/stitching.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/constants.hpp
     PRIVATE
         device.cpp
@@ -47,6 +49,8 @@ target_sources(sirius
         separation.cpp
         sim_cpu.cpp
         sim_reconstruction.cpp
+        registration.cpp
+        stitching.cpp
 )
 
 target_link_libraries(sirius
