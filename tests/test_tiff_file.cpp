@@ -520,3 +520,28 @@ TEST_CASE("Writers accept device buffers", "[tifffile][cuda]") {
     auto back = readTiff<uint16_t>(f.path);
     REQUIRE(asMatrix(back) == asMatrix(host));
 }
+
+TEST_CASE("TiffInfo::image is indexed and still works on a hand-built info", "[tifffile][info]") {
+    TempFile f(".tif");
+    std::vector<Image<uint16_t>> imgs;
+    for (int i = 0; i < 40; ++i) imgs.push_back(pattern(9, 11, i));
+    std::vector<PageSpec> specs;
+    for (const auto& img : imgs) specs.push_back({&img, false, 0});
+    writeTiffPages(f.path, specs, false);
+
+    TiffInfo info = inspectTiff(f.path);
+    REQUIRE(info.imageIndex.size() == info.images.size());
+    for (std::size_t i = 0; i < info.images.size(); ++i) {
+        REQUIRE(info.imageIndex.at(info.images[i].ifdOffset) == i);
+        REQUIRE(&info.image(info.images[i].ifdOffset) == &info.images[i]);
+    }
+    REQUIRE(info.uniformPages());
+
+    // An info assembled without the index (or with a stale one) falls back
+    // to the linear search and reports unknown offsets as before.
+    info.imageIndex.clear();
+    REQUIRE(&info.image(info.pages[17]) == &info.images[17]);
+    info.imageIndex.emplace(info.pages[3], 999);
+    REQUIRE(&info.image(info.pages[3]) == &info.images[3]);
+    REQUIRE_THROWS_AS(info.image(1), std::out_of_range);
+}

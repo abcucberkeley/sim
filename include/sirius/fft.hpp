@@ -50,7 +50,9 @@ namespace sirius {
                   const Stream& stream = Stream::null()) const;
 
         // Buffer interface: element counts must equal size() and both views
-        // must live on device(). `normalize` divides by product(dims).
+        // must live on device(). `in` and `out` may alias for an in-place
+        // transform (the CPU backend keeps a separate in-place FFTW plan,
+        // created on first use). `normalize` divides by product(dims).
         void fft(BufferView<const std::complex<double>> in, BufferView<std::complex<double>> out,
                  const Stream& stream = Stream::null()) const;
         void ifft(BufferView<const std::complex<double>> in, BufferView<std::complex<double>> out,

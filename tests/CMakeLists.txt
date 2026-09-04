@@ -10,6 +10,7 @@ target_sources(sirius_tests
         test_fft1d.cpp
         test_fft2d.cpp
         test_fft3d.cpp
+        test_fft_inplace.cpp
         test_real_fft.cpp
         test_fft_cuda.cpp
         test_real_fft_cuda.cpp

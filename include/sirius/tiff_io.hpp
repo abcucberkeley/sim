@@ -6,6 +6,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -136,6 +137,11 @@ namespace sirius {
         // k-th reduction of every page, discovered from SubIFDs or from
         // reduced-resolution IFDs in the main chain.
         std::vector<TiffLevel> levels;
+        // ifdOffset -> index into `images`, filled by inspectTiff so image()
+        // is O(1) on stacks with thousands of pages (the per-IFD validation
+        // of every read goes through it). image() falls back to a linear
+        // search for offsets missing here, e.g. in an info assembled by hand.
+        std::unordered_map<std::uint64_t, std::size_t> imageIndex;
 
         const TiffImageInfo& image(std::uint64_t ifdOffset) const;   // throws if unknown
         const TiffImageInfo& page(std::size_t i) const { return image(pages.at(i)); }

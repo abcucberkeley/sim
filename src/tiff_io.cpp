@@ -318,6 +318,9 @@ namespace sirius {
     // --- metadata ------------------------------------------------------------
 
     const TiffImageInfo& TiffInfo::image(std::uint64_t ifdOffset) const {
+        const auto it = imageIndex.find(ifdOffset);
+        if (it != imageIndex.end() && it->second < images.size() && images[it->second].ifdOffset == ifdOffset)
+            return images[it->second];
         for (const auto& i : images)
             if (i.ifdOffset == ifdOffset) return i;
         throw std::out_of_range("TIFF has no image directory at offset " + std::to_string(ifdOffset));
@@ -370,6 +373,12 @@ namespace sirius {
                 info.images.push_back(readImageInfo(tif.get()));
             }
         }
+
+        // `images` is complete: index it before the level discovery below and
+        // every later image() lookup.
+        info.imageIndex.reserve(info.images.size());
+        for (std::size_t i = 0; i < info.images.size(); ++i)
+            info.imageIndex.emplace(info.images[i].ifdOffset, i);
 
         for (std::size_t i = 0; i < chainCount; ++i)
             if (!info.images[i].reducedResolution) info.pages.push_back(info.images[i].ifdOffset);

@@ -12,6 +12,10 @@
 
 namespace sirius::cuda {
 
+    // Records that this process has run something on device `index`
+    // (device.cpp). Stream::null().synchronize() waits only on such devices.
+    void markDeviceUsed(int index) noexcept;
+
     inline void check(cudaError_t err, const char* what) {
         if (err != cudaSuccess) {
             // Clear the sticky error so later calls see a clean state.
@@ -26,6 +30,7 @@ namespace sirius::cuda {
     class DeviceGuard {
     public:
         explicit DeviceGuard(int index) {
+            markDeviceUsed(index);
             check(cudaGetDevice(&previous_), "cudaGetDevice");
             if (previous_ != index) {
                 check(cudaSetDevice(index), "cudaSetDevice");

@@ -64,6 +64,20 @@ class TestDevice(unittest.TestCase):
 
 
 class TestBuffer(unittest.TestCase):
+    def test_complex_dtypes(self):
+        a = (np.arange(6, dtype=np.float64) + 1j).reshape(2, 3)
+        b = sirius.to_device(a, "cpu")
+        self.assertEqual(b.dtype, np.complex128)
+        np.testing.assert_array_equal(a, b)
+        c = sirius.to_device(a.astype(np.complex64), "cpu")
+        self.assertEqual(c.dtype, np.complex64)
+        if sirius.cuda_available():
+            d = sirius.to_device(a, "cuda")
+            self.assertEqual(d.dtype, np.dtype(np.complex128))
+            self.assertIn("complex128", repr(d))
+            np.testing.assert_array_equal(d.numpy(), a)
+            np.testing.assert_array_equal(np.from_dlpack(d.to("cpu")) if hasattr(np, "from_dlpack") else d.numpy(), a)
+
     def test_to_device_cpu_returns_numpy_copy(self):
         a = np.arange(12, dtype=np.uint16).reshape(3, 4)
         b = sirius.to_device(a, "cpu")

@@ -50,6 +50,10 @@ namespace sirius {
         enum Inv { kOverlap = 0, kMaskCorrFixed = 1, kMaskCorrMoving = 2,
                    kCorr = 3, kFixedDenom = 4, kMovingDenom = 5 };
 
+        // The two enums index the same storage; comparing them directly is
+        // an -Wenum-compare warning, so spell the intent out.
+        constexpr bool sameSlot(Inv i, Fwd f) noexcept { return static_cast<int>(i) == static_cast<int>(f); }
+
         std::array<Index, 3> extentOf(const Shape& s, const char* what) {
             switch (s.rank()) {
                 case 2: return {1, s[0], s[1]};
@@ -119,9 +123,9 @@ namespace sirius {
                 return Cplx(ar * br - ai * bi, ar * bi + ai * br);
             };
 
-            static_assert(kOverlap == kFixed && kMaskCorrFixed == kRotMoving &&
-                              kMaskCorrMoving == kFixedMask && kCorr == kRotMovingMask &&
-                              kFixedDenom == kFixedSq && kMovingDenom == kRotMovingSq,
+            static_assert(sameSlot(kOverlap, kFixed) && sameSlot(kMaskCorrFixed, kRotMoving) &&
+                              sameSlot(kMaskCorrMoving, kFixedMask) && sameSlot(kCorr, kRotMovingMask) &&
+                              sameSlot(kFixedDenom, kFixedSq) && sameSlot(kMovingDenom, kRotMovingSq),
                           "the in-place product below assumes this slot mapping");
 
             #pragma omp parallel for schedule(static)

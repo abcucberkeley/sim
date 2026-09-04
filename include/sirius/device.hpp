@@ -90,9 +90,14 @@ namespace sirius {
         void* handle() const noexcept { return handle_; }
         bool isNull() const noexcept { return handle_ == nullptr; }
 
+        // Block the host until everything enqueued on this stream has run.
+        // For a CPU stream -- Stream::null() included -- work handed to a
+        // CUDA device went to that device's legacy default stream, so this
+        // waits on the legacy stream of every device the process has used.
         void synchronize() const;
 
-        // Shared "no particular stream" object: CPU device, null handle.
+        // Shared "no particular stream" object: CPU device, null handle. On a
+        // CUDA device it denotes the legacy default stream.
         static const Stream& null() noexcept;
 
     private:

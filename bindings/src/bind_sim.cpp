@@ -48,8 +48,6 @@ namespace {
         }
 
         nb::object reconstructBuffer(const PyBuffer& raw) {
-            if (raw.pixelType() != PixelType::Float64)
-                throw std::invalid_argument("SIM input Buffer must have dtype float64");
             const auto* input = std::get_if<Buffer<double>>(&raw.any());
             if (!input)
                 throw std::invalid_argument("SIM input Buffer must have dtype float64");

@@ -1,5 +1,7 @@
 #include "sirius/device.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <utility>
 
 #ifdef SIRIUS_HAS_CUDA
@@ -7,6 +9,28 @@
 #endif
 
 namespace sirius {
+
+#ifdef SIRIUS_HAS_CUDA
+    namespace cuda {
+        namespace {
+            // Devices the library has run anything on (set by DeviceGuard, which
+            // every CUDA code path goes through). The null stream's synchronize
+            // waits on these and never creates a context on an untouched GPU.
+            constexpr int kMaxTrackedDevices = 64;
+            std::atomic<bool> g_deviceUsed[kMaxTrackedDevices];
+
+            bool deviceUsed(int index) noexcept {
+                return index >= 0 && index < kMaxTrackedDevices &&
+                       g_deviceUsed[index].load(std::memory_order_relaxed);
+            }
+        } // namespace
+
+        void markDeviceUsed(int index) noexcept {
+            if (index >= 0 && index < kMaxTrackedDevices)
+                g_deviceUsed[index].store(true, std::memory_order_relaxed);
+        }
+    } // namespace cuda
+#endif
 
     std::string toString(Device d) {
         if (d.isCpu()) return "cpu";
@@ -133,6 +157,17 @@ namespace sirius {
         } else if (device_.isCuda()) {
             cuda::DeviceGuard g(device_.index);
             cuda::check(cudaStreamSynchronize(nullptr), "cudaStreamSynchronize(null)");
+        } else {
+            // Stream::null() or a CPU stream: operations it was passed with
+            // CUDA memory ran on the legacy default stream of that memory's
+            // device. Wait on every device this process has touched (none in
+            // a CPU-only run, so this stays free of CUDA calls there).
+            const int n = std::min(cudaDeviceCount(), cuda::kMaxTrackedDevices);
+            for (int i = 0; i < n; ++i) {
+                if (!cuda::deviceUsed(i)) continue;
+                cuda::DeviceGuard g(i);
+                cuda::check(cudaStreamSynchronize(nullptr), "cudaStreamSynchronize(null)");
+            }
         }
 #endif
     }

@@ -31,30 +31,6 @@ namespace sirius {
         int s_fftw_thread_count = 1;
         bool s_fftw_threads_initialized = false;
 
-        // safe execution in case unaligned buffers with offset are passed
-        void execute_safe(fftw_plan plan, int plan_alignment, int full_size,
-            const std::complex<double>* in, std::complex<double>* out)
-        {
-            // case to fftw_complex*
-            auto* in_ptr  = reinterpret_cast<fftw_complex*>(const_cast<std::complex<double>*>(in));
-            auto* out_ptr = reinterpret_cast<fftw_complex*>(out);
-
-            // check if aligned
-            bool aligned = fftw_alignment_of(reinterpret_cast<double*>(in_ptr))  == plan_alignment &&
-                           fftw_alignment_of(reinterpret_cast<double*>(out_ptr)) == plan_alignment;
-
-            // if aligned, simply execute, otherwise need to copy
-            if (aligned) {
-                fftw_execute_dft(plan, in_ptr, out_ptr);
-            } else {
-                FftwBuf tmp_in (static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * full_size)));
-                FftwBuf tmp_out(static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * full_size)));
-                std::memcpy(tmp_in.get(),  in_ptr,  sizeof(fftw_complex) * full_size);
-                fftw_execute_dft(plan, tmp_in.get(), tmp_out.get());
-                std::memcpy(out_ptr, tmp_out.get(), sizeof(fftw_complex) * full_size);
-            }
-        }
-
         // FFTW wisdom is global state no needs shared mutex
         void loadWisdomImpl(const std::string& path) {
             std::lock_guard<std::mutex> lock(s_planner_mutex);
@@ -98,7 +74,9 @@ namespace sirius {
         }
 
         int checkedMultiply(int a, int b, const char* what) {
-            if (a < 0 || b < 0 || a > std::numeric_limits<int>::max() / b)
+            if (a < 0 || b < 0)
+                throw std::invalid_argument(std::string(what) + " size must not be negative");
+            if (b != 0 && a > std::numeric_limits<int>::max() / b)
                 throw std::overflow_error(std::string(what) + " size overflows int");
             return a * b;
         }
@@ -148,44 +126,49 @@ namespace sirius {
     namespace {
         class FftwBackend final : public detail::FftBackend {
         public:
-            FftwBackend(const std::vector<int>& dims, int howmany, PlanRigor rigor) {
-                const int total = detail::checkedProduct(dims, "FFT");
-                full_size_ = detail::checkedMultiply(total, howmany, "FFT");
+            FftwBackend(const std::vector<int>& dims, int howmany, PlanRigor rigor)
+                : dims_(dims), howmany_(howmany), flags_(detail::toFFTWFlag(rigor)) {
+                total_ = detail::checkedProduct(dims, "FFT");
+                full_size_ = detail::checkedMultiply(total_, howmany, "FFT");
 
                 FftwBuf buf_in (static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
                 FftwBuf buf_out(static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
                 alignment_ = fftw_alignment_of(reinterpret_cast<double*>(buf_in.get()));
 
-                const unsigned flags = detail::toFFTWFlag(rigor);
-
                 std::lock_guard<std::mutex> lock(s_planner_mutex);
                 detail::ensureDoubleThreadsInitializedLocked();
-
-                forward_plan_ = PlanPtr(
-                    fftw_plan_many_dft(
-                        static_cast<int>(dims.size()), dims.data(), howmany,
-                        buf_in.get(), nullptr, 1, total,
-                        buf_out.get(), nullptr, 1, total,
-                        FFTW_FORWARD, flags
-                    )
-                );
-
-                inverse_plan_ = PlanPtr(
-                    fftw_plan_many_dft(
-                        static_cast<int>(dims.size()), dims.data(), howmany,
-                        buf_in.get(), nullptr, 1, total,
-                        buf_out.get(), nullptr, 1, total,
-                        FFTW_BACKWARD, flags
-                    )
-                );
-
+                forward_plan_ = plan(buf_in.get(), buf_out.get(), FFTW_FORWARD);
+                inverse_plan_ = plan(buf_in.get(), buf_out.get(), FFTW_BACKWARD);
                 if (!forward_plan_ || !inverse_plan_)
                     throw std::runtime_error("FFTW failed to create plan.");
             }
 
             void execute(const std::complex<double>* in, std::complex<double>* out, bool forward,
                          const Stream&) const override {
-                execute_safe(forward ? forward_plan_.get() : inverse_plan_.get(), alignment_, full_size_, in, out);
+                auto* in_ptr  = reinterpret_cast<fftw_complex*>(const_cast<std::complex<double>*>(in));
+                auto* out_ptr = reinterpret_cast<fftw_complex*>(out);
+                const fftw_plan outOfPlace = forward ? forward_plan_.get() : inverse_plan_.get();
+
+                const bool aligned = fftw_alignment_of(reinterpret_cast<double*>(in_ptr))  == alignment_ &&
+                                     fftw_alignment_of(reinterpret_cast<double*>(out_ptr)) == alignment_;
+                if (!aligned) {
+                    // Data that does not match the plan's alignment goes through
+                    // FFTW-aligned temporaries. Those are two distinct buffers,
+                    // so the out-of-place plan applies whatever the caller passed.
+                    FftwBuf tmp_in (static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
+                    FftwBuf tmp_out(static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
+                    std::memcpy(tmp_in.get(), in_ptr, sizeof(fftw_complex) * full_size_);
+                    fftw_execute_dft(outOfPlace, tmp_in.get(), tmp_out.get());
+                    std::memcpy(out_ptr, tmp_out.get(), sizeof(fftw_complex) * full_size_);
+                    return;
+                }
+                // An FFTW plan is either in-place or out-of-place and may only be
+                // executed the way it was planned, so aliased in/out selects a
+                // separate in-place plan (created on first use).
+                if (in_ptr == out_ptr)
+                    fftw_execute_dft(inPlacePlan(forward), in_ptr, in_ptr);
+                else
+                    fftw_execute_dft(outOfPlace, in_ptr, out_ptr);
             }
 
             void scale(std::complex<double>* out, std::size_t n, double s, const Stream&) const override {
@@ -193,10 +176,42 @@ namespace sirius {
             }
 
         private:
-            PlanPtr forward_plan_;
-            PlanPtr inverse_plan_;
+            // Caller holds s_planner_mutex. in == out plans an in-place transform.
+            PlanPtr plan(fftw_complex* in, fftw_complex* out, int sign) const {
+                return PlanPtr(fftw_plan_many_dft(
+                    static_cast<int>(dims_.size()), dims_.data(), howmany_,
+                    in, nullptr, 1, total_,
+                    out, nullptr, 1, total_,
+                    sign, flags_));
+            }
+
+            fftw_plan inPlacePlan(bool forward) const {
+                std::once_flag& once = forward ? inplace_forward_once_ : inplace_inverse_once_;
+                PlanPtr& slot = forward ? inplace_forward_plan_ : inplace_inverse_plan_;
+                std::call_once(once, [&] {
+                    // Planning with FFTW_MEASURE and up overwrites the array, so
+                    // plan on a scratch buffer of the plan's alignment.
+                    FftwBuf buf(static_cast<fftw_complex*>(detail::checkedFftwMalloc(sizeof(fftw_complex) * full_size_)));
+                    std::lock_guard<std::mutex> lock(s_planner_mutex);
+                    detail::ensureDoubleThreadsInitializedLocked();
+                    slot = plan(buf.get(), buf.get(), forward ? FFTW_FORWARD : FFTW_BACKWARD);
+                    if (!slot) throw std::runtime_error("FFTW failed to create in-place plan.");
+                });
+                return slot.get();
+            }
+
+            std::vector<int> dims_;
+            int howmany_ = 1;
+            unsigned flags_ = 0;
+            int total_ = 0;
             int full_size_ = 0;
             int alignment_ = 0;
+            PlanPtr forward_plan_;
+            PlanPtr inverse_plan_;
+            mutable std::once_flag inplace_forward_once_;
+            mutable std::once_flag inplace_inverse_once_;
+            mutable PlanPtr inplace_forward_plan_;
+            mutable PlanPtr inplace_inverse_plan_;
         };
     } // anonymous namespace
 

@@ -195,6 +195,89 @@ class TestFFTIntoBuffer(unittest.TestCase):
         np.testing.assert_allclose(out_flat.reshape(4, 4), np.fft.fft2(x), atol=1e-9)
 
 
+class TestFFTInPlace(unittest.TestCase):
+    """out=in transforms in place (a dedicated in-place FFTW plan on the CPU)."""
+
+    def test_in_place_matches_out_of_place(self):
+        for dims, howmany in (([64], 1), ([15, 17], 1), ([4, 6, 10], 1), ([9, 12], 3)):
+            with self.subTest(dims=dims, howmany=howmany):
+                f = sirius.FFT(dims, howmany, sirius.PlanRigor.Measure)
+                x = _random_complex(f.shape, seed=len(dims))
+                reference = f.fft(x)
+                work = x.copy()
+                f.fft(work, work)
+                np.testing.assert_allclose(work, reference, atol=1e-9)
+                f.ifft(work, work, normalize=True)
+                np.testing.assert_allclose(work, x, atol=1e-10)
+
+
+class TestFFTOnCuda(unittest.TestCase):
+    """The same class plans on a CUDA device; arrays arrive through DLPack."""
+
+    def setUp(self):
+        if not sirius.cuda_available():
+            self.skipTest("no CUDA device available")
+        self.gpu = sirius.Device.cuda(0)
+
+    def test_device_argument(self):
+        self.assertTrue(sirius.FFT([8]).device.is_cpu)
+        f = sirius.FFT([8, 8], device="cuda")
+        self.assertEqual(f.device, self.gpu)
+        self.assertEqual(f.dims, [8, 8])
+        self.assertEqual(f.shape, (8, 8))
+
+    def test_buffer_round_trip_matches_numpy(self):
+        x = _random_complex((8, 16), seed=21)
+        f = sirius.FFT([8, 16], device=self.gpu)
+        xin = sirius.to_device(x, self.gpu)
+        self.assertIsInstance(xin, sirius.Buffer)
+        self.assertEqual(xin.dtype, np.dtype(np.complex128))
+        y = f.fft(xin)
+        self.assertIsInstance(y, sirius.Buffer)
+        self.assertEqual(y.device, self.gpu)
+        self.assertEqual(y.shape, (8, 16))
+        np.testing.assert_allclose(y.numpy(), np.fft.fft2(x), atol=1e-9)
+        back = f.ifft(y, normalize=True)
+        np.testing.assert_allclose(back.numpy(), x, atol=1e-10)
+
+    def test_into_and_in_place(self):
+        x = _random_complex(32, seed=22)
+        f = sirius.FFT([32], device=self.gpu)
+        buf = sirius.to_device(x, self.gpu)
+        out = sirius.to_device(np.zeros(32, dtype=np.complex128), self.gpu)
+        f.fft(buf, out)
+        np.testing.assert_allclose(out.numpy(), np.fft.fft(x), atol=1e-9)
+        f.fft(buf, buf)
+        np.testing.assert_allclose(buf.numpy(), np.fft.fft(x), atol=1e-9)
+
+    def test_host_array_rejected_by_cuda_plan(self):
+        f = sirius.FFT([8], device=self.gpu)
+        with self.assertRaises(ValueError):
+            f.fft(np.zeros(8, dtype=np.complex128))
+        g = sirius.FFT([8])
+        with self.assertRaises(ValueError):
+            g.fft(sirius.to_device(np.zeros(8, dtype=np.complex128), self.gpu))
+
+    def test_torch_tensors_via_dlpack(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+        if not torch.cuda.is_available():
+            self.skipTest("torch has no CUDA")
+        x = _random_complex((4, 8), seed=23)
+        t = torch.from_numpy(x).cuda()
+        f = sirius.FFT([4, 8], device="cuda")
+        y = f.fft(t)
+        self.assertIsInstance(y, sirius.Buffer)
+        np.testing.assert_allclose(y.numpy(), np.fft.fft2(x), atol=1e-9)
+        out = torch.empty_like(t)
+        f.fft(t, out)
+        torch.cuda.synchronize()
+        np.testing.assert_allclose(out.cpu().numpy(), np.fft.fft2(x), atol=1e-9)
+        np.testing.assert_allclose(torch.from_dlpack(y).cpu().numpy(), np.fft.fft2(x), atol=1e-9)
+
+
 class TestFFTValidation(unittest.TestCase):
     """The Python wrapper rejects buffers whose total size doesn't match the plan."""
 

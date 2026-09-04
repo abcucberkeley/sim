@@ -43,7 +43,6 @@ target_link_libraries(myapp PRIVATE sirius::sirius)
 - MPI: bind each rank to `Device::cuda(localRank % cudaDeviceCount())`, distribute pages via `TiffFile::readPages`, and add a `Buffer`-aware halo exchange
 - nvTIFF encoder (`nvtiffEncode`) for writing stacks straight from device memory; the writers currently stage device buffers through the host
 - GPU reads of Deflate TIFFs need `libnvcomp.so.5` at run time (fetched and linked by default); wheels should bundle it via auditwheel
-- `.gitattributes` tracks `tests/data/*.tiff` in LFS but the data files are `*.tif`, so they are committed directly
 
 ## CPU / GPU execution model
 
@@ -261,6 +260,10 @@ t = torch.from_dlpack(stack)                # zero-copy
 region = f.read_region(x, y, w, h, level=1) # numpy on the CPU
 ```
 `sirius.read_tiff(path)` keeps returning numpy; pass `device="cuda"` for a Buffer.
+
+The planned FFT runs on either device too: `sirius.FFT(dims, device="cuda")` takes
+complex128 arrays that export DLPack (`sirius.Buffer`, torch, cupy) and returns a
+`sirius.Buffer`; `f.fft(x, out=x)` transforms in place on both devices.
 
 Build the extension with the GPU paths enabled (editable or wheel):
 ```

@@ -36,8 +36,11 @@ wheel.packages = ["bindings/python/sirius"]
 build-dir = "build/{wheel_tag}"
 
 
-# Build stable ABI wheels for CPython 3.12+
-wheel.py-api = "cp39"
+# Stable-ABI (abi3) wheels from CPython 3.12 on, the oldest interpreter
+# nanobind's STABLE_ABI supports; older interpreters get a version-specific
+# wheel. (cp39 would tag every wheel abi3 for 3.9+ although the extension
+# built on <3.12 is not stable-ABI.)
+wheel.py-api = "cp312"
 
 # Only the extension (and, with CUDA, the nvTIFF/nvCOMP runtime libraries it
 # needs) belong in the wheel. Without this, the FetchContent dependencies

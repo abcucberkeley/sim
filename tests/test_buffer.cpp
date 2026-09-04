@@ -414,3 +414,21 @@ TEST_CASE("Buffer outlives the stream it was allocated on", "[buffer][cuda]") {
     dev.reset();
     SUCCEED();
 }
+
+TEST_CASE("Stream::null().synchronize() waits for legacy-stream work", "[buffer][cuda]") {
+    const Device gpu = gpuOrSkip();
+    // Work enqueued through the null stream runs on the device's legacy
+    // default stream; a pinned destination makes the copy back truly
+    // asynchronous, so only a real synchronization guarantees fresh bytes.
+    auto host = hostIota<float>(Shape{1 << 20});
+    Buffer<float> dev = toDevice(host, gpu);
+    Buffer<float> pinned(host.shape(), Device::cpu(), HostMemory::Pinned);
+    fill(pinned, -1.0f);
+    for (int round = 0; round < 3; ++round) {
+        fill(dev, static_cast<float>(round));   // kernel on the legacy stream
+        copy(dev, pinned);                       // D2H into pinned memory: asynchronous
+        Stream::null().synchronize();
+        for (Index i = 0; i < pinned.size(); i += 4097)
+            REQUIRE(pinned.data()[i] == static_cast<float>(round));
+    }
+}
