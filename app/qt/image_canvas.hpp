@@ -54,6 +54,12 @@ namespace sirius::app {
         void fitToWindow();
         bool fitsToWindow() const { return fit_; }
 
+        // Locks zoom and pan: the image stays fitted to the window and the
+        // wheel and drags do nothing, while clicks still report the pixel.
+        // Used while the orthogonal views share a crosshair.
+        void setNavigationLocked(bool locked);
+        bool navigationLocked() const { return locked_; }
+
         void setSelectionMode(bool on);
         bool selectionMode() const { return selectMode_; }
         QRect selection() const { return selection_; }   // image pixels, empty when none
@@ -65,6 +71,7 @@ namespace sirius::app {
     signals:
         void hovered(int x, int y);              // image pixel; (-1, -1) off the image
         void clicked(int x, int y);              // left click without a drag
+        void doubleClicked(int x, int y);        // left double click on a pixel
         void selectionChanged(QRect selection);  // image pixels; empty when cleared
         void zoomChanged(double zoom);
 
@@ -73,6 +80,7 @@ namespace sirius::app {
         void mousePressEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
+        void mouseDoubleClickEvent(QMouseEvent* event) override;
         void wheelEvent(QWheelEvent* event) override;
         void leaveEvent(QEvent*) override;
 
@@ -89,6 +97,7 @@ namespace sirius::app {
         bool fit_ = true;
         double zoom_ = 1.0;
         QPointF offset_;   // widget position of the image origin when not fitting
+        bool locked_ = false;
         bool selectMode_ = false;
         QRect selection_;
         bool crosshairVisible_ = false;

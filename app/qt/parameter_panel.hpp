@@ -6,7 +6,10 @@
 // setParameters() populates them (without emitting changed()). Fields that
 // have no meaningful GUI (k0_angles, dz_psf, explodefact, fast_si) are kept
 // from the last setParameters() call so a loaded file round-trips intact.
+// Every field carries a tooltip; each group has a "?" button that asks the
+// window to show the matching section of the help text.
 
+#include <QString>
 #include <QWidget>
 
 #include <sirius/sim_parameters.hpp>
@@ -28,6 +31,7 @@ namespace sirius::app {
 
     signals:
         void changed();
+        void helpRequested(const QString& anchor);   // help section to show
 
     private:
         SIMParameters base_;   // carries the fields without widgets
@@ -43,6 +47,7 @@ namespace sirius::app {
         QDoubleSpinBox* dx_ = nullptr;
         QDoubleSpinBox* dy_ = nullptr;
         QDoubleSpinBox* dz_ = nullptr;
+        QDoubleSpinBox* dzPsf_ = nullptr;
         QDoubleSpinBox* zoomfact_ = nullptr;
         QSpinBox* zZoom_ = nullptr;
         QDoubleSpinBox* wiener_ = nullptr;

@@ -39,6 +39,8 @@ add_executable(sirius-app WIN32 MACOSX_BUNDLE
     qt/stack_view.hpp
     qt/band_view.cpp
     qt/band_view.hpp
+    qt/help_text.cpp
+    qt/help_text.hpp
     qt/recon_worker.cpp
     qt/recon_worker.hpp
 )

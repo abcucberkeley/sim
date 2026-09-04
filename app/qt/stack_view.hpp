@@ -23,6 +23,7 @@
 
 #include "core/display_mapping.hpp"
 #include "core/volume_ops.hpp"
+#include "qt/image_canvas.hpp"
 
 class QCheckBox;
 class QComboBox;
@@ -45,6 +46,16 @@ namespace sirius::app {
         int norders = 1;
         bool showOrders = true;                                // k0 markers for orders 1..norders-1
     };
+
+    // Overlay items for a centered (rows, cols) spectrum with pixel sizes
+    // dx, dy: the OTF support circle, the pattern vectors expected from the
+    // parameters (crosses) and the fitted ones (circles, with |amp| labels).
+    std::vector<CanvasOverlay> spectrumOverlayItems(const SpectrumOverlay& o, Index rows, Index cols,
+                                                    double dx, double dy);
+
+    // Display transform for log mode: log10 with a floor six decades below
+    // the peak, so zeros and the noise floor stay finite.
+    void logDisplayTransform(std::vector<double>& values);
 
     class StackView : public QWidget {
         Q_OBJECT
@@ -125,6 +136,9 @@ namespace sirius::app {
         QCheckBox* physicalZ_ = nullptr;
         QCheckBox* spectrumBox_ = nullptr;
         QCheckBox* logBox_ = nullptr;
+        QCheckBox* overlayBox_ = nullptr;
+        QLabel* legend_ = nullptr;
+        std::vector<QWidget*> navControls_;   // disabled while the orthoviews lock navigation
         QDoubleSpinBox* minSpin_ = nullptr;
         QDoubleSpinBox* maxSpin_ = nullptr;
         QSlider* minSlider_ = nullptr;

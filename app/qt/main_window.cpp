@@ -25,6 +25,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextBrowser>
 #include <QTime>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -33,6 +34,7 @@
 
 #include "core/volume_ops.hpp"
 #include "qt/band_view.hpp"
+#include "qt/help_text.hpp"
 #include "qt/parameter_panel.hpp"
 #include "qt/qt_strings.hpp"
 #include "qt/recon_worker.hpp"
@@ -133,7 +135,11 @@ namespace sirius::app {
         otfLabel_ = new QLabel(tr("(none)"), body);
         for (QLabel* l : {rawLabel_, otfLabel_}) l->setTextInteractionFlags(Qt::TextSelectableByMouse);
         auto* rawOpen = new QPushButton(tr("Open..."), body);
+        rawOpen->setToolTip(tr("Open the raw SIM stack: a TIFF of directions × phases × z sections in "
+                               "direction → z → phase order"));
         auto* otfOpen = new QPushButton(tr("Open..."), body);
+        otfOpen->setToolTip(tr("Open a radially averaged OTF TIFF (one plane per order, real/imaginary "
+                               "interleaved along the last axis, as cudasirecon's makeotf writes it)"));
         otfIdeal_ = new QPushButton(tr("Ideal"), body);
         otfIdeal_->setToolTip(tr("Drop the OTF file and use the theoretical OTF computed from NA, "
                                  "immersion index and wavelength"));
@@ -152,6 +158,7 @@ namespace sirius::app {
 
         params_ = new ParameterPanel(body);
         connect(params_, &ParameterPanel::changed, this, &MainWindow::onParametersEdited);
+        connect(params_, &ParameterPanel::helpRequested, this, &MainWindow::showHelp);
         auto* scroll = new QScrollArea(body);
         scroll->setWidget(params_);
         scroll->setWidgetResizable(true);
@@ -165,6 +172,11 @@ namespace sirius::app {
         rigor_->addItem(tr("Measure"), static_cast<int>(PlanRigor::Measure));
         rigor_->addItem(tr("Patient (slow planning)"), static_cast<int>(PlanRigor::Patient));
         rigor_->setCurrentIndex(1);
+        device_->setToolTip(tr("Where the reconstruction runs: the CPU (FFTW, OpenMP) or a CUDA GPU (cuFFT). "
+                               "The numerics are identical."));
+        rigor_->setToolTip(tr("FFTW planner effort (CPU only): Estimate plans instantly but transforms slower, "
+                              "Measure tries a few algorithms, Patient many. Plans are reused between runs with "
+                              "the same parameters and stack size."));
         runForm->addRow(tr("Device"), device_);
         runForm->addRow(tr("FFT planning"), rigor_);
         layout->addLayout(runForm);
@@ -182,6 +194,8 @@ namespace sirius::app {
 
         run_ = new QPushButton(tr("Reconstruct"), body);
         run_->setDefault(true);
+        run_->setToolTip(tr("Run the full pipeline on the selected device (see Help): preprocessing, band "
+                            "separation, pattern vector and amplitude fit, Wiener filter, assembly"));
         connect(run_, &QPushButton::clicked, this, &MainWindow::startReconstruction);
         layout->addWidget(run_);
 
@@ -194,12 +208,18 @@ namespace sirius::app {
         views_ = new QTabWidget(this);
         rawView_ = new StackView(views_);
         otfView_ = new OtfView(views_);
+        bandGrid_ = new BandGridView(views_);
         resultView_ = new StackView(views_);
-        bandView_ = new BandView(views_);
         views_->addTab(rawView_, tr("Raw"));
         views_->addTab(otfView_, tr("OTF"));
+        views_->addTab(bandGrid_, tr("Bands"));
         views_->addTab(resultView_, tr("Reconstruction"));
-        views_->addTab(bandView_, tr("Bands"));
+        views_->setTabToolTip(0, tr("The loaded raw stack, one section per slice"));
+        views_->setTabToolTip(1, tr("The OTF the reconstruction will use, rendered on the data grid"));
+        views_->setTabToolTip(2, tr("Separated and Wiener-filtered band spectra of the last run (needs "
+                                    "\"Capture intermediate spectra\")"));
+        views_->setTabToolTip(3, tr("The reconstructed super-resolution volume"));
+        connect(bandGrid_, &BandGridView::openRequested, this, &MainWindow::openBandTab);
         fixedTabs_ = views_->count();
         views_->setTabsClosable(true);
         for (int i = 0; i < fixedTabs_; ++i) {   // only crop tabs get a close button
@@ -221,13 +241,20 @@ namespace sirius::app {
         log_->setReadOnly(true);
         log_->setMaximumBlockCount(2000);
 
-        auto* bottom = new QTabWidget(this);
-        bottom->addTab(log_, tr("Log"));
-        bottom->addTab(fitTable_, tr("Pattern fit"));
+        help_ = new QTextBrowser(this);
+        help_->setOpenExternalLinks(false);
+        help_->setHtml(helpHtml());
+
+        bottom_ = new QTabWidget(this);
+        bottom_->addTab(log_, tr("Log"));
+        bottom_->addTab(fitTable_, tr("Pattern fit"));
+        bottom_->addTab(help_, tr("Help"));
+        bottom_->setTabToolTip(1, tr("Pattern vectors and modulation amplitudes fitted by the last run"));
+        bottom_->setTabToolTip(2, tr("How the reconstruction works and what each parameter does"));
 
         auto* splitter = new QSplitter(Qt::Vertical, this);
         splitter->addWidget(views_);
-        splitter->addWidget(bottom);
+        splitter->addWidget(bottom_);
         splitter->setStretchFactor(0, 5);
         splitter->setStretchFactor(1, 1);
         setCentralWidget(splitter);
@@ -442,6 +469,23 @@ namespace sirius::app {
         delete w;
     }
 
+    void MainWindow::openBandTab(int direction, int bandItem, int stage) {
+        if (!diagnostics_ || !result_) return;
+        auto* view = new BandView(views_);
+        view->setResult(diagnostics_, result_->fit, session_.parameters());
+        view->select(direction, bandItem, stage);
+        const int i = views_->addTab(view, tr("Band d%1 #%2 %3")
+                                               .arg(direction).arg(bandItem)
+                                               .arg(stage == 1 ? tr("filtered") : tr("separated")));
+        views_->setTabToolTip(i, tr("One captured band in a full viewer (closable)"));
+        views_->setCurrentIndex(i);
+    }
+
+    void MainWindow::showHelp(const QString& anchor) {
+        bottom_->setCurrentWidget(help_);
+        help_->scrollToAnchor(anchor);
+    }
+
     void MainWindow::onCaptureToggled(bool on) { session_.setCaptureDiagnostics(on); }
 
     // --- reconstruction --------------------------------------------------
@@ -490,10 +534,10 @@ namespace sirius::app {
 
         if (result_->diagnostics.captured) {
             diagnostics_ = std::make_shared<SimDiagnostics>(std::move(result_->diagnostics));
-            bandView_->setResult(diagnostics_, result_->fit, p);
+            bandGrid_->setResult(diagnostics_, result_->fit, p);
         } else {
             diagnostics_.reset();
-            bandView_->clear();
+            bandGrid_->clear();
         }
         views_->setCurrentWidget(resultView_);
 

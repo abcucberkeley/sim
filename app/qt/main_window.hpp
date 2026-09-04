@@ -29,11 +29,12 @@ class QPlainTextEdit;
 class QPushButton;
 class QTabWidget;
 class QTableWidget;
+class QTextBrowser;
 class QTimer;
 
 namespace sirius::app {
 
-    class BandView;
+    class BandGridView;
     class OtfView;
     class ParameterPanel;
     class ReconWorker;
@@ -69,6 +70,8 @@ namespace sirius::app {
         void onCaptureToggled(bool on);
         void onCropRequested(QRect selection);
         void onTabCloseRequested(int index);
+        void openBandTab(int direction, int bandItem, int stage);
+        void showHelp(const QString& anchor);
 
     private:
         void buildMenus();
@@ -107,10 +110,12 @@ namespace sirius::app {
         StackView* rawView_ = nullptr;
         OtfView* otfView_ = nullptr;
         StackView* resultView_ = nullptr;
-        BandView* bandView_ = nullptr;
+        BandGridView* bandGrid_ = nullptr;
         int fixedTabs_ = 0;               // tabs before the first crop tab
         QTimer* otfRefresh_ = nullptr;    // debounces parameter edits
+        QTabWidget* bottom_ = nullptr;
         QTableWidget* fitTable_ = nullptr;
+        QTextBrowser* help_ = nullptr;
         QPlainTextEdit* log_ = nullptr;
         QAction* saveResultAction_ = nullptr;
         QString lastDir_;

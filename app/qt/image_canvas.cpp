@@ -101,8 +101,14 @@ namespace sirius::app {
         fit_ = false;
     }
 
+    void ImageCanvas::setNavigationLocked(bool locked) {
+        locked_ = locked;
+        if (locked) fitToWindow();
+        setCursor(locked ? Qt::CrossCursor : (selectMode_ ? Qt::CrossCursor : Qt::OpenHandCursor));
+    }
+
     void ImageCanvas::zoomAround(double newZoom, QPointF anchor) {
-        if (image_.isNull()) return;
+        if (image_.isNull() || locked_) return;
         newZoom = std::clamp(newZoom, kMinZoom, kMaxZoom);
         const QPointF imagePt = toImage(anchor);   // stays under the anchor
         leaveFitMode();
@@ -123,7 +129,7 @@ namespace sirius::app {
 
     void ImageCanvas::setSelectionMode(bool on) {
         selectMode_ = on;
-        setCursor(on ? Qt::CrossCursor : Qt::OpenHandCursor);
+        setCursor(on || locked_ ? Qt::CrossCursor : Qt::OpenHandCursor);
         if (!on) clearSelection();
     }
 
@@ -203,10 +209,11 @@ namespace sirius::app {
         moved_ = false;
         dragStart_ = pos;
         if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && !selectMode_)) {
-            leaveFitMode();
+            // a locked canvas keeps the "pan" drag only to detect a plain click
+            if (!locked_) leaveFitMode();
             dragOffset0_ = offset_;
             drag_ = Drag::Pan;
-            setCursor(Qt::ClosedHandCursor);
+            if (!locked_) setCursor(Qt::ClosedHandCursor);
         } else if (event->button() == Qt::LeftButton) {
             const QPoint p = imagePixel(pos);
             if (p.x() < 0) return;
@@ -222,6 +229,7 @@ namespace sirius::app {
         const QPoint p = imagePixel(pos);
         emit hovered(p.x(), p.y());
         if (drag_ == Drag::Pan) {
+            if (locked_) return;
             offset_ = dragOffset0_ + (pos - dragStart_);
             moved_ = true;
             update();
@@ -242,7 +250,7 @@ namespace sirius::app {
         const Drag drag = drag_;
         drag_ = Drag::None;
         if (drag == Drag::Pan) {
-            setCursor(selectMode_ ? Qt::CrossCursor : Qt::OpenHandCursor);
+            setCursor(selectMode_ || locked_ ? Qt::CrossCursor : Qt::OpenHandCursor);
             if (!moved_ && event->button() == Qt::LeftButton) {
                 const QPoint p = imagePixel(pos);
                 if (p.x() >= 0) emit clicked(p.x(), p.y());
@@ -258,8 +266,14 @@ namespace sirius::app {
         }
     }
 
+    void ImageCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
+        if (event->button() != Qt::LeftButton || image_.isNull()) return;
+        const QPoint p = imagePixel(eventPos(event));
+        if (p.x() >= 0) emit doubleClicked(p.x(), p.y());
+    }
+
     void ImageCanvas::wheelEvent(QWheelEvent* event) {
-        if (image_.isNull()) return;
+        if (image_.isNull() || locked_) return;
         const double steps = event->angleDelta().y() / 120.0;
         if (steps == 0.0) return;
         zoomAround(zoom() * std::pow(1.25, steps), eventPos(event));

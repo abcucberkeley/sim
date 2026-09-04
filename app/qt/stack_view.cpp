@@ -18,21 +18,52 @@
 
 namespace sirius::app {
 
+    void logDisplayTransform(std::vector<double>& v) {
+        double peak = 0.0;
+        for (double x : v) peak = std::max(peak, x);
+        if (!(peak > 0.0)) {
+            std::fill(v.begin(), v.end(), 0.0);
+            return;
+        }
+        const double floor = peak * 1e-6;
+        for (double& x : v) x = std::log10(std::max(x, 0.0) + floor);
+    }
+
+    std::vector<CanvasOverlay> spectrumOverlayItems(const SpectrumOverlay& o, Index rows, Index cols,
+                                                    double dx, double dy) {
+        std::vector<CanvasOverlay> items;
+        const SpectrumGeometry g{rows, cols, 1.0 / (static_cast<double>(cols) * dx),
+                                 1.0 / (static_cast<double>(rows) * dy)};
+        const double cx = static_cast<double>(cols / 2) + 0.5, cy = static_cast<double>(rows / 2) + 0.5;
+        if (o.supportRadius > 0.0) {
+            const auto r = g.radiusPixels(o.supportRadius);
+            items.push_back({CanvasOverlay::Kind::Circle, cx, cy, r[0], r[1], QColor(255, 255, 255, 180),
+                             QObject::tr("2NA/λ")});
+        }
+        if (!o.showOrders) return items;
+        auto marks = [&](const std::vector<std::array<double, 2>>& k0s, QColor color, bool fitted) {
+            for (std::size_t d = 0; d < k0s.size(); ++d)
+                for (int order = 1; order < o.norders; ++order)
+                    for (int sign : {1, -1}) {
+                        const auto p = g.pixelOf(sign * order * k0s[d][0], sign * order * k0s[d][1]);
+                        CanvasOverlay item{fitted ? CanvasOverlay::Kind::Circle : CanvasOverlay::Kind::Cross,
+                                           p[0] + 0.5, p[1] + 0.5, 4.0, 4.0, color, {}};
+                        if (sign > 0 && fitted) {
+                            item.text = QObject::tr("d%1 o%2").arg(d).arg(order);
+                            if (d < o.ampMagnitude.size() && static_cast<std::size_t>(order) < o.ampMagnitude[d].size())
+                                item.text += QObject::tr(" |a|=%1")
+                                                 .arg(o.ampMagnitude[d][static_cast<std::size_t>(order)], 0, 'f', 2);
+                        }
+                        items.push_back(item);
+                    }
+        };
+        marks(o.predictedK0, QColor(255, 220, 0), false);
+        marks(o.fittedK0, QColor(0, 255, 255), true);
+        return items;
+    }
+
     namespace {
         constexpr int kSliderSteps = 1000;
-
-        // log10 with a floor six decades below the plane's peak, so zeros and
-        // the noise floor stay finite and the window covers the useful range
-        void logTransform(std::vector<double>& v) {
-            double peak = 0.0;
-            for (double x : v) peak = std::max(peak, x);
-            if (!(peak > 0.0)) {
-                std::fill(v.begin(), v.end(), 0.0);
-                return;
-            }
-            const double floor = peak * 1e-6;
-            for (double& x : v) x = std::log10(std::max(x, 0.0) + floor);
-        }
 
         QToolButton* toolButton(QWidget* parent, const QString& text, const QString& tip) {
             auto* b = new QToolButton(parent);
@@ -60,19 +91,33 @@ namespace sirius::app {
         auto* one = toolButton(this, tr("1:1"), tr("One screen pixel per image pixel"));
         zoomLabel_ = new QLabel(QStringLiteral("100%"), this);
         zoomLabel_->setMinimumWidth(48);
-        selectTool_ = toolButton(this, tr("Select"), tr("Left drag draws a rectangle (otherwise it pans)"));
+        selectTool_ = toolButton(this, tr("Select"), tr("When checked, a left drag draws a rectangle for Crop; "
+                                                          "otherwise a left drag pans the image"));
         selectTool_->setCheckable(true);
         crop_ = new QPushButton(tr("Crop"), this);
         crop_->setEnabled(false);
-        crop_->setToolTip(tr("Open the selected rectangle (every slice) in a new tab"));
+        crop_->setToolTip(tr("Open the selected rectangle, through every slice, in a new closable tab"));
         ortho_ = new QCheckBox(tr("Ortho"), this);
-        ortho_->setToolTip(tr("Show XZ and YZ views through the crosshair; click to move it"));
+        ortho_->setToolTip(tr("Orthogonal views: XZ below and YZ to the right of the XY plane, cut through a "
+                              "crosshair. Click in any view to move the crosshair (the slice slider moves it in z). "
+                              "Zoom and pan are locked while Ortho is on so the three views stay aligned."));
         physicalZ_ = new QCheckBox(tr("Physical z"), this);
-        physicalZ_->setToolTip(tr("Scale the orthogonal views by dz / dx"));
+        physicalZ_->setToolTip(tr("Stretch the z axis of the XZ and YZ views by dz / dx so a voxel has its "
+                                  "physical proportions (z steps are usually coarser than xy). Off: one row per plane."));
         spectrumBox_ = new QCheckBox(tr("Spectrum"), this);
-        spectrumBox_->setToolTip(tr("Show the centered |FFT| of the displayed planes"));
+        spectrumBox_->setToolTip(tr("Replace each displayed plane by its centered 2D Fourier magnitude |FFT|, zero "
+                                    "frequency in the middle, like ImageJ's FFT. The readout then shows spatial "
+                                    "frequencies in 1/um."));
         logBox_ = new QCheckBox(tr("Log"), this);
-        logBox_->setToolTip(tr("Display log10 of the intensity"));
+        logBox_->setToolTip(tr("Display log10 of the values (six decades below the peak are kept), which is how "
+                               "spectra and OTFs are usually looked at"));
+        overlayBox_ = new QCheckBox(tr("Overlay"), this);
+        overlayBox_->setChecked(true);
+        overlayBox_->setToolTip(tr("Draw the frequency-space annotations on spectra: the OTF support circle "
+                                   "2NA/λ, the illumination peaks expected from the parameters (yellow crosses at "
+                                   "±o·k0 for every direction and order) and, after a run, the fitted ones (cyan "
+                                   "circles with the modulation amplitude |a|)"));
+        for (QToolButton* b : {zoomOut, zoomIn, fit, one}) navControls_.push_back(b);
         tools->addWidget(zoomOut);
         tools->addWidget(zoomIn);
         tools->addWidget(fit);
@@ -87,6 +132,7 @@ namespace sirius::app {
         tools->addSpacing(12);
         tools->addWidget(spectrumBox_);
         tools->addWidget(logBox_);
+        tools->addWidget(overlayBox_);
         tools->addStretch(1);
 
         // --- canvases: XY with YZ to the right and XZ below ---
@@ -103,6 +149,7 @@ namespace sirius::app {
         // --- slice + window ---
         slice_ = new QSlider(Qt::Horizontal, this);
         slice_->setEnabled(false);
+        slice_->setToolTip(tr("Plane shown in the XY view (z, or kz for spectra); arrow keys step by one"));
         sliceLabel_ = new QLabel(tr("-"), this);
         sliceLabel_->setMinimumWidth(80);
         auto* sliceRow = new QHBoxLayout;
@@ -122,8 +169,14 @@ namespace sirius::app {
         maxSlider_ = new QSlider(Qt::Horizontal, this);
         minSlider_->setRange(0, kSliderSteps);
         maxSlider_->setRange(0, kSliderSteps);
+        const QString windowTip = tr("Display window (brightness / contrast): values at or below Min are black, "
+                                     "at or above Max white. The sliders span the displayed plane's range; the "
+                                     "spin boxes accept any value.");
+        for (QWidget* w : {static_cast<QWidget*>(minSpin_), static_cast<QWidget*>(maxSpin_),
+                           static_cast<QWidget*>(minSlider_), static_cast<QWidget*>(maxSlider_)})
+            w->setToolTip(windowTip);
         auto* autoBtn = new QPushButton(tr("Auto"), this);
-        autoBtn->setToolTip(tr("Window from the 0.1% and 99.9% percentiles of the displayed plane"));
+        autoBtn->setToolTip(tr("Window from the 0.1% and 99.9% percentiles of the displayed plane (clips hot pixels)"));
         auto* resetBtn = new QPushButton(tr("Reset"), this);
         resetBtn->setToolTip(tr("Window from the minimum and maximum of the displayed plane"));
         auto* windowRow = new QHBoxLayout;
@@ -139,11 +192,16 @@ namespace sirius::app {
 
         status_ = new QLabel(this);
         status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        legend_ = new QLabel(this);
+        legend_->setWordWrap(true);
+        legend_->setStyleSheet(QStringLiteral("color: #666;"));
+        legend_->hide();
 
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addLayout(tools);
         layout->addLayout(grid, 1);
+        layout->addWidget(legend_);
         layout->addLayout(sliceRow);
         layout->addLayout(windowRow);
         layout->addWidget(status_);
@@ -164,11 +222,18 @@ namespace sirius::app {
             if (!r.isNull()) emit cropRequested(r);
         });
         connect(ortho_, &QCheckBox::toggled, this, [this](bool on) {
+            // the three views only line up when none of them is zoomed or
+            // panned, so navigation is locked while they are shown
+            if (on) selectTool_->setChecked(false);
+            selectTool_->setEnabled(!on);
+            for (QWidget* w : navControls_) w->setEnabled(!on);
+            for (ImageCanvas* c : {xyCanvas_, xzCanvas_, yzCanvas_}) c->setNavigationLocked(on);
             xzCanvas_->setVisible(on);
             yzCanvas_->setVisible(on);
             updateCrosshairs();
             renderOrtho();
         });
+        connect(overlayBox_, &QCheckBox::toggled, this, [this] { updateOverlays(); });
         connect(physicalZ_, &QCheckBox::toggled, this, [this] { renderOrtho(); });
         connect(spectrumBox_, &QCheckBox::toggled, this, [this] {
             renderAll();
@@ -293,7 +358,7 @@ namespace sirius::app {
         plane.gray.resize(plane.values.size());
         if (spectrumMode()) spectrum_.magnitude(src, rows, cols, plane.values.data());
         else std::copy_n(src, rows * cols, plane.values.data());
-        if (logBox_->isChecked()) logTransform(plane.values);
+        if (logBox_->isChecked()) logDisplayTransform(plane.values);
     }
 
     void StackView::showPlane(ImageCanvas* canvas, Plane& plane) {
@@ -385,38 +450,24 @@ namespace sirius::app {
 
     void StackView::updateOverlays() {
         std::vector<CanvasOverlay> items;
-        if (volume_ && overlay_ && frequencyReadout()) {
-            const Index ny = volume_->dim(1), nx = volume_->dim(2);
-            const SpectrumGeometry g{ny, nx, 1.0 / (static_cast<double>(nx) * dx_), 1.0 / (static_cast<double>(ny) * dy_)};
-            const double cx = static_cast<double>(nx / 2) + 0.5, cy = static_cast<double>(ny / 2) + 0.5;
-            const SpectrumOverlay& o = *overlay_;
-            if (o.supportRadius > 0.0) {
-                const auto r = g.radiusPixels(o.supportRadius);
-                items.push_back({CanvasOverlay::Kind::Circle, cx, cy, r[0], r[1], QColor(255, 255, 255, 180),
-                                 tr("2NA/λ")});
-            }
-            if (o.showOrders) {
-                auto marks = [&](const std::vector<std::array<double, 2>>& k0s, QColor color, bool withAmps,
-                                 CanvasOverlay::Kind kind) {
-                    for (std::size_t d = 0; d < k0s.size(); ++d)
-                        for (int order = 1; order < o.norders; ++order)
-                            for (int sign : {1, -1}) {
-                                const auto p = g.pixelOf(sign * order * k0s[d][0], sign * order * k0s[d][1]);
-                                CanvasOverlay item{kind, p[0] + 0.5, p[1] + 0.5, 3.0, 3.0, color, {}};
-                                if (sign > 0) {
-                                    item.text = tr("d%1 o%2").arg(d).arg(order);
-                                    if (withAmps && d < o.ampMagnitude.size() &&
-                                        static_cast<std::size_t>(order) < o.ampMagnitude[d].size())
-                                        item.text += tr(" |a|=%1").arg(o.ampMagnitude[d][static_cast<std::size_t>(order)], 0, 'f', 2);
-                                }
-                                items.push_back(item);
-                            }
-                };
-                marks(o.predictedK0, QColor(255, 220, 0), false, CanvasOverlay::Kind::Cross);
-                marks(o.fittedK0, QColor(0, 255, 255), true, CanvasOverlay::Kind::Circle);
-            }
-        }
+        const bool show = volume_ && overlay_ && frequencyReadout() && overlayBox_->isChecked();
+        if (show) items = spectrumOverlayItems(*overlay_, volume_->dim(1), volume_->dim(2), dx_, dy_);
         xyCanvas_->setOverlays(std::move(items));
+        overlayBox_->setVisible(volume_ && overlay_ && frequencyReadout());
+        legend_->setVisible(show);
+        if (show) {
+            QString text = tr("Overlay: white circle = OTF support 2NA/λ (frequencies outside it cannot be "
+                              "transmitted by the objective)");
+            if (overlay_->showOrders) {
+                text += tr("; yellow + = illumination peaks ±o·k0 expected from the parameters (line spacing and "
+                           "angles) for each direction d and order o, which is where the pattern's Fourier "
+                           "components sit in a raw frame");
+                if (!overlay_->fittedK0.empty())
+                    text += tr("; cyan circles = pattern vectors fitted by the last run, with the modulation "
+                               "amplitude |a| of that order");
+            }
+            legend_->setText(text + QStringLiteral("."));
+        }
     }
 
     void StackView::updateCrosshairs() {
