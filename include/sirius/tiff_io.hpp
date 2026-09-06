@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -107,6 +108,10 @@ namespace sirius {
     // Metadata of one image file directory (IFD).
     struct TiffImageInfo {
         std::uint64_t ifdOffset = 0;
+        std::string description;             // ImageDescription tag (OME-XML, ImageJ metadata), first page only
+        double xResolution = 0.0;            // XResolution / YResolution tags (pixels per resolutionUnit), 0 = absent
+        double yResolution = 0.0;
+        std::uint16_t resolutionUnit = 2;    // 1 none, 2 inch, 3 centimetre
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         PixelType pixelType = PixelType::UInt8;
@@ -232,6 +237,34 @@ namespace sirius {
     // Decode any file into the buffer type matching its on-disk pixel type.
     AnyBuffer readTiffAny(const std::string& path, const TiffReadOptions& opts = {},
                           const Stream& stream = Stream::null());
+
+    // --- writing with full control over the container ---------------------
+    struct TiffWriteOptions {
+        TiffCompression compression = TiffCompression::None;
+        int compressionLevel = 6;            // Deflate 1..9
+        // Horizontal differencing (integer types) / floating-point predictor
+        // (float types) for LZW and Deflate. Off by default: nvTIFF cannot
+        // decode the floating-point predictor.
+        bool predictor = false;
+        bool tiled = false;
+        std::uint32_t tileWidth = 256;
+        std::uint32_t tileHeight = 256;
+        std::uint32_t rowsPerStrip = 0;      // strips: 0 = libtiff default
+        bool bigTiff = true;
+        std::string description;             // ImageDescription of the first page (OME-XML, ImageJ)
+        // > 1 writes reduced-resolution SubIFDs (NewSubfileType 1) under every
+        // page, each level box down-sampled by `downsample` in x and y.
+        int pyramidLevels = 1;
+        int downsample = 2;
+        double xPixelUm = 0.0;               // > 0: written as XResolution / YResolution in cm
+        double yPixelUm = 0.0;
+        std::function<void(double)> progress;   // 0..1 over pages
+        std::function<bool()> cancelled;        // checked between pages (the file is removed when cancelled)
+    };
+
+    // (pages, rows, cols) host or device view, any pixel type.
+    template <typename T>
+    void writeTiffStack(const std::string& path, BufferView<const T> stack, const TiffWriteOptions& options);
 
     // --- Eigen convenience API --------------------------------------------
 

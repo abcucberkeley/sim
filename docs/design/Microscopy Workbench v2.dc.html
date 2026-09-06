@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta name="design_doc_mode" content="canvas">
+  <link rel="stylesheet" href="_ds/modernist-7c57f600-730e-495c-989b-9fc95ce0a926/styles.css">
+  <script src="_ds/modernist-7c57f600-730e-495c-989b-9fc95ce0a926/_ds_bundle.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <style>
+    body{margin:0;background:#dedcdc}
+    .katex{font-size:1.05em}
+    a{color:var(--color-accent)} a:hover{color:var(--color-accent-600)}
+    input[type=range]{accent-color:var(--color-accent);height:18px;margin:0}
+  </style>
+</helmet>
+<div ref="{{ rootRef }}" style="width:1600px;height:960px;margin:24px;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:13px;line-height:1.4;border:2px solid var(--color-divider);overflow:hidden;box-shadow:var(--shadow-lg);position:relative">
+
+  <!-- title + menu -->
+  <div style="display:flex;align-items:center;gap:20px;height:38px;padding:0 14px;border-bottom:2px solid var(--color-divider);flex:none">
+    <div style="font-family:var(--font-heading);font-weight:800;font-size:15px;display:flex;align-items:center;gap:8px"><span style="width:12px;height:12px;background:var(--color-accent);display:inline-block"></span>SIRIUS</div>
+    <div style="display:flex;gap:2px;align-self:stretch">
+      <sc-for list="{{ menus }}" as="m" hint-placeholder-count="7">
+        <div style="position:relative;display:flex;align-items:stretch">
+          <span onClick="{{ m.toggle }}" onMouseEnter="{{ m.hover }}" style="cursor:pointer;padding:0 9px;display:flex;align-items:center;color:{{ m.fg }};background:{{ m.bg }}" style-hover="color:var(--color-accent)">{{ m.name }}</span>
+          <sc-if value="{{ m.open }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;left:0;top:36px;width:280px;background:var(--color-bg);border:2px solid var(--color-text);box-shadow:var(--shadow-md);z-index:20;display:flex;flex-direction:column;padding:4px 0">
+            <sc-for list="{{ m.items }}" as="it" hint-placeholder-count="6">
+              <div onClick="{{ it.act }}" style="display:flex;justify-content:space-between;gap:12px;padding:6px 12px;cursor:pointer;font-size:12px;border-top:{{ it.sep }};opacity:{{ it.op }}" style-hover="background:var(--color-neutral-200);color:var(--color-accent)"><span style="display:flex;gap:8px;align-items:center"><span style="width:10px;color:var(--color-accent);font-size:10px">{{ it.check }}</span>{{ it.name }}</span><span style="color:var(--color-neutral-500);font-variant-numeric:tabular-nums;white-space:nowrap">{{ it.key }}</span></div>
+            </sc-for>
+          </div>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:18px;font-size:12px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums"><span>{{ dsName }}</span><span>GPU · 42.1 GB free</span></div>
+    <span onClick="{{ toggleAi }}" title="Assistant (⌥5)" style="display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px;border:1.5px solid {{ aiB }};background:{{ aiBg }};color:{{ aiFg }};font-family:var(--font-heading);font-weight:800;font-size:12px;cursor:pointer;white-space:nowrap" style-hover="border-color:var(--color-accent)"><span style="font-size:13px">✦</span>Assistant</span>
+    <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border:1.5px solid var(--color-neutral-700)"></span><span style="width:12px;height:12px;border:1.5px solid var(--color-neutral-700)"></span><span style="width:12px;height:12px;background:var(--color-neutral-700)"></span></div>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+    <!-- ===== LEFT: data + ops stack ===== -->
+    <div style="width:290px;flex:none;border-right:2px solid var(--color-divider);display:flex;flex-direction:column;min-height:0">
+      <div style="padding:12px 14px 8px;display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Operations · any order</span>
+        <span style="font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums">{{ opCount }} steps</span>
+      </div>
+
+      <div style="flex:1;overflow:auto;min-height:0">
+        <sc-for list="{{ ops }}" as="o" hint-placeholder-count="7">
+          <div onClick="{{ o.select }}" style="display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:center;padding:9px 14px 9px 10px;border-top:1px solid var(--color-divider);cursor:pointer;background:{{ o.bg }};border-left:3px solid {{ o.edge }}" style-hover="background:var(--color-neutral-200)">
+            <sc-if value="{{ o.pinned }}" hint-placeholder-val="{{ false }}"><span title="Always first, always enabled" style="width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:var(--color-neutral-500)">⬢</span></sc-if>
+            <sc-if value="{{ o.movable }}" hint-placeholder-val="{{ true }}"><span onClick="{{ o.toggle }}" title="Enable / skip" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ o.boxBg }}"></span></sc-if>
+            <div style="min-width:0;opacity:{{ o.op }}">
+              <div style="display:flex;gap:8px;align-items:baseline;min-width:0;overflow:hidden"><span style="font-family:var(--font-heading);font-weight:800;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">{{ o.name }}</span><span style="font-size:10px;color:var(--color-neutral-500);letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap;flex:none">{{ o.kindLabel }}</span></div>
+              <div style="font-size:11px;color:var(--color-neutral-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;display:flex;gap:6px"><span title="{{ o.cacheTitle }}" style="flex:none;color:{{ o.cacheC }};font-weight:800">{{ o.cacheGlyph }}</span><span style="overflow:hidden;text-overflow:ellipsis">{{ o.sum }}</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px">
+              <sc-if value="{{ o.movable }}" hint-placeholder-val="{{ true }}">
+              <span onClick="{{ o.up }}" style="font-size:10px;color:var(--color-neutral-500);cursor:pointer;padding:2px" style-hover="color:var(--color-accent)">▲</span>
+              <span onClick="{{ o.down }}" style="font-size:10px;color:var(--color-neutral-500);cursor:pointer;padding:2px" style-hover="color:var(--color-accent)">▼</span>
+              </sc-if>
+              <span onClick="{{ o.view }}" title="Show this step's output in the viewer" style="width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ o.eyeB }};color:{{ o.eyeC }};background:{{ o.eyeBg }};font-size:10px;cursor:pointer;margin-left:4px">◉</span>
+            </div>
+          </div>
+        </sc-for>
+        <div onClick="{{ toggleAdd }}" style="display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:center;padding:12px 14px 12px 10px;border-top:1px solid var(--color-divider);border-left:3px solid transparent;cursor:pointer;color:{{ addFg }};background:{{ addBg }}" style-hover="background:var(--color-neutral-200);color:var(--color-accent)">
+          <span style="width:14px;height:14px;border:1.5px dashed currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:11px;line-height:1">+</span>
+          <div style="min-width:0"><div style="font-family:var(--font-heading);font-weight:800;font-size:13px">Add a processing step</div><div style="font-size:11px;color:var(--color-neutral-600)">{{ addHint }}</div></div>
+        </div>
+        <sc-if value="{{ addOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="margin:0 14px 10px 10px;border:2px solid var(--color-text);background:var(--color-bg);box-shadow:var(--shadow-md);font-size:12px">
+          <sc-for list="{{ libGroups }}" as="g" hint-placeholder-count="5">
+            <div style="display:grid;grid-template-columns:82px 1fr;border-bottom:1px solid var(--color-divider)">
+              <div style="padding:8px 10px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">{{ g.name }}</div>
+              <div style="display:flex;flex-direction:column">
+                <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="2"><div onClick="{{ it.add }}" style="padding:6px 10px;cursor:pointer;font-weight:800;font-family:var(--font-heading)" style-hover="background:var(--color-neutral-200);color:var(--color-accent)">{{ it.name }}</div></sc-for>
+              </div>
+            </div>
+          </sc-for>
+          <div onClick="{{ loadExample }}" style="padding:8px 10px;font-size:11px;color:var(--color-accent);cursor:pointer" style-hover="background:var(--color-neutral-200)">Load example pipeline (SIM → einsum → contrast → merge → segment → volume)</div>
+        </div>
+        </sc-if>
+        <div style="border-top:2px solid var(--color-divider);padding:12px 14px;font-size:12px;color:var(--color-neutral-700);display:grid;grid-template-columns:36px 1fr;gap:8px 8px;align-items:start;line-height:1.3">
+          <span style="height:20px;display:flex;align-items:center;justify-content:center"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:var(--color-accent)"></span></span><span style="padding-top:2px">Enabled — runs and passes its output on</span>
+          <span style="height:20px;display:flex;align-items:center;justify-content:center"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700)"></span></span><span style="padding-top:2px">Skipped — data passes through unchanged</span>
+          <span style="height:20px;display:flex;align-items:center;justify-content:center"><span style="width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-accent);background:var(--color-accent);color:var(--color-bg);font-size:10px">◉</span></span><span style="padding-top:2px">Shown in the viewer (click any step's ◉)</span>
+          <span style="height:20px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500);font-size:10px;letter-spacing:2px">▲▼</span><span style="padding-top:2px">Reorder — steps run top to bottom</span>
+          <span style="height:20px;display:flex;align-items:center;justify-content:center;gap:3px;font-weight:800;font-size:11px"><span style="color:var(--color-accent)">M</span><span>D</span><span style="color:var(--color-neutral-500)">↻</span></span><span style="padding-top:2px">Output cached in memory · on disk · recomputed</span>
+        </div>
+      </div>
+
+      <div style="border-top:2px solid var(--color-divider);padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-primary btn-block" onClick="{{ runAll }}" style="margin:0">{{ runLabel }}</button>
+        <button class="btn btn-secondary btn-block" onClick="{{ openExport }}" style="margin:0">Export result…</button>
+      </div>
+    </div>
+
+    <!-- ===== CENTER: viewer + diagnostics ===== -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <!-- viewer toolbar -->
+      <div style="flex:none;height:40px;display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:2px solid var(--color-divider)">
+        <div class="seg"><label class="seg-opt" style="font-size:12px"><input type="radio" name="vm" checked="{{ vmOrtho }}" onChange="{{ setOrtho }}">Ortho</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="vm" checked="{{ vm3d }}" onChange="{{ set3d }}">3D</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="vm" checked="{{ vmCompare }}" onChange="{{ setCompare }}">Compare</label></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px"><span style="color:var(--color-neutral-600)">Viewing</span><span style="font-family:var(--font-heading);font-weight:800;color:var(--color-accent)">{{ viewNo }} {{ viewName }}</span><span style="color:var(--color-neutral-500);font-variant-numeric:tabular-nums">{{ viewShape }}</span></div>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer"><span onClick="{{ toggleLabels }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ labelsBox }}"></span>Labels</label>
+        <sc-if value="{{ notVm3d }}" hint-placeholder-val="{{ true }}"><label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;white-space:nowrap"><span onClick="{{ toggleCross }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ crossBox }}"></span>Crosshair<span style="font-size:10px;color:var(--color-neutral-500);letter-spacing:0.06em;text-transform:uppercase">{{ hairState }}</span></label></sc-if>
+        <sc-if value="{{ vm3d }}" hint-placeholder-val="{{ false }}"><label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer"><span onClick="{{ toggleBox }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ boxBox }}"></span>Bounding box</label></sc-if>
+        <div style="display:flex;gap:4px">
+          <sc-for list="{{ chans }}" as="c" hint-placeholder-count="2"><span onClick="{{ c.toggle }}" title="{{ c.label }}" style="width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ c.color }};background:{{ c.swBg }};color:{{ c.swFg }};font-size:10px;cursor:pointer;font-variant-numeric:tabular-nums">{{ c.short }}</span></sc-for>
+        </div>
+      </div>
+
+      <!-- canvas area -->
+      <div style="flex:1;min-height:0;background:var(--color-neutral-900);padding:2px;position:relative;display:flex;gap:2px">
+        <!-- tool strip -->
+        <div style="width:36px;flex:none;background:var(--color-bg);display:flex;flex-direction:column;gap:2px;padding:4px 0;align-items:center">
+          <sc-for list="{{ tools }}" as="tl" hint-placeholder-count="5"><span onClick="{{ tl.set }}" title="{{ tl.title }}" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ tl.border }};background:{{ tl.bg }};color:{{ tl.fg }};cursor:pointer;font-size:13px;opacity:{{ tl.op }}" style-hover="border-color:var(--color-accent)">{{ tl.glyph }}</span></sc-for>
+          <div style="width:20px;border-top:2px solid var(--color-divider);margin:6px 0"></div>
+          <span onClick="{{ zoomIn }}" title="Zoom in" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-divider);cursor:pointer;font-size:14px" style-hover="border-color:var(--color-accent)">+</span>
+          <span onClick="{{ zoomOut }}" title="Zoom out" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-divider);cursor:pointer;font-size:14px" style-hover="border-color:var(--color-accent)">−</span>
+          <span onClick="{{ zoomFit }}" title="Fit to view" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-divider);cursor:pointer;font-size:11px" style-hover="border-color:var(--color-accent)">⤢</span>
+          <span style="margin-top:auto;font-size:10px;font-variant-numeric:tabular-nums;color:var(--color-neutral-600);writing-mode:vertical-rl;transform:rotate(180deg)">{{ zoomPct }} %</span>
+        </div>
+        <div style="flex:1;min-width:0;position:relative">
+        <sc-if value="{{ vmOrtho }}" hint-placeholder-val="{{ true }}">
+        <div style="height:100%;display:grid;grid-template-columns:1fr 220px;grid-template-rows:1fr 170px;gap:2px">
+          <div onWheel="{{ wheelXY }}" onMouseDown="{{ downXY }}" onMouseMove="{{ moveXY }}" onMouseUp="{{ upXY }}" onMouseLeave="{{ upXY }}" style="position:relative;overflow:hidden;cursor:{{ cursor }};background:#0a0909">
+            <div onClick="{{ clickXY }}" style="position:absolute;inset:0;transform:translate({{ panX }}px, {{ panY }}px) scale({{ zoom }});transform-origin:center center">
+              <canvas width="720" height="520" data-seed="{{ xySeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+              <sc-if value="{{ showLabels }}" hint-placeholder-val="{{ false }}"><canvas width="720" height="520" data-seed="{{ labSeed }}" data-kind="labels" data-alpha="{{ labelAlpha }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas></sc-if>
+              <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:{{ hairW }}px;border-left:{{ hairW }}px {{ hairStyle }} var(--color-accent);opacity:{{ hairOp }};pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:{{ hairW }}px;border-top:{{ hairW }}px {{ hairStyle }} var(--color-accent);opacity:{{ hairOp }};pointer-events:none"></div></sc-if>
+            </div>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;display:flex;gap:12px;font-variant-numeric:tabular-nums;white-space:nowrap"><span style="font-weight:800">XY</span><span style="opacity:.7">z {{ z }} / {{ zMax }}</span><span style="opacity:.7">t {{ t }} / {{ tMax }}</span><span style="opacity:.7">{{ zoomPct }} %</span></div>
+            <div style="position:absolute;right:10px;bottom:8px;display:flex;align-items:center;gap:6px;font-size:11px;color:#f3f2f2;font-variant-numeric:tabular-nums"><span style="width:{{ barPx }}px;height:2px;background:#f3f2f2"></span>{{ barLabel }}</div>
+            <div style="position:absolute;left:10px;bottom:8px;font-size:11px;color:#f3f2f2;opacity:.75;white-space:nowrap">{{ toolHint }}</div>
+            <sc-if value="{{ segMode }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;left:{{ mx }}px;top:{{ my }}px;width:{{ brushPx }}px;height:{{ brushPx }}px;margin:-{{ brushHalf }}px 0 0 -{{ brushHalf }}px;border:1.5px solid #f3f2f2;border-radius:50%;pointer-events:none"></div></sc-if>
+          </div>
+          <div onClick="{{ clickYZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="220" height="520" data-seed="{{ yzSeed }}" data-kind="yz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ zP }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">YZ</div>
+          </div>
+          <div onClick="{{ clickXZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="720" height="170" data-seed="{{ xzSeed }}" data-kind="xz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ zP }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">XZ</div>
+          </div>
+          <div style="position:relative;overflow:hidden;background:#0a0909">
+            <canvas width="220" height="170" data-seed="{{ mipSeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">MIP · Z</div>
+          </div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ vm3d }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;position:relative;background:#0a0909;overflow:hidden">
+          <canvas width="1000" height="640" data-seed="{{ volSeed }}" data-kind="vol3d" data-rot="{{ rot }}" data-tilt="{{ tilt }}" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+          <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;display:flex;gap:12px;font-variant-numeric:tabular-nums"><span style="font-weight:800">VOLUME</span><span style="opacity:.7">{{ volMethod }}</span><span style="opacity:.7">yaw {{ rot }}° · pitch {{ tilt }}°</span></div>
+          <div style="position:absolute;left:10px;bottom:10px;display:flex;gap:8px">
+            <sc-for list="{{ presets }}" as="p" hint-placeholder-count="4"><span onClick="{{ p.set }}" style="font-size:11px;color:#f3f2f2;border:1.5px solid rgba(243,242,242,.5);padding:3px 8px;cursor:pointer;background:{{ p.bg }}" style-hover="border-color:#f3f2f2">{{ p.name }}</span></sc-for>
+          </div>
+          <div style="position:absolute;right:10px;bottom:10px;display:grid;grid-template-columns:auto 140px;gap:6px 10px;align-items:center;font-size:11px;color:#f3f2f2;font-variant-numeric:tabular-nums">
+            <span>Yaw</span><input type="range" min="0" max="359" value="{{ rot }}" onChange="{{ setRot }}">
+            <span>Pitch</span><input type="range" min="-60" max="60" value="{{ tilt }}" onChange="{{ setTilt }}">
+          </div>
+          <div style="position:absolute;right:10px;top:8px;display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:11px;color:#f3f2f2"><span style="opacity:.7">Clip Z</span><span style="width:120px;height:2px;background:rgba(243,242,242,.35);position:relative"><span style="position:absolute;left:12%;right:20%;top:0;bottom:0;background:var(--color-accent)"></span></span></div>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ vmCompare }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;display:grid;grid-template-columns:1fr 1fr;gap:2px">
+          <div style="position:relative;overflow:hidden;background:#0a0909"><canvas width="600" height="620" data-seed="{{ rawSeed }}" data-kind="xy" data-tint="#ffffff" data-blur="1" style="position:absolute;inset:0;width:100%;height:100%"></canvas><div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">01 Load · raw</div></div>
+          <div style="position:relative;overflow:hidden;background:#0a0909"><canvas width="600" height="620" data-seed="{{ xySeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas><sc-if value="{{ showLabels }}" hint-placeholder-val="{{ false }}"><canvas width="600" height="620" data-seed="{{ labSeed }}" data-kind="labels" data-alpha="{{ labelAlpha }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas></sc-if><div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">{{ viewNo }} {{ viewName }}</div></div>
+        </div>
+        </sc-if>
+        </div>
+      </div>
+
+      <!-- dims -->
+      <div style="flex:none;border-top:2px solid var(--color-divider);padding:8px 14px;display:grid;grid-template-columns:120px 1fr 80px;row-gap:6px;column-gap:14px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-family:var(--font-heading);font-weight:800">Z</span><span style="color:var(--color-neutral-600)">{{ zUm }} µm</span></div>
+        <input type="range" min="0" max="{{ zMax }}" value="{{ z }}" onChange="{{ setZ }}" style="width:100%"><span style="text-align:right">{{ z }} / {{ zMax }}</span>
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-family:var(--font-heading);font-weight:800">T</span><span onClick="{{ togglePlay }}" style="cursor:pointer;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-text);font-size:9px" style-hover="border-color:var(--color-accent);color:var(--color-accent)">{{ playGlyph }}</span><span style="color:var(--color-neutral-600)">{{ tSec }}</span></div>
+        <input type="range" min="0" max="{{ tMax }}" value="{{ t }}" onChange="{{ setT }}" style="width:100%"><span style="text-align:right">{{ t }} / {{ tMax }}</span>
+      </div>
+
+      <!-- diagnostics drawer -->
+      <div style="flex:none;display:flex;flex-direction:column;background:var(--color-bg);z-index:5;position:{{ diagPos }};left:{{ diagL }};top:{{ diagT }};right:{{ diagR }};bottom:{{ diagB }};height:{{ diagH }};border-top:2px solid var(--color-divider);border-left:{{ diagBorder }};border-right:{{ diagBorder }};border-bottom:{{ diagBorder }};box-shadow:{{ diagShadow }}">
+        <div style="display:flex;align-items:center;gap:16px;padding:0 14px;height:34px;flex:none;cursor:{{ diagCursor }}">
+          <span onClick="{{ toggleDiag }}" style="cursor:pointer;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);display:flex;gap:8px;align-items:center;white-space:nowrap"><span style="color:var(--color-accent)">{{ diagGlyph }}</span>Diagnostics · {{ selName }}</span>
+          <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;gap:2px">
+            <sc-for list="{{ diagTabs }}" as="tb" hint-placeholder-count="4"><span onClick="{{ tb.set }}" style="font-size:12px;padding:4px 10px;cursor:pointer;border-bottom:2px solid {{ tb.line }};font-weight:{{ tb.w }};white-space:nowrap" style-hover="color:var(--color-accent)">{{ tb.name }}</span></sc-for>
+          </div>
+          </sc-if>
+          <span style="margin-left:auto;font-size:11px;color:var(--color-neutral-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">{{ diagHint }}</span>
+          <div style="display:flex;gap:2px">
+            <span onClick="{{ diagDock }}" title="Dock to bottom" style="width:24px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ dockB }};background:{{ dockBg }};color:{{ dockFg }};cursor:pointer;font-size:11px" style-hover="border-color:var(--color-accent)">▁</span>
+            <span onClick="{{ diagFloat }}" title="Undock as floating window" style="width:24px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ floatB }};background:{{ floatBg }};color:{{ floatFg }};cursor:pointer;font-size:11px" style-hover="border-color:var(--color-accent)">❐</span>
+            <span onClick="{{ diagMax }}" title="Maximize over viewer" style="width:24px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ maxB }};background:{{ maxBg }};color:{{ maxFg }};cursor:pointer;font-size:11px" style-hover="border-color:var(--color-accent)">⛶</span>
+          </div>
+        </div>
+        <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;min-height:0;border-top:1px solid var(--color-divider)">
+
+          <!-- SIM -->
+          <sc-if value="{{ dSim }}" hint-placeholder-val="{{ true }}">
+          <div style="height:100%;display:grid;grid-template-columns:1fr 1fr 1fr 300px;gap:2px;background:var(--color-divider)">
+            <sc-for list="{{ simPanels }}" as="p" hint-placeholder-count="3">
+              <div style="background:var(--color-bg);display:flex;flex-direction:column;min-height:0"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);display:flex;justify-content:space-between"><span>{{ p.title }}</span><span style="font-variant-numeric:tabular-nums">{{ p.meta }}</span></div><canvas width="300" height="200" data-seed="{{ p.seed }}" data-kind="fft" data-variant="{{ p.variant }}" data-angle="{{ p.angle }}" style="flex:1;width:100%;min-height:0;display:block;background:#0a0909"></canvas></div>
+            </sc-for>
+            <div style="background:var(--color-bg);padding:8px 14px;overflow:auto;font-size:12px;font-variant-numeric:tabular-nums">
+              <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Estimated parameters</div>
+              <table class="table" style="font-size:11px"><thead><tr><th>Angle</th><th>k₀ (px⁻¹)</th><th>Phase</th><th>Mod.</th></tr></thead><tbody>
+                <sc-for list="{{ simRows }}" as="r" hint-placeholder-count="3"><tr><td>{{ r.a }}</td><td>{{ r.k }}</td><td>{{ r.ph }}</td><td style="color:{{ r.mc }};font-weight:800">{{ r.m }}</td></tr></sc-for>
+              </tbody></table>
+              <div style="margin-top:8px;font-size:11px;color:var(--color-neutral-600)">Wiener 0.001 · OTF measured · apodization cosine · resolution gain ≈ 1.9×</div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Decon -->
+          <sc-if value="{{ dDecon }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-template-columns:1fr 260px 260px;gap:2px;background:var(--color-divider)">
+            <div style="background:var(--color-bg);padding:8px 14px;display:flex;flex-direction:column;min-height:0"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Convergence · relative change per iteration</div>
+              <svg viewBox="0 0 400 120" preserveAspectRatio="none" style="flex:1;width:100%;min-height:0"><line x1="0" y1="119" x2="400" y2="119" stroke="#201e1d" stroke-width="2"></line><polyline points="{{ convPts }}" fill="none" stroke="#ec3013" stroke-width="2"></polyline><line x1="{{ convX }}" y1="0" x2="{{ convX }}" y2="120" stroke="#201e1d" stroke-dasharray="3 3"></line></svg>
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums"><span>iter 1</span><span>stop at {{ deconIter }} · Δ 1.8e-4</span><span>iter 40</span></div></div>
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">PSF · XZ</div><canvas width="260" height="160" data-seed="4" data-kind="psf" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Residual · iter {{ deconIter }}</div><canvas width="260" height="160" data-seed="77" data-kind="xy" data-tint="#9a9a9a" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+          </div>
+          </sc-if>
+
+          <!-- Contrast -->
+          <sc-if value="{{ dContrast }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:2px;background:var(--color-divider)">
+            <sc-for list="{{ chans }}" as="c" hint-placeholder-count="2">
+              <div style="background:var(--color-bg);padding:8px 14px;display:flex;flex-direction:column;min-height:0;gap:6px">
+                <div style="display:flex;gap:8px;align-items:center;font-size:11px"><span style="width:10px;height:10px;background:{{ c.color }}"></span><span style="font-weight:800">{{ c.label }}</span><span style="color:var(--color-neutral-600);font-variant-numeric:tabular-nums">{{ c.lo }} – {{ c.hi }} · γ 1.0</span></div>
+                <div style="flex:1;min-height:0;display:flex;align-items:flex-end;gap:2px;border-bottom:2px solid var(--color-divider)"><sc-for list="{{ c.hist }}" as="h" hint-placeholder-count="30"><div style="flex:1;height:{{ h.h }}%;background:{{ h.c }}"></div></sc-for></div>
+              </div>
+            </sc-for>
+          </div>
+          </sc-if>
+
+          <!-- Segment / cleanup -->
+          <sc-if value="{{ dSeg }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-template-columns:230px 1fr 280px;gap:2px;background:var(--color-divider)">
+            <div style="background:var(--color-bg);padding:10px 14px;display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Cleanup tools · paint in viewer</div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:2px">
+                <sc-for list="{{ segTools }}" as="tl" hint-placeholder-count="8"><div onClick="{{ tl.set }}" title="{{ tl.name }}" style="height:34px;display:flex;align-items:center;justify-content:center;border:1.5px solid {{ tl.border }};background:{{ tl.bg }};color:{{ tl.fg }};cursor:pointer;font-size:13px" style-hover="border-color:var(--color-accent)">{{ tl.glyph }}</div></sc-for>
+              </div>
+              <div style="font-size:11px;display:flex;justify-content:space-between"><span style="color:var(--color-neutral-600)">{{ segToolName }}</span><span style="font-variant-numeric:tabular-nums">{{ brush }} px</span></div>
+              <input type="range" min="2" max="60" value="{{ brush }}" onChange="{{ setBrush }}">
+              <label style="display:flex;align-items:center;gap:8px;font-size:11px"><span style="width:12px;height:12px;border:1.5px solid var(--color-neutral-700);background:var(--color-accent)"></span>Paint in 3D (±{{ brushZ }} z)</label>
+            </div>
+            <div style="background:var(--color-bg);overflow:auto;padding:6px 14px">
+              <table class="table" style="font-size:11px;font-variant-numeric:tabular-nums"><thead><tr><th>ID</th><th>Class</th><th>Voxels</th><th>Conf.</th><th>Flag</th><th></th></tr></thead><tbody>
+                <sc-for list="{{ labelRows }}" as="r" hint-placeholder-count="5">
+                  <tr onClick="{{ r.select }}" style="cursor:pointer;background:{{ r.bg }}"><td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:10px;height:10px;background:{{ r.color }}"></span>{{ r.id }}</span></td><td>{{ r.cls }}</td><td>{{ r.vox }}</td><td style="color:{{ r.cc }}">{{ r.conf }}</td><td><sc-if value="{{ r.flagged }}" hint-placeholder-val="{{ false }}"><span class="tag tag-accent" style="font-size:10px">{{ r.flag }}</span></sc-if></td><td style="color:var(--color-accent);white-space:nowrap">merge · split · ✕</td></tr>
+                </sc-for>
+              </tbody></table>
+            </div>
+            <div style="background:var(--color-bg);padding:10px 14px;display:flex;flex-direction:column;gap:6px;font-size:11px;font-variant-numeric:tabular-nums">
+              <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Review queue</div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Low confidence (&lt; 0.6)</span><span style="font-weight:800">14</span></div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Touching border</span><span style="font-weight:800">9</span></div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Size outliers</span><span style="font-weight:800">3</span></div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Reviewed</span><span style="font-weight:800">112 / 138</span></div>
+              <div style="display:flex;gap:6px;margin-top:auto"><button class="btn btn-secondary" style="font-size:11px;padding:5px 9px">Next flagged →</button><button class="btn btn-ghost" style="font-size:11px">Undo</button></div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Einsum / generic shape preview -->
+          <sc-if value="{{ dGeneric }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;background:var(--color-divider)">
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);display:flex;justify-content:space-between"><span>Input</span><span style="font-variant-numeric:tabular-nums">{{ inShape }}</span></div><canvas width="400" height="160" data-seed="{{ inSeed }}" data-kind="xy" data-tint="{{ tints }}" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);display:flex;justify-content:space-between"><span>Output · live</span><span style="font-variant-numeric:tabular-nums">{{ outShape }}</span></div><canvas width="400" height="160" data-seed="{{ outSeed }}" data-kind="{{ outKind }}" data-tint="{{ tints }}" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+            <div style="background:var(--color-bg);padding:8px 14px;font-size:12px;display:flex;flex-direction:column;gap:6px;font-variant-numeric:tabular-nums">
+              <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Step summary</div>
+              <div>{{ selSum }}</div>
+              <div style="color:var(--color-neutral-600);font-size:11px">Est. {{ selTime }} · {{ selMem }} peak GPU · cached</div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Register / stitch -->
+          <sc-if value="{{ dAlign }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-template-columns:1fr 1fr 300px;gap:2px;background:var(--color-divider)">
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Checkerboard · fixed ⇄ moving</div><canvas width="400" height="160" data-seed="21" data-kind="checker" data-tint="{{ tints }}" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Tile layout · overlap 10 %</div><div style="flex:1;padding:8px 12px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px"><sc-for list="{{ tiles }}" as="tl" hint-placeholder-count="9"><div style="border:1.5px solid var(--color-text);display:flex;align-items:center;justify-content:center;font-size:11px;font-variant-numeric:tabular-nums;background:{{ tl.bg }};color:{{ tl.fg }}">{{ tl.name }}</div></sc-for></div></div>
+            <div style="background:var(--color-bg);padding:8px 14px;font-size:12px;font-variant-numeric:tabular-nums"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Pairwise shifts</div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Mean |Δ|</span><span>2.3 px</span></div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Max |Δ|</span><span>6.1 px</span></div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>NCC</span><span>0.91</span></div></div>
+          </div>
+          </sc-if>
+
+          <!-- Volume -->
+          <sc-if value="{{ dVol }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;background:var(--color-divider)">
+            <div style="background:var(--color-bg);padding:8px 14px;display:flex;flex-direction:column;gap:6px"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Transfer function</div><svg viewBox="0 0 300 80" preserveAspectRatio="none" style="flex:1;width:100%;min-height:0"><polyline points="0,80 60,80 120,50 200,10 300,0" fill="none" stroke="#ec3013" stroke-width="2"></polyline><line x1="0" y1="79" x2="300" y2="79" stroke="#201e1d" stroke-width="2"></line></svg><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--color-neutral-600)"><span>0</span><span>opacity vs intensity</span><span>4095</span></div></div>
+            <div style="background:var(--color-bg);padding:8px 14px;font-size:12px;font-variant-numeric:tabular-nums"><div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Reconstruction</div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Method</span><span>{{ volMethod }}</span></div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Isotropic voxel</span><span>0.104 µm</span></div><div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--color-divider)"><span>Frame time</span><span>11 ms</span></div></div>
+            <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Isosurface preview</div><canvas width="400" height="160" data-seed="{{ volSeed }}" data-kind="vol3d" data-rot="{{ rotPlus }}" data-tilt="20" data-tint="#ffffff" style="flex:1;width:100%;min-height:0;background:#0a0909"></canvas></div>
+          </div>
+          </sc-if>
+        </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <!-- ===== RIGHT: parameters of selected op ===== -->
+    <div style="width:320px;flex:none;border-left:2px solid var(--color-divider);display:flex;flex-direction:column;overflow:auto">
+      <div style="padding:14px 18px 10px;display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="card-kicker" style="white-space:nowrap">Step {{ selNo }} · {{ selKindLabel }}</span><span style="font-size:11px;color:{{ selStateC }}">{{ selState }}</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h4 style="margin:0">{{ selName }}</h4><span onClick="{{ toggleHelp }}" title="Explain this step" style="flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid {{ helpB }};background:{{ helpBg }};color:{{ helpFg }};font-family:var(--font-heading);font-weight:800;font-size:13px;cursor:pointer" style-hover="border-color:var(--color-accent)">?</span></div>
+      </div>
+
+      <sc-if value="{{ pLoad }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:12px">
+        <div class="field"><label>Source</label><div style="display:flex;gap:6px"><input class="input" defaultValue="/data/sim/{{ dsName }}.czi" style="min-height:32px;flex:1;min-width:0"><button class="btn btn-secondary" style="font-size:12px;padding:0 10px">Browse</button></div></div>
+        <div style="display:grid;grid-template-columns:90px 1fr;font-size:12px;border-top:2px solid var(--color-divider)">
+          <div style="padding:6px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Shape</div><div style="padding:6px 0;border-bottom:1px solid var(--color-divider);font-variant-numeric:tabular-nums">{{ dsDims }}</div>
+          <div style="padding:6px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Acquisition</div><div style="padding:6px 0;border-bottom:1px solid var(--color-divider)">{{ dsMode }}</div>
+          <div style="padding:6px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Voxel</div><div style="padding:6px 0;border-bottom:1px solid var(--color-divider);font-variant-numeric:tabular-nums">{{ dsPx }}</div>
+          <div style="padding:6px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Dtype</div><div style="padding:6px 0;border-bottom:1px solid var(--color-divider)">uint16 · 15.4 GB</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:4px">Channels</div>
+          <sc-for list="{{ chans }}" as="c" hint-placeholder-count="2"><div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--color-divider);font-size:12px"><span style="width:10px;height:10px;background:{{ c.color }}"></span><span style="font-variant-numeric:tabular-nums;width:36px">{{ c.nm }}</span><span>{{ c.label }}</span></div></sc-for>
+        </div>
+        <div class="field"><label>Read as</label><select class="input" style="min-height:32px"><option>Lazy (chunk on demand)</option><option>Full load to RAM</option></select></div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pEinsum }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:14px">
+        <div><div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:8px">Axes — click to keep or reduce</div><div style="display:flex;gap:2px"><sc-for list="{{ axes }}" as="a" hint-placeholder-count="5"><div onClick="{{ a.toggle }}" style="flex:1;padding:9px 0;text-align:center;font-family:var(--font-heading);font-weight:800;font-size:16px;cursor:pointer;border:1.5px solid {{ a.border }};background:{{ a.bg }};color:{{ a.fg }}" style-hover="border-color:var(--color-accent)">{{ a.name }}<div style="font-size:9px;letter-spacing:0.08em;font-weight:400;text-transform:uppercase;margin-top:2px">{{ a.state }}</div></div></sc-for></div></div>
+        <div><div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:8px">Reduction</div><div style="display:flex;gap:2px"><sc-for list="{{ redOps }}" as="o" hint-placeholder-count="4"><div onClick="{{ o.set }}" style="flex:1;padding:7px 0;text-align:center;font-size:12px;cursor:pointer;border:1.5px solid var(--color-divider);background:{{ o.bg }};color:{{ o.fg }}">{{ o.name }}</div></sc-for></div></div>
+        <div><div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:6px">Expression</div><div style="font-family:ui-monospace,Menlo,monospace;font-size:15px;padding:10px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">{{ einsumExpr }}</div></div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pSim }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:12px">
+        <div class="seg" style="align-self:flex-start"><label class="seg-opt" style="font-size:12px"><input type="radio" name="simp" defaultChecked>Estimate</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="simp">Manual</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="simp">From file</label></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>Angles</label><input class="input" defaultValue="3" style="min-height:32px"></div>
+          <div class="field"><label>Phases</label><input class="input" defaultValue="5" style="min-height:32px"></div>
+          <div class="field"><label>Wiener</label><input class="input" defaultValue="0.001" style="min-height:32px"></div>
+          <div class="field"><label>Apodization</label><select class="input" style="min-height:32px"><option>Cosine</option><option>Triangle</option><option>None</option></select></div>
+        </div>
+        <div class="field"><label>OTF</label><select class="input" style="min-height:32px"><option>otf_488_63x_measured.tif</option><option>Theoretical (NA 1.4)</option></select></div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+          <label style="display:flex;align-items:center;gap:8px"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:var(--color-accent)"></span>Band-specific Wiener</label>
+          <label style="display:flex;align-items:center;gap:8px"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:var(--color-accent)"></span>Suppress zero-order</label>
+          <label style="display:flex;align-items:center;gap:8px"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700)"></span>Bleach correction across phases</label>
+        </div>
+        <div style="font-size:11px;color:var(--color-neutral-600);border-top:2px solid var(--color-divider);padding-top:10px">Modulation depth on angle 3 is low (0.31). Consider re-estimating k₀ or raising the Wiener constant.</div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pSeg }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:12px">
+        <div class="field"><label>Torch model</label><div style="display:flex;gap:6px"><input class="input" defaultValue="nuclei_3d_unet_v4.pt" style="min-height:32px;flex:1"><button class="btn btn-secondary" style="font-size:12px;padding:0 10px">Browse</button></div></div>
+        <div style="font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums">TorchScript · in (1, 1, Z, Y, X) float32 · out (1, 3, Z, Y, X) · 41 MB</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>Input channel</label><select class="input" style="min-height:32px"><option>405 Hoechst</option><option>488</option></select></div>
+          <div class="field"><label>Tile</label><input class="input" defaultValue="256 × 256 × 32" style="min-height:32px"></div>
+          <div class="field"><label>Overlap</label><input class="input" defaultValue="32 px" style="min-height:32px"></div>
+          <div class="field"><label>Threshold</label><input class="input" defaultValue="0.50" style="min-height:32px"></div>
+        </div>
+        <div class="field"><label>Post-processing</label><select class="input" style="min-height:32px"><option>Watershed on boundary channel</option><option>Connected components</option><option>None (raw probabilities)</option></select></div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;border-top:2px solid var(--color-divider);padding-top:10px"><span style="color:var(--color-neutral-600)">Label opacity</span><span style="font-variant-numeric:tabular-nums;white-space:nowrap">{{ labelPct }} %</span></div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pMerge }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:10px">
+        <sc-for list="{{ chans }}" as="c" hint-placeholder-count="2">
+          <div style="display:grid;grid-template-columns:44px 1fr 90px;gap:10px;align-items:center;font-size:12px;padding:6px 0;border-bottom:1px solid var(--color-divider)"><span style="font-variant-numeric:tabular-nums">{{ c.nm }}</span><span>{{ c.label }}</span><div style="display:flex;gap:2px"><span style="flex:1;height:22px;background:{{ c.color }}"></span><span style="flex:1;height:22px;border:1.5px solid var(--color-divider)"></span></div></div>
+        </sc-for>
+        <div class="field"><label>Blend</label><select class="input" style="min-height:32px"><option>Additive</option><option>Screen</option><option>Max</option></select></div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pForm }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:12px">
+        <sc-for list="{{ selParams }}" as="p" hint-placeholder-count="3"><div class="field"><label>{{ p.label }}</label><input class="input" defaultValue="{{ p.value }}" style="min-height:32px"></div></sc-for>
+      </div>
+      </sc-if>
+
+      <div style="margin:0 18px;border-top:2px solid var(--color-divider);padding:16px 0;display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Backend</div>
+        <div style="display:flex;gap:2px"><sc-for list="{{ backends }}" as="b" hint-placeholder-count="3"><div onClick="{{ b.set }}" style="flex:1;padding:9px 0;text-align:center;font-size:13px;cursor:pointer;border:1.5px solid var(--color-divider);background:{{ b.bg }};color:{{ b.fg }}" style-hover="border-color:var(--color-accent)">{{ b.name }}</div></sc-for></div>
+      </div>
+      <div style="margin:0 18px;border-top:2px solid var(--color-divider);padding:16px 0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Cache output</span><span style="font-size:12px;font-variant-numeric:tabular-nums;color:var(--color-neutral-700)">≈ {{ selCacheSize }}</span></div>
+        <div style="display:flex;gap:2px"><sc-for list="{{ caches }}" as="c" hint-placeholder-count="3"><div onClick="{{ c.set }}" title="{{ c.title }}" style="flex:1;padding:9px 0;text-align:center;font-size:13px;cursor:pointer;border:1.5px solid var(--color-divider);background:{{ c.bg }};color:{{ c.fg }}" style-hover="border-color:var(--color-accent)">{{ c.name }}</div></sc-for></div>
+        <div style="font-size:12px;color:var(--color-neutral-600);line-height:1.45;text-wrap:pretty">{{ cacheNote }}</div>
+      </div>
+      <div style="margin-top:auto;border-top:2px solid var(--color-divider);padding:14px 18px;display:flex;gap:8px">
+        <button class="btn btn-primary" onClick="{{ runSel }}" style="font-size:12px;flex:1;justify-content:flex-start">Run step</button>
+        <button class="btn btn-secondary" onClick="{{ viewSel }}" style="font-size:12px">View</button>
+        <sc-if value="{{ selRemovable }}" hint-placeholder-val="{{ true }}"><button class="btn btn-ghost" onClick="{{ removeSel }}" style="font-size:12px">Remove</button></sc-if>
+      </div>
+    </div>
+
+    <!-- ===== ASSISTANT ===== -->
+    <sc-if value="{{ aiOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="width:330px;flex:none;border-left:2px solid var(--color-divider);display:flex;flex-direction:column;min-height:0;background:var(--color-bg)">
+      <div style="height:40px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:2px solid var(--color-divider);flex:none">
+        <span style="color:var(--color-accent);font-size:13px">✦</span><span style="font-family:var(--font-heading);font-weight:800;font-size:13px">Assistant</span>
+        <span style="font-size:11px;color:var(--color-neutral-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">sees step {{ selNo }}, diagnostics, ops stack</span>
+        <span onClick="{{ toggleAi }}" style="cursor:pointer;font-size:13px;padding:0 4px" style-hover="color:var(--color-accent)">✕</span>
+      </div>
+      <div style="flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px;font-size:13px;line-height:1.45">
+        <sc-for list="{{ aiMsgs }}" as="m" hint-placeholder-count="4">
+          <sc-if value="{{ m.user }}" hint-placeholder-val="{{ false }}"><div style="align-self:flex-end;max-width:88%;padding:8px 12px;background:var(--color-text);color:var(--color-bg);text-wrap:pretty">{{ m.text }}</div></sc-if>
+          <sc-if value="{{ m.ai }}" hint-placeholder-val="{{ true }}"><div style="display:flex;flex-direction:column;gap:8px;max-width:94%">
+            <div style="text-wrap:pretty">{{ m.text }}</div>
+            <sc-for list="{{ m.actions }}" as="a" hint-placeholder-count="0">
+              <div style="display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:7px 10px;border:1.5px solid var(--color-divider);font-size:12px;font-variant-numeric:tabular-nums"><span style="color:{{ a.c }};font-weight:800">{{ a.glyph }}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.text }}</span><span onClick="{{ a.act }}" style="color:var(--color-accent);cursor:pointer;white-space:nowrap">{{ a.link }}</span></div>
+            </sc-for>
+          </div></sc-if>
+        </sc-for>
+        <sc-if value="{{ aiBusy }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:var(--color-neutral-600);display:flex;gap:8px;align-items:center"><span style="width:8px;height:8px;background:var(--color-accent)"></span>Running SIM reconstruction with Wiener 0.002…</div></sc-if>
+      </div>
+      <div style="flex:none;border-top:2px solid var(--color-divider);padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <sc-for list="{{ aiChips }}" as="c" hint-placeholder-count="3"><span onClick="{{ c.act }}" style="font-size:11px;padding:4px 8px;border:1.5px solid var(--color-divider);cursor:pointer;white-space:nowrap" style-hover="border-color:var(--color-accent);color:var(--color-accent)">{{ c.text }}</span></sc-for>
+        </div>
+        <div style="display:flex;gap:6px"><input class="input" value="{{ aiDraft }}" onChange="{{ aiType }}" onKeyDown="{{ aiKey }}" placeholder="Ask, or tell it what to do…" style="min-height:34px;flex:1;min-width:0"><button class="btn btn-primary" onClick="{{ aiSend }}" style="padding:0 12px">↵</button></div>
+        <div style="font-size:11px;color:var(--color-neutral-600);display:flex;justify-content:space-between"><span>Changes are applied as undoable steps</span><span style="color:var(--color-accent);cursor:pointer">Ask before acting</span></div>
+      </div>
+    </div>
+    </sc-if>
+  </div>
+
+  <!-- help window -->
+  <sc-if value="{{ helpOpen }}" hint-placeholder-val="{{ false }}">
+  <div style="position:absolute;right:340px;top:60px;width:520px;max-height:760px;background:var(--color-bg);border:2px solid var(--color-text);box-shadow:var(--shadow-lg);z-index:15;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:12px;padding:0 14px;height:36px;border-bottom:2px solid var(--color-divider);cursor:move;flex:none">
+      <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);white-space:nowrap">Help · {{ selName }}</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--color-accent);cursor:pointer;white-space:nowrap">Edit page</span>
+      <span onClick="{{ toggleHelp }}" style="cursor:pointer;font-size:13px;padding:0 4px" style-hover="color:var(--color-accent)">✕</span>
+    </div>
+    <div style="overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:16px;font-size:13px;line-height:1.5">
+      <h3 style="margin:0;line-height:1.1">{{ helpTitle }}</h3>
+      <p style="margin:0;text-wrap:pretty">{{ helpIntro }}</p>
+      <div data-tex="{{ helpTex }}" data-display="1" style="padding:12px 14px;background:var(--color-surface);border:1px solid var(--color-divider);overflow-x:auto;font-size:15px"></div>
+      <div style="border:1.5px dashed var(--color-neutral-400);height:170px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--color-neutral-600);font-size:12px"><span style="font-weight:800;font-family:var(--font-heading)">Figure</span><span>{{ helpFig }}</span><span style="color:var(--color-accent)">Drop image · PNG, SVG, PDF</span></div>
+      <div style="display:flex;flex-direction:column">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);padding-bottom:6px;border-bottom:2px solid var(--color-divider)">Parameters</div>
+        <sc-for list="{{ helpParams }}" as="p" hint-placeholder-count="3">
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid var(--color-divider)">
+            <div style="font-family:var(--font-heading);font-weight:800;font-size:12px">{{ p.name }}<div style="font-weight:400;color:var(--color-neutral-600);font-size:11px;font-variant-numeric:tabular-nums">{{ p.range }}</div></div>
+            <div style="display:flex;flex-direction:column;gap:4px;min-width:0"><span style="text-wrap:pretty">{{ p.body }}</span><span data-tex="{{ p.tex }}" style="color:var(--color-neutral-800)"></span></div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size:11px;color:var(--color-neutral-600)">Pages are Markdown with $\LaTeX$ and images, stored next to the operation plugin. Anyone on the team can edit them.</div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- status -->
+  <div style="flex:none;height:26px;border-top:2px solid var(--color-divider);display:flex;align-items:center;gap:24px;padding:0 14px;font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums">
+    <span>{{ dsDims }}</span><span>uint16 → float32</span><span>zoom {{ zoomPct }} %</span><span>cursor {{ curX }}, {{ curY }}, {{ z }} · {{ curVal }}</span>
+    <sc-if value="{{ running }}" hint-placeholder-val="{{ false }}"><span style="display:flex;align-items:center;gap:8px;color:var(--color-text)"><span style="width:120px;height:4px;background:var(--color-neutral-300)"><span style="display:block;height:100%;width:{{ runP }}%;background:var(--color-accent)"></span></span>{{ runP }} %</span></sc-if>
+    <span style="margin-left:auto">{{ enabledCount }} of {{ opCount }} steps enabled · lazy · {{ cacheGb }} GB cached</span>
+  </div>
+
+  <!-- export dialog -->
+  <sc-if value="{{ exportOpen }}" hint-placeholder-val="{{ false }}">
+  <div class="dialog-backdrop" onClick="{{ closeExport }}" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">
+    <div class="dialog" onClick="{{ stop }}" style="width:640px;max-width:none">
+      <div class="dialog-title">Export result</div>
+      <div class="dialog-body" style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Format</div>
+          <sc-for list="{{ formats }}" as="f" hint-placeholder-count="6">
+            <div onClick="{{ f.set }}" style="display:flex;justify-content:space-between;gap:10px;padding:8px 10px;cursor:pointer;border:1.5px solid {{ f.border }};background:{{ f.bg }}" style-hover="border-color:var(--color-accent)"><div><div style="font-weight:800;font-family:var(--font-heading);font-size:13px">{{ f.name }}</div><div style="font-size:11px;color:var(--color-neutral-600)">{{ f.note }}</div></div><span style="font-size:11px;color:var(--color-neutral-600);white-space:nowrap;font-variant-numeric:tabular-nums">{{ f.size }}</span></div>
+          </sc-for>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div class="field"><label>From step</label><select class="input" style="min-height:32px"><sc-for list="{{ ops }}" as="o" hint-placeholder-count="3"><option>{{ o.no }} {{ o.name }}</option></sc-for></select></div>
+          <div class="field"><label>Range</label><input class="input" defaultValue="t 0–39 · z all · c all" style="min-height:32px"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="field"><label>Dtype</label><select class="input" style="min-height:32px"><option>uint16 (rescale)</option><option>float32</option></select></div>
+            <div class="field"><label>Compression</label><select class="input" style="min-height:32px"><option>{{ fmtComp }}</option></select></div>
+          </div>
+          <sc-if value="{{ fmtChunked }}" hint-placeholder-val="{{ false }}"><div class="field"><label>Chunk / tile</label><input class="input" defaultValue="1 × 1 × 16 × 512 × 512" style="min-height:32px"></div></sc-if>
+          <sc-if value="{{ fmtPyramid }}" hint-placeholder-val="{{ false }}"><div class="field"><label>Pyramid levels</label><input class="input" defaultValue="5 · downsample 2×" style="min-height:32px"></div></sc-if>
+          <div class="field"><label>Destination</label><input class="input" defaultValue="/data/out/{{ dsName }}_processed{{ fmtExt }}" style="min-height:32px"></div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px"><span style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:var(--color-accent)"></span>Include pipeline JSON + labels sidecar</label>
+        </div>
+      </div>
+      <div class="dialog-actions"><button class="btn btn-ghost" onClick="{{ closeExport }}" style="white-space:nowrap">Cancel</button><button class="btn btn-primary" onClick="{{ closeExport }}" style="white-space:nowrap">Export {{ fmtName }}</button></div>
+    </div>
+  </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;labelOpacity&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:45,&quot;min&quot;:10,&quot;max&quot;:90,&quot;step&quot;:5,&quot;unit&quot;:&quot;%&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Segmentation&quot;},&quot;diagnosticsHeight&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:250,&quot;min&quot;:180,&quot;max&quot;:360,&quot;step&quot;:10,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Layout&quot;}}">
+const DS = {name:'cardiomyocyte_SIM_2c_t40', c:2,t:40,z:48,y:2048,x:2048, mode:'3D-SIM raw · 15 phases', px:0.032, dz:0.11,
+  ch:[{nm:488,label:'α-actinin',color:'#63e08a',short:'488'},{nm:640,label:'Mitochondria',color:'#ff7a5c',short:'640'}]};
+const KIND = {load:'Input', sim:'Reconstruct', deskew:'Geometry', einsum:'Einsum', contrast:'Intensity', merge:'Combine', decon:'Reconstruct', seg:'Segment', volrec:'Volume', stitch:'Combine', register:'Combine'};
+const LIB = [['SIM reconstruction','sim','Reconstruct'],['Deconvolve','decon','Reconstruct'],['Volume reconstruction','volrec','Reconstruct'],['Einsum reduce','einsum','Reduce'],['Contrast','contrast','Intensity'],['Deskew + rotate','deskew','Geometry'],['Merge channels','merge','Combine'],['Stitch tiles','stitch','Combine'],['Register','register','Combine'],['Torch segmentation','seg','Segment']];
+const INIT = [
+  {name:'Load',kind:'load',on:true,pinned:true,cache:'recompute',sum:'lazy · czi · 15 phase images per plane'},
+  {name:'SIM reconstruction',kind:'sim',on:true,cache:'disk',sum:'3 angles · 5 phases · Wiener 0.001 · measured OTF'},
+  {name:'Deskew + rotate',kind:'deskew',on:false,cache:'recompute',sum:'not applicable to this dataset — skipped',params:[{label:'Sheet angle',value:'31.8°'},{label:'Stage step',value:'0.40 µm'}]},
+  {name:'Einsum reduce',kind:'einsum',on:true,cache:'memory'},
+  {name:'Contrast',kind:'contrast',on:true,cache:'recompute',sum:'percentile 0.2 – 99.8 · per channel'},
+  {name:'Deconvolve',kind:'decon',on:false,cache:'disk',sum:'Richardson–Lucy · 20 iter · skipped',params:[{label:'Algorithm',value:'Richardson–Lucy'},{label:'Iterations',value:'20'},{label:'PSF',value:'psf_488_63x.tif'},{label:'TV regularisation',value:'0.002'}]},
+  {name:'Merge channels',kind:'merge',on:true,cache:'recompute',sum:'488 → green · 640 → orange · additive'},
+  {name:'Torch segmentation',kind:'seg',on:true,cache:'disk',sum:'nuclei_3d_unet_v4.pt · watershed · 138 labels'},
+  {name:'Volume reconstruction',kind:'volrec',on:true,cache:'memory',sum:'isotropic resample · ray-cast · 11 ms/frame',params:[{label:'Method',value:'Ray casting'},{label:'Resample to',value:'Isotropic 0.104 µm'},{label:'Step size',value:'0.5 voxel'}]},
+];
+const CACHE = {memory:{g:'M',c:'var(--color-accent)',t:'Cached in GPU/RAM',name:'Memory'},disk:{g:'D',c:'var(--color-text)',t:'Cached on disk (zarr scratch)',name:'Disk'},recompute:{g:'↻',c:'var(--color-neutral-500)',t:'Recomputed on demand',name:'Recompute'}};
+const CACHE_SIZE = {load:'—',sim:'12.8 GB',deskew:'6.1 GB',einsum:'0.4 GB',contrast:'0.4 GB',decon:'6.4 GB',merge:'1.2 GB',seg:'0.9 GB',volrec:'2.1 GB'};
+const FORMATS = [['OME-TIFF','Single file · broad compatibility','.ome.tif','zlib',false,false,'7.9 GB'],['Tiled TIFF','512² tiles · random access','.tif','LZW',true,false,'8.1 GB'],['Pyramidal OME-TIFF','Multi-resolution · viewers & QuPath','.ome.tif','JPEG-2000 lossless',true,true,'10.6 GB'],['OME-Zarr','Chunked · cloud & Dask friendly','.zarr','Blosc zstd',true,true,'7.2 GB'],['HDF5 / N5','BigDataViewer · Fiji','.h5','gzip',true,true,'7.6 GB'],['Raw float32','No metadata · fastest','.raw','none',false,false,'15.4 GB']];
+const HELP = {
+  load:{title:'Loading data',intro:'Opens the dataset lazily: only the chunks needed for the current view or the running step are read. Metadata (voxel size, channels, acquisition mode) is parsed from the file header and drives downstream defaults.',tex:'I(c,t,z,y,x) \\in \\mathbb{N}^{C\\times T\\times Z\\times Y\\times X},\\quad \\text{uint16}',fig:'File layout: chunk grid over Z–Y–X',
+    params:[{name:'Read as',range:'lazy · full',body:'Lazy reads chunks on demand and keeps a bounded RAM cache; full load reads everything once — faster scrubbing, but needs the whole dataset in memory.',tex:''}]},
+  sim:{title:'Structured illumination reconstruction',intro:'Each raw image is the sample multiplied by a sinusoidal pattern. In frequency space the pattern shifts high-frequency information into the passband. Separating the phase images into bands, shifting each band back by the pattern vector k₀ and recombining them roughly doubles the resolution.',tex:'\\tilde{D}_m(\\mathbf{k}) = \\tilde{S}(\\mathbf{k} - m\\,\\mathbf{k}_0)\\,\\tilde{O}(\\mathbf{k}),\\qquad m = -1,0,+1',fig:'Band separation and shift, one pattern angle',
+    params:[{name:'Angles · Phases',range:'3 × 5 (3D)',body:'Number of pattern orientations and phase steps per orientation. 3D-SIM needs 5 phases to separate five bands (m = −2…2); 2D-SIM needs 3.',tex:''},
+      {name:'Wiener',range:'10⁻⁴ – 10⁻²',body:'Regularisation constant w in the generalised Wiener filter. Small values sharpen but amplify noise (honeycomb artefacts); large values blur. Start at 0.001 and inspect the result spectrum.',tex:'\\tilde{S}(\\mathbf{k}) = \\frac{\\sum_m \\tilde{O}^*_m \\tilde{D}_m}{\\sum_m |\\tilde{O}_m|^2 + w^2}\\,A(\\mathbf{k})'},
+      {name:'Apodization',range:'cosine · triangle · none',body:'Window A(k) applied to the extended support to suppress ringing at the cut-off. Cosine is the safe default.',tex:''},
+      {name:'OTF',range:'measured · theoretical',body:'Optical transfer function per band. A measured OTF from beads is preferred; the theoretical one assumes ideal aberration-free optics.',tex:''},
+      {name:'Modulation depth',range:'> 0.4 healthy',body:'Diagnostic, not a parameter: contrast of the illumination pattern per angle. Below ~0.3 that angle contributes mostly noise — check focus, polarisation or the SLM.',tex:'m = \\frac{|\\tilde{D}_{\\pm1}|}{|\\tilde{D}_0|}\\Big|_{\\mathbf{k}=\\mathbf{k}_0}'}]},
+  einsum:{title:'Einstein-summation reduction',intro:'Reduces the array along any set of axes with one operation — the expression lists input axes and the axes that survive. Removed axes are collapsed with the chosen reduction.',tex:'\\text{ctzyx} \\rightarrow \\text{czyx}:\\quad R_{czyx} = \\frac{1}{T}\\sum_{t} I_{ctzyx}',fig:'Axis diagram: kept vs. reduced',
+    params:[{name:'Axes',range:'keep · reduce',body:'Click an axis to toggle whether it is kept in the output or reduced away.',tex:''},{name:'Reduction',range:'sum · mean · max · min',body:'Applied to every reduced axis. Max over Z is a maximum-intensity projection; mean over T averages a time series.',tex:''}]},
+  decon:{title:'Richardson–Lucy deconvolution',intro:'Iteratively estimates the object that, blurred by the PSF, best explains the image under Poisson noise. Each iteration multiplies the estimate by a correction ratio; more iterations sharpen and eventually amplify noise.',tex:'\\hat{o}^{(k+1)} = \\hat{o}^{(k)} \\cdot \\left[ \\frac{i}{\\hat{o}^{(k)} \\ast h} \\ast h^{\\star} \\right]',fig:'Convergence curve and stopping criterion',
+    params:[{name:'Iterations',range:'10 – 50',body:'Stop when the relative change drops below ~10⁻⁴ or ringing appears around bright structures.',tex:''},{name:'TV regularisation',range:'0 – 0.01',body:'Total-variation penalty λ that suppresses noise amplification at the cost of fine texture.',tex:'\\min_o\\; -\\log p(i\\mid o) + \\lambda \\,\\|\\nabla o\\|_1'},{name:'PSF',range:'file',body:'Measured bead PSF or a theoretical model; must match the channel wavelength and objective.',tex:''}]},
+  seg:{title:'Segmentation with a Torch model',intro:'Runs any TorchScript model tile-wise over the volume and stitches predictions back with overlap blending. Probabilities are then turned into instance labels by the post-processing step.',tex:'p = \\sigma\\!\\left(f_\\theta(x)\\right),\\qquad L = \\text{watershed}(p_{\\text{fg}} > \\tau,\\; p_{\\text{boundary}})',fig:'Tile grid with overlap halo',
+    params:[{name:'Tile · Overlap',range:'GPU bound',body:'Tile must fit GPU memory; overlap should exceed the receptive-field radius so edges are not visible in the stitched prediction.',tex:''},{name:'Threshold τ',range:'0 – 1',body:'Foreground probability cut. Lower recovers dim objects, higher separates touching ones.',tex:''},{name:'Post-processing',range:'',body:'Watershed on the boundary channel splits touching nuclei; connected components is faster but merges neighbours.',tex:''}]},
+  contrast:{title:'Contrast adjustment',intro:'Linear rescale between two percentiles of the intensity histogram, then an optional gamma. Display-only unless baked into the export.',tex:"I' = \\left(\\frac{\\text{clip}(I, p_{lo}, p_{hi}) - p_{lo}}{p_{hi} - p_{lo}}\\right)^{1/\\gamma}",fig:'Histogram with percentile handles',
+    params:[{name:'Percentiles',range:'0.1 – 99.9',body:'Robust min/max that ignore hot pixels and background.',tex:''},{name:'Gamma',range:'0.5 – 2',body:'Below 1 lifts dim structures; above 1 emphasises bright ones.',tex:''}]},
+  merge:{title:'Channel merge',intro:'Maps each channel to a display colour and blends them into one RGB image.',tex:'\\text{RGB} = \\sum_c \\text{LUT}_c\\big(I_c\\big)',fig:'Channel → colour mapping',params:[{name:'Blend',range:'additive · screen · max',body:'Additive is physically faithful; screen avoids clipping; max keeps the brightest channel only.',tex:''}]},
+  deskew:{title:'Deskew and rotate',intro:'Light-sheet stacks are acquired at an angle to the coverslip; deskewing shears each plane by the stage step and rotates the volume so Z is normal to the coverslip.',tex:'\\Delta x = \\Delta z_{\\text{stage}} \\cdot \\cos\\theta',fig:'Sheared vs. deskewed stack',params:[{name:'Sheet angle θ',range:'30 – 35°',body:'Angle between the light sheet and the coverslip.',tex:''},{name:'Interpolation',range:'linear · cubic',body:'Cubic preserves detail; linear is faster.',tex:''}]},
+  volrec:{title:'Volume reconstruction',intro:'Resamples the stack to isotropic voxels and renders it with ray casting through a transfer function.',tex:'C = \\sum_{i} T_i\\, c_i \\alpha_i,\\qquad T_i = \\prod_{j<i}(1-\\alpha_j)',fig:'Transfer function editor',params:[{name:'Step size',range:'0.25 – 1 voxel',body:'Ray sampling distance; smaller is smoother and slower.',tex:''}]},
+};
+const HIST0 = [4,9,22,48,71,88,96,90,79,66,54,46,40,35,31,27,23,19,15,12,9,7,5,4,3,2,2,1,1,1];
+const LABELS = [{id:'0041',cls:'nucleus',vox:'12 480',conf:0.94},{id:'0042',cls:'nucleus',vox:'9 812',conf:0.51,flag:'low conf'},{id:'0043',cls:'nucleus',vox:'31 290',conf:0.88,flag:'merged?'},{id:'0044',cls:'nucleus',vox:'2 104',conf:0.62,flag:'small'},{id:'0045',cls:'nucleus',vox:'11 950',conf:0.97},{id:'0046',cls:'nucleus',vox:'10 402',conf:0.90}];
+const LABEL_COLORS = ['#ffb347','#7c9cff','#e871d9','#63e08a','#ff5c7a','#6ee7f2','#f2e35c'];
+const TOOLS = [['brush','Brush','●'],['erase','Erase','◌'],['fill','Fill region','▣'],['pick','Pick label','⌖'],['merge','Merge labels','⊕'],['split','Split (watershed seed)','⊘'],['delete','Delete label','✕'],['lasso','Lasso','◠']];
+
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+function rng(seed){let s=seed*9301+49297;return()=>{s=(s*9301+49297)%233280;return s/233280};}
+function draw(cv){
+  const W=cv.width,H=cv.height,ctx=cv.getContext('2d'),kind=cv.dataset.kind||'xy',rnd=rng(+cv.dataset.seed||1);
+  ctx.setTransform(1,0,0,1,0,0); ctx.globalCompositeOperation='source-over'; ctx.filter='none'; ctx.clearRect(0,0,W,H);
+  const tints=(cv.dataset.tint||'#ffffff').split(',').filter(Boolean);
+  if(kind==='labels'){
+    const a=+cv.dataset.alpha||0.45;
+    for(let i=0;i<26;i++){const x=rnd()*W,y=rnd()*H,r=14+rnd()*26,c=LABEL_COLORS[i%LABEL_COLORS.length];
+      ctx.beginPath();for(let k=0;k<=12;k++){const t=k/12*Math.PI*2,rr=r*(0.8+0.25*Math.sin(t*3+i));ctx.lineTo(x+Math.cos(t)*rr,y+Math.sin(t)*rr*0.85);}ctx.closePath();
+      ctx.fillStyle=hexA(c,a);ctx.fill();ctx.strokeStyle=c;ctx.lineWidth=1.5;ctx.stroke();}
+    return;
+  }
+  ctx.fillStyle='#0a0909';ctx.fillRect(0,0,W,H);
+  if(kind==='fft'){
+    const v=cv.dataset.variant,cx=W/2,cy=H/2,R=Math.min(W,H)*0.46;
+    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,R);g.addColorStop(0,'rgba(255,255,255,0.95)');g.addColorStop(0.15,'rgba(255,255,255,0.35)');g.addColorStop(0.6,'rgba(255,255,255,0.08)');g.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,R,0,7);ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.05)';for(let i=0;i<2500;i++)ctx.fillRect(rnd()*W,rnd()*H,1,1);
+    ctx.strokeStyle='rgba(243,242,242,0.35)';ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(cx,cy,R*0.5,0,7);ctx.stroke();ctx.setLineDash([]);
+    const angs=v==='band'?[+cv.dataset.angle]:[0,60,120];
+    angs.forEach(a=>{const t=a*Math.PI/180;[1,-1].forEach(s=>{const px=cx+Math.cos(t)*R*0.5*s,py=cy+Math.sin(t)*R*0.5*s;
+      if(v==='raw'||v==='band'){const pg=ctx.createRadialGradient(px,py,0,px,py,9);pg.addColorStop(0,'#ec3013');pg.addColorStop(1,'rgba(236,48,19,0)');ctx.fillStyle=pg;ctx.beginPath();ctx.arc(px,py,9,0,7);ctx.fill();}
+      if(v==='stitched'||v==='result'){const sg=ctx.createRadialGradient(px,py,0,px,py,R*0.5);sg.addColorStop(0,'rgba(255,255,255,0.35)');sg.addColorStop(1,'rgba(255,255,255,0)');ctx.fillStyle=sg;ctx.beginPath();ctx.arc(px,py,R*0.5,0,7);ctx.fill();
+        if(v==='stitched'){ctx.strokeStyle='#ec3013';ctx.lineWidth=1;ctx.beginPath();ctx.arc(px,py,R*0.5,0,7);ctx.stroke();}}
+    });});
+    if(v==='result'){ctx.strokeStyle='#ec3013';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(cx,cy,R,0,7);ctx.stroke();}
+    return;
+  }
+  if(kind==='psf'){const cx=W/2,cy=H/2;for(let i=0;i<6;i++){const a=0.9-i*0.14,rx=6+i*9,ry=14+i*22;ctx.save();ctx.translate(cx,cy);ctx.scale(1,ry/rx);const g=ctx.createRadialGradient(0,0,0,0,0,rx);g.addColorStop(0,`rgba(255,255,255,${a})`);g.addColorStop(1,'rgba(255,255,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,rx,0,7);ctx.fill();ctx.restore();}return;}
+  if(kind==='checker'){const n=8,cw=W/n,ch=H/4;for(let i=0;i<n;i++)for(let j=0;j<4;j++){if((i+j)%2){ctx.fillStyle='rgba(99,224,138,0.35)';ctx.fillRect(i*cw,j*ch,cw,ch);}else{ctx.fillStyle='rgba(255,122,92,0.35)';ctx.fillRect(i*cw+2,j*ch+1,cw,ch);}}
+    ctx.globalCompositeOperation='lighter';for(let i=0;i<30;i++){const x=rnd()*W,y=rnd()*H,r=10+rnd()*20;const g=ctx.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,'rgba(255,255,255,0.8)');g.addColorStop(1,'rgba(255,255,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();}return;}
+  if(kind==='vol3d'){
+    const yaw=(+cv.dataset.rot||0)*Math.PI/180,pitch=(+cv.dataset.tilt||0)*Math.PI/180,S=Math.min(W,H)*0.36,cx=W/2,cy=H/2;
+    const proj=p=>{let [x,y,z]=p;let x1=x*Math.cos(yaw)-z*Math.sin(yaw),z1=x*Math.sin(yaw)+z*Math.cos(yaw);let y1=y*Math.cos(pitch)-z1*Math.sin(pitch),z2=y*Math.sin(pitch)+z1*Math.cos(pitch);return [cx+x1*S,cy+y1*S*0.9,z2];};
+    const C=[[-1,-.45,-1],[1,-.45,-1],[1,.45,-1],[-1,.45,-1],[-1,-.45,1],[1,-.45,1],[1,.45,1],[-1,.45,1]].map(proj);
+    ctx.strokeStyle='rgba(243,242,242,0.35)';ctx.lineWidth=1;[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]].forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(C[a][0],C[a][1]);ctx.lineTo(C[b][0],C[b][1]);ctx.stroke();});
+    const pts=[];for(let i=0;i<220;i++){const t=tints[i%tints.length];pts.push({p:proj([(rnd()*2-1)*0.95,(rnd()*2-1)*0.4,(rnd()*2-1)*0.95]),t,r:rnd()});}
+    pts.sort((a,b)=>b.p[2]-a.p[2]);ctx.globalCompositeOperation='lighter';
+    pts.forEach(({p,t,r})=>{const d=(p[2]+1.5)/3,rad=(6+r*14)*(0.6+d*0.6),a=0.25+d*0.6;const g=ctx.createRadialGradient(p[0],p[1],0,p[0],p[1],rad);g.addColorStop(0,hexA(t,a));g.addColorStop(1,hexA(t,0));ctx.fillStyle=g;ctx.beginPath();ctx.arc(p[0],p[1],rad,0,7);ctx.fill();});
+    ctx.globalCompositeOperation='source-over';ctx.strokeStyle='#ec3013';ctx.lineWidth=1.5;[[0,1],[0,3],[0,4]].forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(C[a][0],C[a][1]);ctx.lineTo(C[b][0],C[b][1]);ctx.stroke();});
+    return;
+  }
+  if(cv.dataset.blur)ctx.filter='blur(2px)';
+  ctx.globalCompositeOperation='lighter';
+  tints.forEach(tint=>{const n=kind==='xy'?38:22;for(let i=0;i<n;i++){const x=rnd()*W,y=rnd()*H,r=(0.035+rnd()*0.075)*Math.max(W,H*1.4),a=0.45+rnd()*0.55;
+    const g=ctx.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,hexA(tint,a));g.addColorStop(0.35,hexA(tint,a*0.5));g.addColorStop(1,hexA(tint,0));
+    ctx.save();if(kind!=='xy'){ctx.translate(x,y);ctx.scale(kind==='xz'?1:0.45,kind==='xz'?0.45:1);ctx.translate(-x,-y);}ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();ctx.restore();}});
+  ctx.filter='none';ctx.globalCompositeOperation='source-over';ctx.fillStyle='rgba(255,255,255,0.06)';for(let i=0;i<1400;i++)ctx.fillRect(rnd()*W,rnd()*H,1.5,1.5);
+}
+
+class Component extends DCLogic {
+  state={ops:[{...INIT[0]},{...INIT.find(o=>o.kind==='contrast')}], sel:1, view:1, vm:'ortho', cx:46, cy:58, z:24, t:12, playing:false, chVis:[true,true], cross:true, labels:false, addOpen:false, diagOpen:true, diagTab:0,
+    kept:{c:true,t:false,z:true,y:true,x:true}, red:'mean', rot:35, tilt:22, tool:'brush', brush:18, labSel:1, exportOpen:false, fmt:3, running:false, runP:0, diagMode:'docked', bbox:true, helpOpen:false, openMenu:null, backend:'CUDA', aiOpen:false, aiBusy:false, aiDraft:'',
+    aiMsgs:[{user:true,text:'Angle 3 looks noisy in the reconstruction. What is going on?'},
+      {ai:true,text:'Modulation depth on the 120° angle is 0.31 — well below the other two (0.72, 0.68). That angle is contributing mostly noise, which shows up as a directional honeycomb in the result spectrum. Two options: raise the Wiener constant for that band, or re-estimate k₀ with a larger search window.',actions:[{glyph:'◉',c:'var(--color-accent)',text:'Showing diagnostics → Result spectrum',link:'view',do:{sel:1,diagTab:3,diagOpen:true}}]},
+      {user:true,text:'Try band-specific Wiener 0.002 on that angle and compare.'},
+      {ai:true,text:'Done. Peak noise in the 120° band dropped by ~40 % with a small loss of resolution gain (1.9× → 1.8×). Compare mode is set up with the previous reconstruction on the left.',actions:[{glyph:'✎',c:'var(--color-text)',text:'Step 02 · Wiener (angle 3) 0.001 → 0.002',link:'undo',do:{}},{glyph:'▶',c:'var(--color-text)',text:'Ran step 02 · 41 s · cached to disk',link:'log',do:{}},{glyph:'◉',c:'var(--color-accent)',text:'Viewer → Compare, step 02',link:'view',do:{vm:'compare',view:1}}]}], vtool:'probe', zoom:1, panX:0, panY:0, drag:null, mx:300, my:200};
+  rootRef=React.createRef();
+  componentDidMount(){this.paint();this.ro=new ResizeObserver(()=>this.paint());if(this.rootRef.current)this.ro.observe(this.rootRef.current);} componentDidUpdate(){this.paint();requestAnimationFrame(()=>this.paint());} componentWillUnmount(){clearInterval(this.pl);clearInterval(this.rn);}
+  paint(){const root=this.rootRef.current;if(!root)return;root.querySelectorAll('canvas[data-kind]').forEach(cv=>{const d=cv.dataset,cw=cv.clientWidth||cv.width,ch=cv.clientHeight||cv.height;if(cw&&ch&&(cv.width!==cw||cv.height!==ch)){cv.width=cw;cv.height=ch;}
+      const key=[d.seed,d.tint,d.kind,d.variant,d.angle,d.rot,d.tilt,d.alpha,d.blur,cv.width,cv.height].join('|');if(d.painted===key)return;d.painted=key;draw(cv);});
+    const tex=root.querySelectorAll('[data-tex]');if(tex.length&&!window.katex){if(!this.kt)this.kt=setInterval(()=>{if(window.katex){clearInterval(this.kt);this.kt=null;this.paint();}},200);return;}
+    tex.forEach(el=>{const s=el.dataset.tex||'';if(el.dataset.done===s)return;el.dataset.done=s;if(!s){el.textContent='';return;}try{window.katex.render(s,el,{throwOnError:false,displayMode:el.dataset.display==='1'});}catch(e){el.textContent=s;}});}
+  setZoom(z,ev){z=Math.min(16,Math.max(0.5,z));const u={zoom:z};if(z===1){u.panX=0;u.panY=0;}this.setState(u);}
+  clickView(ev,a,b){if(this.state.vtool!=='probe'&&a==='cx'&&b==='cy')return;const r=ev.currentTarget.getBoundingClientRect(),px=Math.round((ev.clientX-r.left)/r.width*100),py=Math.round((ev.clientY-r.top)/r.height*100),u={};
+    if(a==='cx')u.cx=px;if(a==='z')u.z=Math.round(px/100*(DS.z-1));if(b==='cy')u.cy=py;if(b==='z')u.z=Math.round(py/100*(DS.z-1));this.setState(u);}
+  einsum(){const S=this.state,AX=['c','t','z','y','x'],sz={c:DS.c,t:DS.t,z:DS.z,y:DS.y,x:DS.x},out=AX.filter(a=>S.kept[a]),red=AX.filter(a=>!S.kept[a]);
+    return {expr:`${AX.join('')} -> ${out.join('')||'·'}`, sum:red.length?`${S.red} over ${red.join(', ')} · ${out.map(a=>a+sz[a]).join(' ')}`:'identity — nothing reduced', shape:out.map(a=>a+sz[a]).join(' ')||'scalar'};}
+  shapeAfter(i){const S=this.state;let sh=`c${DS.c} t${DS.t} z${DS.z} y${DS.y} x${DS.x}`;for(let k=0;k<=i;k++){const o=S.ops[k];if(!o.on)continue;if(o.kind==='sim')sh=`c${DS.c} t${DS.t} z${DS.z*2} y${DS.y*2} x${DS.x*2}`;if(o.kind==='einsum')sh=this.einsum().shape.replace(/y\d+/,m=>'y'+(+m.slice(1)*(S.ops.slice(0,k).some(p=>p.on&&p.kind==='sim')?2:1))).replace(/x\d+/,m=>'x'+(+m.slice(1)*(S.ops.slice(0,k).some(p=>p.on&&p.kind==='sim')?2:1)));if(o.kind==='merge')sh=sh.replace(/c\d+/,'rgb');if(o.kind==='seg')sh=sh+' + labels';}return sh;}
+  move(i,d){const S=this.state,j=i+d;if(j<1||j>=S.ops.length||i<1)return;const ops=S.ops.slice();[ops[i],ops[j]]=[ops[j],ops[i]];const re=k=>k===i?j:k===j?i:k;this.setState({ops,sel:re(S.sel),view:re(S.view)});}
+  renderVals(){
+    const S=this.state,P=this.props,ei=this.einsum();
+    const labelAlpha=(P.labelOpacity??45)/100, diagHeight=P.diagnosticsHeight??250;
+    const ops=S.ops.map((o,i)=>{const isSel=i===S.sel,isView=i===S.view,cc=CACHE[o.cache||'recompute'];return {...o,no:String(i+1).padStart(2,'0'),kindLabel:KIND[o.kind],sum:o.kind==='einsum'?ei.sum:o.sum,
+      pinned:!!o.pinned,movable:!o.pinned,cacheGlyph:cc.g,cacheC:cc.c,cacheTitle:cc.t,
+      bg:isSel?'var(--color-surface)':'transparent',edge:isSel?'var(--color-accent)':'transparent',op:o.on?1:0.45,boxBg:o.on?'var(--color-accent)':'transparent',
+      eyeB:isView?'var(--color-accent)':'var(--color-neutral-400)',eyeC:isView?'var(--color-bg)':'var(--color-neutral-400)',eyeBg:isView?'var(--color-accent)':'transparent',
+      select:()=>this.setState({sel:i,diagTab:0,vm:o.kind==='volrec'?'3d':S.vm,labels:o.kind==='seg'?true:S.labels,vtool:o.kind==='seg'?'paint':(S.vtool==='paint'?'probe':S.vtool)}),
+      toggle:e=>{e.stopPropagation();if(o.pinned)return;const ops=S.ops.slice();ops[i]={...o,on:!o.on};this.setState({ops});},
+      view:e=>{e.stopPropagation();this.setState({view:i});},up:e=>{e.stopPropagation();this.move(i,-1);},down:e=>{e.stopPropagation();this.move(i,1);}};});
+    const sel=S.ops[S.sel]||S.ops[0],selIdx=S.ops.indexOf(sel),view=S.ops[S.view]||S.ops[0],viewIdx=S.ops.indexOf(view);
+    const vis=DS.ch.map((c,i)=>S.chVis[i]!==false),visCh=DS.ch.filter((c,i)=>vis[i]);
+    const merged=S.ops.slice(0,viewIdx+1).some(o=>o.on&&o.kind==='merge');
+    const tints=visCh.length?(merged?visCh.map(c=>c.color).join(','):'#ffffff'):'';
+    const chans=DS.ch.map((c,i)=>({...c,lo:[112,240][i],hi:[3940,2860][i],swBg:vis[i]?c.color:'transparent',swFg:vis[i]?'#0a0909':c.color,toggle:()=>{const v=vis.slice();v[i]=!v[i];this.setState({chVis:v});},
+      hist:HIST0.map((h,k)=>({h:Math.max(1,h+((k*7+i*13)%9)-4),c:(k<2||k>22)?'var(--color-neutral-400)':'var(--color-text)'}))}));
+    const diagFor={sim:['Raw spectrum','Separated bands','Shifted & stitched','Result spectrum'],decon:['Convergence'],contrast:['Histograms'],seg:['Cleanup'],volrec:['Rendering'],stitch:['Alignment'],register:['Alignment']};
+    const tabs=diagFor[sel.kind]||['Preview'];
+    const diagTabs=tabs.map((n,i)=>({name:n,set:()=>this.setState({diagTab:i}),line:i===S.diagTab?'var(--color-accent)':'transparent',w:i===S.diagTab?800:400}));
+    const simVariant=['raw','band','stitched','result'][S.diagTab]||'raw';
+    const simPanels=simVariant==='band'?[0,60,120].map((a,i)=>({title:`Band · angle ${i+1}`,meta:`${a}°`,seed:10+i,variant:'band',angle:a})):[0,1,2].map(i=>({title:simVariant==='raw'?`Raw FFT · phase ${i+1}`:simVariant==='stitched'?`Stitched · angle ${i+1}`:['Widefield','SIM result','Difference'][i],meta:simVariant==='result'?['1.0×','1.9×','—'][i]:`${[0,60,120][i]}°`,seed:20+i,variant:simVariant==='result'&&i===0?'raw':simVariant,angle:[0,60,120][i]}));
+    const simRows=[['0°','0.2113','0.02 rad','0.72'],['60°','0.2108','1.31 rad','0.68'],['120°','0.2121','2.44 rad','0.31']].map(([a,k,ph,m])=>({a,k,ph,m,mc:+m<0.4?'var(--color-accent)':'var(--color-text)'}));
+    const conv=[];for(let i=0;i<40;i++)conv.push(`${i*400/39},${120-118*Math.exp(-i/6)}`);
+    const segTools=TOOLS.map(([id,name,glyph])=>({id,name,glyph,set:()=>this.setState({tool:id}),border:S.tool===id?'var(--color-accent)':'var(--color-divider)',bg:S.tool===id?'var(--color-accent)':'transparent',fg:S.tool===id?'var(--color-bg)':'var(--color-text)'}));
+    const labelRows=LABELS.map((l,i)=>({...l,color:LABEL_COLORS[i%LABEL_COLORS.length],conf:l.conf.toFixed(2),cc:l.conf<0.6?'var(--color-accent)':'inherit',flagged:!!l.flag,bg:i===S.labSel?'var(--color-surface)':'transparent',select:()=>this.setState({labSel:i})}));
+    const AX=['c','t','z','y','x'];
+    const axes=AX.map(a=>({name:a,state:S.kept[a]?'keep':S.red,border:S.kept[a]?'var(--color-divider)':'var(--color-accent)',bg:S.kept[a]?'transparent':'var(--color-accent)',fg:S.kept[a]?'var(--color-text)':'var(--color-bg)',toggle:()=>this.setState({kept:{...S.kept,[a]:!S.kept[a]}})}));
+    const redOps=['sum','mean','max','min'].map(o=>({name:o,bg:S.red===o?'var(--color-text)':'transparent',fg:S.red===o?'var(--color-bg)':'var(--color-text)',set:()=>this.setState({red:o})}));
+    const presets=[['Front',0,0],['Iso',35,22],['Top',0,60],['Side',90,0]].map(([name,r,t])=>({name,bg:(S.rot===r&&S.tilt===t)?'var(--color-accent)':'transparent',set:()=>this.setState({rot:r,tilt:t})}));
+    const fm=FORMATS[S.fmt];
+    const formats=FORMATS.map((f,i)=>({name:f[0],note:f[1],size:f[6],border:i===S.fmt?'var(--color-accent)':'var(--color-divider)',bg:i===S.fmt?'var(--color-surface)':'transparent',set:()=>this.setState({fmt:i})}));
+    const library=LIB.map(([name,kind,group])=>({name,group,add:e=>{e.stopPropagation();const ops=S.ops.slice(),at=ops.length;const tpl=INIT.find(o=>o.kind===kind);ops.splice(at,0,{name,kind,on:true,cache:tpl?tpl.cache:'recompute',sum:tpl?tpl.sum:'not configured',params:tpl?tpl.params:[{label:'Preset',value:'Default'}]});this.setState({ops,sel:at,view:at,addOpen:false,vm:kind==='volrec'?'3d':S.vm,labels:kind==='seg'?true:S.labels,vtool:kind==='seg'?'paint':S.vtool});}}));
+    const libGroups=[...new Set(LIB.map(l=>l[2]))].map(name=>({name,items:library.filter(l=>l.group===name)}));
+    const loadExample=e=>{e.stopPropagation();const ops=INIT.map(o=>({...o}));this.setState({ops,sel:1,view:6,addOpen:false});};
+    const setOp=(patch)=>{const ops=S.ops.slice();ops[selIdx]={...sel,...patch};this.setState({ops});};
+    const caches=['memory','disk','recompute'].map(k=>({name:CACHE[k].name,title:CACHE[k].t,bg:(sel.cache||'recompute')===k?'var(--color-text)':'transparent',fg:(sel.cache||'recompute')===k?'var(--color-bg)':'var(--color-text)',set:()=>setOp({cache:k})}));
+    const backends=['CUDA','CPU','HPC'].map(b=>({name:b,bg:S.backend===b?'var(--color-text)':'transparent',fg:S.backend===b?'var(--color-bg)':'var(--color-text)',set:()=>this.setState({backend:b})}));
+    const cacheNotes={memory:'Fastest scrubbing; evicted first when GPU/RAM fills.',disk:'Survives restarts; written to the zarr scratch directory. Best for slow steps like reconstruction.',recompute:'Nothing stored; recomputed from the previous step on demand. Good for cheap steps.'};
+    const help=HELP[sel.kind]||{title:sel.name,intro:'No help page yet — click Edit page to write one.',tex:'',fig:'',params:[]};
+    const SEP='1px solid var(--color-divider)',ck=b=>b?'✓':'';
+    const MENUS=[
+      ['File',[['Open dataset…','⌘O'],['Open recent','▸'],['Close dataset','⌘W'],['Save pipeline','⌘S',SEP],['Save pipeline as…','⇧⌘S'],['Load pipeline preset…','','',()=>({ops:INIT.map(o=>({...o})),sel:1,view:6})],['Export result…','⇧⌘E',SEP,()=>({exportOpen:true})],['Export pipeline as Python script',''],['Export figure (current view)…','⌥⌘E'],['Preferences…','⌘,',SEP],['Quit','⌘Q',SEP]]],
+      ['Edit',[['Undo','⌘Z'],['Redo','⇧⌘Z'],['Duplicate step','⌘D',SEP],['Remove step','⌫'],['Enable / skip step','space'],['Move step up','⌥↑',SEP],['Move step down','⌥↓'],['Copy parameters','⌘C',SEP],['Paste parameters','⌘V']]],
+      ['View',[['Ortho views','1','',()=>({vm:'ortho'}),S.vm==='ortho'],['3D volume','2','',()=>({vm:'3d'}),S.vm==='3d'],['Compare raw vs. step','3','',()=>({vm:'compare'}),S.vm==='compare'],['Crosshair','H',SEP,()=>({cross:!S.cross}),S.cross],['Labels overlay','L','',()=>({labels:!S.labels}),S.labels],['Scale bar','',''],['Zoom in','+',SEP,()=>({zoom:Math.min(16,S.zoom*1.5)})],['Zoom out','−','',()=>({zoom:Math.max(0.5,S.zoom/1.5)})],['Fit to window','0','',()=>({zoom:1,panX:0,panY:0})],['Auto contrast (display)','⇧A',SEP],['Sync Z / T across viewers','']]],
+      ['Process',[['Add operation…','⇧⌘A','',()=>({addOpen:true})],['Run all enabled','⌘R',SEP],['Run selected step','⇧⌘R'],['Run to selected step',''],['Cancel','esc'],['Clear cache for step','',SEP],['Clear all caches',''],['Backend: CUDA','',SEP,()=>({backend:'CUDA'}),S.backend==='CUDA'],['Backend: CPU','','',()=>({backend:'CPU'}),S.backend==='CPU'],['Backend: HPC (Slurm)','','',()=>({backend:'HPC'}),S.backend==='HPC']]],
+      ['Segment',[['Load Torch model…','⌘M'],['Run segmentation','',''],['Paint labels','B',SEP,()=>({vtool:'paint',labels:true})],['Erase','E'],['Merge selected labels','⌘G'],['Split label','⇧⌘G'],['Delete label','⌫'],['Next flagged label','→',SEP],['Previous flagged label','←'],['Accept all reviewed','',SEP],['Export labels…','']]],
+      ['Window',[['Operations','⌥1','',null,true],['Parameters','⌥2','',null,true],['Diagnostics','⌥3','',()=>({diagOpen:!S.diagOpen}),S.diagOpen],['Help page','⌥4','',()=>({helpOpen:!S.helpOpen}),S.helpOpen],['Float diagnostics','',SEP,()=>({diagMode:'floating',diagOpen:true})],['Reset layout',''],['Save layout…',''],['Assistant','⌥5',SEP,()=>({aiOpen:!S.aiOpen}),S.aiOpen]]],
+      ['Help',[['Help for this step','F1','',()=>({helpOpen:true})],['Sirius manual',''],['Keyboard shortcuts','⌘/'],['Operation plugin API',SEP===''?'':'',SEP],['Report a problem…',''],['About Sirius','',SEP]]],
+    ];
+    const menus=MENUS.map(([name,items])=>{const open=S.openMenu===name;return {name,open,fg:open?'var(--color-bg)':'inherit',bg:open?'var(--color-text)':'transparent',
+      toggle:()=>this.setState({openMenu:open?null:name}),hover:()=>{if(S.openMenu&&!open)this.setState({openMenu:name});},
+      items:items.map(([n,key,sep,act,on])=>({name:n,key:key||'',sep:sep||'none',check:ck(on),op:1,act:e=>{e.stopPropagation();this.setState({openMenu:null,...(act?act():{})});}}))};});
+    const enabled=S.ops.filter(o=>o.on).length;
+    const kindP={einsum:'pEinsum',sim:'pSim',seg:'pSeg',merge:'pMerge',load:'pLoad'};
+    const hasSeg=S.ops.some(o=>o.kind==='seg'&&o.on);
+    const VT=[['nav','✥','Navigate — drag to pan, wheel to zoom (V)'],['probe','+','Probe — click to place crosshair, read values (P)'],['measure','↔','Measure distance / angle (M)'],['roi','▢','ROI — box, polygon, lasso (R)'],['paint','●','Paint labels — needs a segmentation step (B)']];
+    const tools=VT.map(([id,glyph,title])=>{const dis=id==='paint'&&!hasSeg,on=S.vtool===id;return {id,glyph,title,op:dis?0.35:1,border:on?'var(--color-accent)':'var(--color-divider)',bg:on?'var(--color-accent)':'transparent',fg:on?'var(--color-bg)':'var(--color-text)',set:()=>{if(!dis)this.setState({vtool:id,labels:id==='paint'?true:S.labels});}};});
+    const hints={nav:'drag · pan   wheel · zoom   double-click · fit',probe:'click · move crosshair   shift-click · add point',measure:'click twice · distance   third click · angle',roi:'drag · box   alt-drag · lasso',paint:`brush ${S.brush} px · alt · erase · [ ] · size · crosshair locked`};
+    const cursors={nav:S.drag?'grabbing':'grab',probe:'crosshair',measure:'crosshair',roi:'crosshair',paint:'none'};
+    const nm=S.zoom>=8?'0.5 µm':S.zoom>=4?'1 µm':S.zoom>=2?'2 µm':'5 µm',nmUm=parseFloat(nm);
+    const dKey={sim:'dSim',decon:'dDecon',contrast:'dContrast',seg:'dSeg',volrec:'dVol',stitch:'dAlign',register:'dAlign'}[sel.kind]||'dGeneric';
+    return {
+      rootRef:this.rootRef,dsName:DS.name,dsDims:`c${DS.c} t${DS.t} z${DS.z} y${DS.y} x${DS.x}`,dsMode:DS.mode,dsPx:`${DS.px} × ${DS.px} × ${DS.dz} µm`,
+      menus,
+      aiOpen:S.aiOpen,toggleAi:()=>this.setState({aiOpen:!S.aiOpen}),aiB:S.aiOpen?'var(--color-accent)':'var(--color-text)',aiBg:S.aiOpen?'var(--color-accent)':'transparent',aiFg:S.aiOpen?'var(--color-bg)':'var(--color-text)',
+      aiBusy:S.aiBusy,aiDraft:S.aiDraft,aiType:e=>this.setState({aiDraft:e.target.value}),aiKey:e=>{if(e.key==='Enter')this.aiSend();},aiSend:()=>this.aiSend(),
+      aiMsgs:S.aiMsgs.map(m=>({...m,actions:(m.actions||[]).map(a=>({...a,act:()=>this.setState(a.do||{})}))})),
+      aiChips:['Explain the Wiener parameter','Why is step 06 skipped?','Max-project over Z and show me','Flag low-confidence labels'].map(text=>({text,act:()=>this.setState({aiDraft:text})})),
+      caches,backends,cacheNote:cacheNotes[sel.cache||'recompute'],selCacheSize:CACHE_SIZE[sel.kind]||'—',selRemovable:!sel.pinned,
+      helpOpen:S.helpOpen,toggleHelp:()=>this.setState({helpOpen:!S.helpOpen}),helpB:S.helpOpen?'var(--color-accent)':'var(--color-text)',helpBg:S.helpOpen?'var(--color-accent)':'transparent',helpFg:S.helpOpen?'var(--color-bg)':'var(--color-text)',
+      helpTitle:help.title,helpIntro:help.intro,helpTex:help.tex,helpFig:help.fig,helpParams:help.params,pLoad:kindP[sel.kind]==='pLoad',
+      ops,library,libGroups,loadExample,addOpen:S.addOpen,toggleAdd:()=>this.setState({addOpen:!S.addOpen}),addFg:S.addOpen?'var(--color-accent)':'var(--color-neutral-600)',addBg:S.addOpen?'var(--color-surface)':'transparent',
+      addHint:S.ops.length<2?'Reconstruct, reduce, adjust, combine, segment…':'Runs after step '+String(S.ops.length).padStart(2,'0'),opCount:S.ops.length,enabledCount:enabled,cacheGb:(enabled*2.3).toFixed(1),
+      chans,tints,cross:S.cross,crossBox:S.cross?'var(--color-accent)':'transparent',toggleCross:()=>this.setState({cross:!S.cross}),
+      showLabels:S.labels,labelsBox:S.labels?'var(--color-accent)':'transparent',toggleLabels:()=>this.setState({labels:!S.labels}),labelAlpha,labelPct:Math.round(labelAlpha*100),
+      vmOrtho:S.vm==='ortho',vm3d:S.vm==='3d',vmCompare:S.vm==='compare',setOrtho:()=>this.setState({vm:'ortho'}),set3d:()=>this.setState({vm:'3d'}),setCompare:()=>this.setState({vm:'compare'}),
+      viewNo:String(viewIdx+1).padStart(2,'0'),viewName:view.name,viewShape:this.shapeAfter(viewIdx),
+      tools,toolHint:hints[S.vtool],cursor:cursors[S.vtool],zoom:S.zoom,panX:S.panX,panY:S.panY,zoomPct:Math.round(S.zoom*100),mx:S.mx,my:S.my,
+      barPx:Math.round(60*S.zoom*nmUm/5),barLabel:nm,
+      hairW:S.vtool==='probe'?1:1,hairStyle:S.vtool==='probe'?'solid':'dashed',hairOp:S.vtool==='probe'?1:0.45,hairState:S.vtool==='probe'?'':'locked',
+      zoomIn:()=>this.setZoom(S.zoom*1.5),zoomOut:()=>this.setZoom(S.zoom/1.5),zoomFit:()=>this.setState({zoom:1,panX:0,panY:0}),
+      wheelXY:e=>{e.preventDefault();this.setZoom(S.zoom*(e.deltaY<0?1.15:1/1.15));},
+      downXY:e=>{if(S.vtool==='nav')this.setState({drag:{x:e.clientX-S.panX,y:e.clientY-S.panY}});},
+      moveXY:e=>{const r=e.currentTarget.getBoundingClientRect(),u={mx:e.clientX-r.left,my:e.clientY-r.top};if(S.drag){u.panX=e.clientX-S.drag.x;u.panY=e.clientY-S.drag.y;}this.setState(u);},
+      upXY:()=>{if(S.drag)this.setState({drag:null});},
+      segMode:S.vtool==='paint',brush:S.brush,brushPx:S.brush*2,brushHalf:S.brush,brushZ:Math.max(1,Math.round(S.brush/6)),setBrush:e=>this.setState({brush:+e.target.value}),segToolName:(TOOLS.find(t=>t[0]===S.tool)||TOOLS[0])[1],segTools,labelRows,
+      xySeed:viewIdx*13+Math.floor(S.z/8),yzSeed:viewIdx*13+11,xzSeed:viewIdx*13+7,mipSeed:viewIdx*13+99,rawSeed:3+Math.floor(S.z/8),labSeed:5,volSeed:viewIdx*13+1,
+      cx:S.cx,cy:S.cy,z:S.z,zMax:DS.z-1,t:S.t,tMax:DS.t-1,zP:Math.round(S.z/(DS.z-1)*100),zUm:(S.z*DS.dz).toFixed(2),tSec:(S.t*1.5).toFixed(1)+' s',
+      clickXY:e=>this.clickView(e,'cx','cy'),clickXZ:e=>this.clickView(e,'cx','z'),clickYZ:e=>this.clickView(e,'z','cy'),setZ:e=>this.setState({z:+e.target.value}),setT:e=>this.setState({t:+e.target.value}),
+      playGlyph:S.playing?'❚❚':'▶',togglePlay:()=>{if(S.playing){clearInterval(this.pl);this.setState({playing:false});}else{this.pl=setInterval(()=>this.setState(s=>({t:(s.t+1)%DS.t})),120);this.setState({playing:true});}},
+      curX:Math.round(S.cx/100*DS.x),curY:Math.round(S.cy/100*DS.y),curVal:1200+((S.cx*37+S.cy*91+S.z*13)%2700),
+      rot:S.rot,tilt:S.tilt,rotPlus:(S.rot+40)%360,setRot:e=>this.setState({rot:+e.target.value}),setTilt:e=>this.setState({tilt:+e.target.value}),presets,volMethod:'Ray casting',
+      ...(()=>{const m=S.diagOpen?S.diagMode:'docked',fl=m==='floating',mx=m==='max',dk=m==='docked';
+        const st=(on)=>({B:on?'var(--color-accent)':'var(--color-neutral-400)',Bg:on?'var(--color-accent)':'transparent',Fg:on?'var(--color-bg)':'var(--color-neutral-600)'});
+        const a=st(dk),b=st(fl),c=st(mx);
+        return {diagPos:dk?'static':'absolute',diagL:fl?'330px':mx?'292px':'auto',diagT:fl?'70px':mx?'40px':'auto',diagR:fl?'360px':mx?'322px':'auto',diagB:fl?'auto':mx?'28px':'auto',
+          diagH:dk?(S.diagOpen?diagHeight+'px':'34px'):fl?'560px':'auto',diagBorder:dk?'none':'2px solid var(--color-text)',diagShadow:dk?'none':'var(--shadow-lg)',diagCursor:fl?'move':'default',
+          diagDock:()=>this.setState({diagMode:'docked',diagOpen:true}),diagFloat:()=>this.setState({diagMode:'floating',diagOpen:true}),diagMax:()=>this.setState({diagMode:'max',diagOpen:true}),
+          dockB:a.B,dockBg:a.Bg,dockFg:a.Fg,floatB:b.B,floatBg:b.Bg,floatFg:b.Fg,maxB:c.B,maxBg:c.Bg,maxFg:c.Fg};})(),
+      notVm3d:S.vm!=='3d',bbox:S.bbox,boxBox:S.bbox?'var(--color-accent)':'transparent',toggleBox:()=>this.setState({bbox:!S.bbox}),
+      diagOpen:S.diagOpen,diagGlyph:S.diagOpen?'▼':'▶',toggleDiag:()=>this.setState({diagOpen:!S.diagOpen,diagMode:S.diagOpen?S.diagMode:'docked'}),diagTabs,diagHint:S.diagOpen?'Updates live as parameters change':'Click to expand',
+      dSim:dKey==='dSim',dDecon:dKey==='dDecon',dContrast:dKey==='dContrast',dSeg:dKey==='dSeg',dVol:dKey==='dVol',dAlign:dKey==='dAlign',dGeneric:dKey==='dGeneric',
+      simPanels,simRows,convPts:conv.join(' '),convX:20*400/39,deconIter:20,
+      inShape:selIdx>0?this.shapeAfter(selIdx-1):'—',outShape:this.shapeAfter(selIdx),inSeed:selIdx*13+2,outSeed:selIdx*13+3,outKind:sel.kind==='deskew'?'xz':'xy',selSum:sel.kind==='einsum'?ei.sum:sel.sum,selTime:['~9 s','~4 s / t','< 1 s'][selIdx%3],selMem:'6.2 GB',
+      tiles:Array.from({length:9},(_,i)=>({name:`t${i+1}`,bg:i===4?'var(--color-accent)':'transparent',fg:i===4?'var(--color-bg)':'var(--color-text)'})),
+      selNo:String(selIdx+1).padStart(2,'0'),selName:sel.name,selKindLabel:KIND[sel.kind],selState:sel.on?'enabled':'skipped',selStateC:sel.on?'var(--color-accent)':'var(--color-neutral-500)',selParams:sel.params||[],
+      pEinsum:kindP[sel.kind]==='pEinsum',pSim:kindP[sel.kind]==='pSim',pSeg:kindP[sel.kind]==='pSeg',pMerge:kindP[sel.kind]==='pMerge',pForm:!kindP[sel.kind],
+      axes,redOps,einsumExpr:ei.expr,
+      runSel:()=>this.startRun(),runAll:()=>this.startRun(),runLabel:S.running?`Running · ${S.runP} %`:'Run all enabled',viewSel:()=>this.setState({view:selIdx}),
+      removeSel:()=>{if(S.ops.length<=1||sel.pinned)return;const ops=S.ops.filter((_,i)=>i!==selIdx);this.setState({ops,sel:Math.max(0,selIdx-1),view:Math.min(S.view,ops.length-1)});},
+      running:S.running,runP:S.runP,
+      exportOpen:S.exportOpen,openExport:()=>this.setState({exportOpen:true}),closeExport:()=>this.setState({exportOpen:false}),stop:e=>e.stopPropagation(),
+      formats,fmtName:fm[0],fmtExt:fm[2],fmtComp:fm[3],fmtChunked:fm[4],fmtPyramid:fm[5],
+    };
+  }
+  aiSend(){const t=this.state.aiDraft.trim();if(!t)return;this.setState(s=>({aiMsgs:[...s.aiMsgs,{user:true,text:t}],aiDraft:'',aiBusy:true}));
+    setTimeout(()=>this.setState(s=>({aiBusy:false,aiMsgs:[...s.aiMsgs,{ai:true,text:'Prototype — in the real app this would call the pipeline API with the current step, its diagnostics and the help page as context.',actions:[]}]})),1200);}
+  startRun(){if(this.state.running)return;this.setState({running:true,runP:0});this.rn=setInterval(()=>this.setState(s=>{if(s.runP>=100){clearInterval(this.rn);return {running:false,runP:0};}return {runP:s.runP+4};}),140);}
+}
+</script>
+</body>
+</html>

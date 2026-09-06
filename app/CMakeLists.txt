@@ -1,21 +1,28 @@
-# Qt GUI for SIM reconstruction. Gated by SIRIUS_ENABLE_APP at the top level
-# (Qt is located in cmake/Dependencies.cmake as the sirius::qt target).
+# The SIRIUS workbench (docs/design/README.md). Gated by SIRIUS_ENABLE_APP at
+# the top level; Qt is located in cmake/Dependencies.cmake as sirius::qt.
 #
-# Two targets:
-#   sirius_app_core  static, Qt-free: session model and display mapping.
-#                    Unit-tested by tests/test_app_core.cpp, so the logic the
-#                    GUI relies on never needs a display to be verified.
-#   sirius-app       the Widgets executable (app/qt/*).
+#   sirius_app_core  static, Qt-free: array model, operations, pipeline,
+#                    executor, workbench, tool API, worker protocol, export.
+#                    Unit-tested by tests/test_app_*.cpp without a display.
+#   sirius-app       the Qt Widgets executable (app/qt/**).
+#
+# Sources are globbed (CONFIGURE_DEPENDS) so adding an operation or a panel
+# is adding a file.
 
 # --- core -------------------------------------------------------------------
-add_library(sirius_app_core STATIC
-    core/display_mapping.cpp
-    core/session.cpp
-    core/volume_ops.cpp
-)
+file(GLOB_RECURSE SIRIUS_APP_CORE_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp)
+add_library(sirius_app_core STATIC ${SIRIUS_APP_CORE_SOURCES})
 add_library(sirius::app_core ALIAS sirius_app_core)
 target_include_directories(sirius_app_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(sirius_app_core PUBLIC sirius)
+target_link_libraries(sirius_app_core
+    PUBLIC sirius nlohmann_json::nlohmann_json
+    PRIVATE OpenMP::OpenMP_CXX TIFF::TIFF tomlplusplus::tomlplusplus)
+target_compile_definitions(sirius_app_core PRIVATE
+    SIRIUS_APP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+if(WIN32)
+    target_link_libraries(sirius_app_core PRIVATE ws2_32)
+endif()
 if(SIRIUS_ENABLE_WARNINGS)
     target_set_warnings(sirius_app_core)
 endif()
@@ -25,25 +32,15 @@ endif()
 
 # --- GUI --------------------------------------------------------------------
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
+file(GLOB_RECURSE SIRIUS_APP_QT_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/qt/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/qt/*.hpp)
 add_executable(sirius-app WIN32 MACOSX_BUNDLE
-    qt/main.cpp
-    qt/main_window.cpp
-    qt/main_window.hpp
-    qt/parameter_panel.cpp
-    qt/parameter_panel.hpp
-    qt/qt_strings.hpp
-    qt/image_canvas.cpp
-    qt/image_canvas.hpp
-    qt/stack_view.cpp
-    qt/stack_view.hpp
-    qt/band_view.cpp
-    qt/band_view.hpp
-    qt/help_text.cpp
-    qt/help_text.hpp
-    qt/recon_worker.cpp
-    qt/recon_worker.hpp
-)
+    ${SIRIUS_APP_QT_SOURCES}
+    qt/resources/resources.qrc)
+target_include_directories(sirius-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sirius-app PRIVATE sirius::app_core sirius::qt)
 if(SIRIUS_ENABLE_WARNINGS)
     target_set_warnings(sirius-app)
@@ -51,6 +48,16 @@ endif()
 if(SIRIUS_ENABLE_SANITIZERS)
     target_enable_sanitizers(sirius-app)
 endif()
+
+# Help pages and the Python worker live next to the executable so users can
+# edit the pages and launch the worker from the build tree.
+add_custom_command(TARGET sirius-app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/help $<TARGET_FILE_DIR:sirius-app>/help
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/python $<TARGET_FILE_DIR:sirius-app>/python
+    COMMENT "Copying help pages and the Python worker next to sirius-app"
+    VERBATIM)
 
 # Runtime DLLs on Windows: the NVIDIA libraries (as for the tests and
 # benchmarks) and the Qt libraries/plugins via windeployqt, so the executable
@@ -62,10 +69,6 @@ if(SIRIUS_APP_DEPLOY_QT)
     get_filename_component(_qt_bin_dir "${_qmake_location}" DIRECTORY)
     find_program(SIRIUS_WINDEPLOYQT windeployqt HINTS "${_qt_bin_dir}")
     if(SIRIUS_WINDEPLOYQT)
-        # windeployqt infers debug/release from the executable and then looks
-        # for the matching Qt DLLs. A release-only Qt (conda, vcpkg release
-        # triplets) has no Qt*d.dll: our Debug executable links its release
-        # libraries anyway, so tell windeployqt to deploy those.
         get_target_property(_qt_core_debug Qt${QT_VERSION_MAJOR}::Core IMPORTED_LOCATION_DEBUG)
         if(_qt_core_debug)
             set(_deploy_flavor "$<IF:$<CONFIG:Debug>,--debug,--release>")

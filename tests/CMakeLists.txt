@@ -22,6 +22,9 @@ target_sources(sirius_tests
         test_sim_cpu_stages.cpp
         test_registration.cpp
         test_stitching.cpp
+        test_image_ops.cpp
+        test_deconvolution.cpp
+        test_zarr_io.cpp
 )
 
 target_link_libraries(sirius_tests
@@ -43,7 +46,15 @@ target_compile_definitions(sirius_tests
 # The GUI's Qt-free model (session, display mapping) is tested with the same
 # binary when the app is enabled; the Widgets layer itself stays untested here.
 if(SIRIUS_ENABLE_APP)
-    target_sources(sirius_tests PRIVATE test_app_core.cpp)
+    target_sources(sirius_tests PRIVATE
+        test_app_core.cpp
+        test_app_labels.cpp
+        test_app_pipeline.cpp
+        test_app_ops.cpp
+        test_app_io.cpp
+        test_app_rpc.cpp
+        test_app_help.cpp
+    )
     target_link_libraries(sirius_tests PRIVATE sirius::app_core)
 endif()
 

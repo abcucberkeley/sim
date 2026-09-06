@@ -36,6 +36,9 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include/sirius/registration.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/stitching.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/constants.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/image_ops.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/deconvolution.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/zarr_io.hpp
     PRIVATE
         device.cpp
         buffer.cpp
@@ -51,6 +54,9 @@ target_sources(sirius
         sim_reconstruction.cpp
         registration.cpp
         stitching.cpp
+        image_ops.cpp
+        deconvolution.cpp
+        zarr_io.cpp
 )
 
 target_link_libraries(sirius

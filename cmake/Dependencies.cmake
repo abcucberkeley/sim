@@ -129,6 +129,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
+# nlohmann/json: pipeline files, the assistant tool API and the worker
+# protocol (header-only; TensorStore uses the same library internally).
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+    SYSTEM
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
 if(SIRIUS_ENABLE_TESTS)
     FetchContent_Declare(
         Catch2
@@ -173,11 +184,18 @@ endif()
 # major version's Widgets module.
 if(SIRIUS_ENABLE_APP)
     find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets HINTS ${Qt6_DIR} ${Qt5_DIR})
-    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+    if(QT_VERSION_MAJOR EQUAL 6)
+        find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets Network)
+        set(_sirius_qt_libs Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Network)
+    else()
+        # Qt 5: QOpenGLWidget lives in Widgets
+        find_package(Qt5 REQUIRED COMPONENTS Widgets Network)
+        set(_sirius_qt_libs Qt5::Widgets Qt5::Network)
+    endif()
     add_library(sirius_qt INTERFACE)
-    target_link_libraries(sirius_qt INTERFACE Qt${QT_VERSION_MAJOR}::Widgets)
+    target_link_libraries(sirius_qt INTERFACE ${_sirius_qt_libs})
     add_library(sirius::qt ALIAS sirius_qt)
-    message(STATUS "Qt ${Qt${QT_VERSION_MAJOR}_VERSION} (Widgets) for the SIRIUS app")
+    message(STATUS "Qt ${Qt${QT_VERSION_MAJOR}_VERSION} (Widgets, OpenGL, Network) for the SIRIUS app")
 endif()
 
 if(SIRIUS_ENABLE_CUDA)

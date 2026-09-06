@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <meta name="design_doc_mode" content="canvas">
+  <link rel="stylesheet" href="_ds/modernist-7c57f600-730e-495c-989b-9fc95ce0a926/styles.css">
+  <script src="_ds/modernist-7c57f600-730e-495c-989b-9fc95ce0a926/_ds_bundle.js"></script>
+  <style>
+    body{margin:0;background:#dedcdc}
+    a{color:var(--color-accent)} a:hover{color:var(--color-accent-600)}
+    input[type=range]{accent-color:var(--color-accent);height:18px;margin:0}
+  </style>
+</helmet>
+<div ref="{{ rootRef }}" style="width:1440px;height:900px;margin:24px;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:13px;line-height:1.4;border:2px solid var(--color-divider);overflow:hidden;box-shadow:var(--shadow-lg)">
+
+  <!-- title + menu bar -->
+  <div style="display:flex;align-items:center;gap:20px;height:38px;padding:0 14px;border-bottom:2px solid var(--color-divider);flex:none">
+    <div style="font-family:var(--font-heading);font-weight:800;font-size:15px;letter-spacing:-0.01em;display:flex;align-items:center;gap:8px"><span style="width:12px;height:12px;background:var(--color-accent);display:inline-block"></span>LUMEN</div>
+    <div style="display:flex;gap:16px;font-size:13px">
+      <span style="cursor:default" style-hover="color:var(--color-accent)">File</span><span style-hover="color:var(--color-accent)">Edit</span><span style-hover="color:var(--color-accent)">View</span><span style-hover="color:var(--color-accent)">Image</span><span style-hover="color:var(--color-accent)">Process</span><span style-hover="color:var(--color-accent)">Analyze</span><span style-hover="color:var(--color-accent)">Window</span><span style-hover="color:var(--color-accent)">Help</span>
+    </div>
+    <div style="margin-left:auto;font-size:12px;color:var(--color-neutral-600)">{{ dsName }}</div>
+    <div style="display:flex;gap:8px">
+      <span style="width:12px;height:12px;border:1.5px solid var(--color-neutral-700);display:inline-block"></span>
+      <span style="width:12px;height:12px;border:1.5px solid var(--color-neutral-700);display:inline-block"></span>
+      <span style="width:12px;height:12px;background:var(--color-neutral-700);display:inline-block"></span>
+    </div>
+  </div>
+
+  <!-- workspace tabs -->
+  <div style="display:flex;align-items:stretch;height:42px;border-bottom:2px solid var(--color-divider);flex:none;padding:0 14px;gap:28px">
+    <div onClick="{{ goBrowser }}" style="display:flex;align-items:center;gap:8px;cursor:pointer;border-bottom:3px solid {{ tabB }};margin-bottom:-2px;font-family:var(--font-heading);font-weight:{{ wB }}"><span style="color:var(--color-accent);font-size:11px">01</span>Datasets</div>
+    <div onClick="{{ goViewer }}" style="display:flex;align-items:center;gap:8px;cursor:pointer;border-bottom:3px solid {{ tabV }};margin-bottom:-2px;font-family:var(--font-heading);font-weight:{{ wV }}"><span style="color:var(--color-accent);font-size:11px">02</span>Viewer</div>
+    <div onClick="{{ goProcess }}" style="display:flex;align-items:center;gap:8px;cursor:pointer;border-bottom:3px solid {{ tabP }};margin-bottom:-2px;font-family:var(--font-heading);font-weight:{{ wP }}"><span style="color:var(--color-accent);font-size:11px">03</span>Process</div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:18px;font-size:12px;color:var(--color-neutral-600)"><span>GPU · RTX A6000 · 42.1 GB free</span><span>Cache · 12 / 64 GB</span></div>
+  </div>
+
+  <!-- ===== 01 DATASETS ===== -->
+  <sc-if value="{{ isBrowser }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Datasets" style="flex:1;display:flex;min-height:0">
+    <div style="width:220px;flex:none;border-right:2px solid var(--color-divider);padding:18px 14px;display:flex;flex-direction:column;gap:18px">
+      <div>
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:8px">Sources</div>
+        <div style="display:flex;flex-direction:column">
+          <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--color-divider);font-weight:800;font-family:var(--font-heading);color:var(--color-accent)"><span>Local</span><span>5</span></div>
+          <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--color-divider)" style-hover="color:var(--color-accent)"><span>nas-01 / imaging</span><span>212</span></div>
+          <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--color-divider)" style-hover="color:var(--color-accent)"><span>OMERO</span><span>1,040</span></div>
+          <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--color-divider)" style-hover="color:var(--color-accent)"><span>Recent</span><span>9</span></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:8px">Filter</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <span class="tag tag-accent">time series</span><span class="tag tag-neutral">SIM</span><span class="tag tag-neutral">LLSM</span><span class="tag tag-neutral">tiled</span><span class="tag tag-neutral">&gt; 10 GB</span>
+        </div>
+      </div>
+      <div style="margin-top:auto">
+        <button class="btn btn-secondary btn-block" style="margin:0">Add source…</button>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:2px solid var(--color-divider)">
+        <input class="input" placeholder="Search name, channel, tag…" style="max-width:360px">
+        <div class="seg"><label class="seg-opt"><input type="radio" name="sort" defaultChecked>Modified</label><label class="seg-opt"><input type="radio" name="sort">Name</label><label class="seg-opt"><input type="radio" name="sort">Size</label></div>
+        <span style="margin-left:auto;font-size:12px;color:var(--color-neutral-600)">{{ rowCount }} datasets · 118.6 GB</span>
+      </div>
+
+      <sc-if value="{{ bTable }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto;padding:0 18px">
+        <table class="table" style="font-size:13px">
+          <thead><tr><th style="width:36%">Name</th><th>Format</th><th>C</th><th>T</th><th>Z</th><th>Y × X</th><th>Size</th><th>Modified</th></tr></thead>
+          <tbody>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="5">
+              <tr onClick="{{ r.select }}" style="cursor:pointer;background:{{ r.bg }}">
+                <td style="font-weight:{{ r.fw }};color:{{ r.fg }}">{{ r.name }}</td>
+                <td><span class="tag tag-neutral">{{ r.fmt }}</span></td>
+                <td style="font-variant-numeric:tabular-nums">{{ r.c }}</td><td style="font-variant-numeric:tabular-nums">{{ r.t }}</td><td style="font-variant-numeric:tabular-nums">{{ r.z }}</td>
+                <td style="font-variant-numeric:tabular-nums">{{ r.yx }}</td><td style="font-variant-numeric:tabular-nums">{{ r.size }}</td><td style="color:var(--color-neutral-600)">{{ r.mod }}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+      </sc-if>
+      <sc-if value="{{ bGrid }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;overflow:auto;padding:18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;background:var(--color-divider);align-content:start">
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="5">
+          <div onClick="{{ r.select }}" style="background:{{ r.cardBg }};padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:10px" style-hover="background:var(--color-neutral-200)">
+            <canvas width="320" height="180" data-seed="{{ r.seed }}" data-kind="xy" style="width:100%;height:150px;display:block;background:#0a0909"></canvas>
+            <div style="font-family:var(--font-heading);font-weight:800;font-size:14px;color:{{ r.fg }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.name }}</div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums"><span>{{ r.dims }}</span><span>{{ r.size }}</span></div>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+    </div>
+
+    <div style="width:340px;flex:none;border-left:2px solid var(--color-divider);padding:18px;display:flex;flex-direction:column;gap:14px;overflow:auto">
+      <div class="card-kicker">Dataset · {{ dsMode }}</div>
+      <h4 style="margin:0;word-break:break-all;line-height:1.15">{{ dsName }}</h4>
+      <canvas width="360" height="240" data-seed="{{ dsSeed }}" data-kind="xy" data-tint="{{ dsTints }}" style="width:100%;height:200px;display:block;background:#0a0909"></canvas>
+      <div style="display:grid;grid-template-columns:110px 1fr;font-size:12px;border-top:2px solid var(--color-divider)">
+        <div style="padding:7px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Shape</div><div style="padding:7px 0;border-bottom:1px solid var(--color-divider);font-variant-numeric:tabular-nums">{{ dsDims }}</div>
+        <div style="padding:7px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Voxel</div><div style="padding:7px 0;border-bottom:1px solid var(--color-divider)">{{ dsPx }}</div>
+        <div style="padding:7px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Objective</div><div style="padding:7px 0;border-bottom:1px solid var(--color-divider)">{{ dsObj }}</div>
+        <div style="padding:7px 0;border-bottom:1px solid var(--color-divider);color:var(--color-neutral-600)">Dtype</div><div style="padding:7px 0;border-bottom:1px solid var(--color-divider)">uint16 · chunked {{ dsChunk }}</div>
+      </div>
+      <div>
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Channels</div>
+        <sc-for list="{{ dsCh }}" as="c" hint-placeholder-count="2">
+          <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--color-divider);font-size:12px"><span style="width:10px;height:10px;background:{{ c.color }};flex:none"></span><span style="font-variant-numeric:tabular-nums;width:40px">{{ c.nm }}</span><span style="flex:1">{{ c.label }}</span><span style="color:var(--color-neutral-600)">{{ c.exp }}</span></div>
+        </sc-for>
+      </div>
+      <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-primary btn-block" onClick="{{ goViewer }}" style="margin:0">Open in viewer</button>
+        <button class="btn btn-secondary btn-block" onClick="{{ goProcess }}" style="margin:0">Add to pipeline</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===== 02 VIEWER ===== -->
+  <sc-if value="{{ isViewer }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="Viewer" style="flex:1;display:flex;min-height:0">
+    <!-- layers dock -->
+    <div style="width:260px;flex:none;border-right:2px solid var(--color-divider);display:flex;flex-direction:column;overflow:auto">
+      <div style="padding:14px 14px 10px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Layers</span><span style="font-size:11px;color:var(--color-accent);cursor:pointer">+ Add</span></div>
+      <sc-for list="{{ chans }}" as="c" hint-placeholder-count="2">
+        <div style="padding:10px 14px;border-top:1px solid var(--color-divider);display:flex;flex-direction:column;gap:8px;background:{{ c.bg }}">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span onClick="{{ c.toggle }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ c.boxBg }};cursor:pointer;flex:none"></span>
+            <span style="width:10px;height:10px;background:{{ c.color }};flex:none"></span>
+            <span style="font-family:var(--font-heading);font-weight:800;font-size:13px;flex:1">{{ c.label }}</span>
+            <span style="font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums">{{ c.nm }} nm</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--color-neutral-700)">
+            <span style="width:34px">{{ c.lo }}</span>
+            <div style="flex:1;height:2px;background:var(--color-neutral-300);position:relative"><div style="position:absolute;top:0;bottom:0;left:{{ c.loP }}%;right:{{ c.hiP }}%;background:var(--color-accent)"></div><div style="position:absolute;top:-4px;left:{{ c.loP }}%;width:10px;height:10px;margin-left:-5px;background:var(--color-bg);border:1.5px solid var(--color-accent)"></div><div style="position:absolute;top:-4px;right:{{ c.hiP }}%;width:10px;height:10px;margin-right:-5px;background:var(--color-bg);border:1.5px solid var(--color-accent)"></div></div>
+            <span style="width:40px;text-align:right">{{ c.hi }}</span>
+          </div>
+        </div>
+      </sc-for>
+      <div style="border-top:2px solid var(--color-divider);padding:14px;display:flex;flex-direction:column;gap:12px">
+        <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Render</span>
+        <div class="seg" style="align-self:flex-start"><label class="seg-opt" style="font-size:12px"><input type="radio" name="render" defaultChecked>Slice</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="render">MIP</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="render">Volume</label></div>
+        <div class="field"><label>Lookup</label><select class="input" style="min-height:32px"><option>Gray</option><option>Inverted gray</option><option>Channel color</option></select></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer"><span onClick="{{ toggleMerge }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ mergeBox }}"></span>Merge channels in colour</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer"><span onClick="{{ toggleCross }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ crossBox }}"></span>Crosshair</label>
+      </div>
+      <div style="border-top:2px solid var(--color-divider);padding:14px;display:flex;flex-direction:column;gap:6px;margin-top:auto">
+        <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Quick ops</span>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <button class="btn btn-secondary" style="font-size:12px;padding:5px 9px">Max over T</button><button class="btn btn-secondary" style="font-size:12px;padding:5px 9px">Auto contrast</button><button class="btn btn-secondary" style="font-size:12px;padding:5px 9px">Deskew</button><button class="btn btn-secondary" style="font-size:12px;padding:5px 9px">Crop to ROI</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- canvas + dims -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="flex:1;min-height:0;background:var(--color-neutral-900);padding:2px">
+        <sc-if value="{{ vQuad }}" hint-placeholder-val="{{ true }}">
+        <div style="height:100%;display:grid;grid-template-columns:1fr 240px;grid-template-rows:1fr 180px;gap:2px">
+          <div onClick="{{ clickXY }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="640" height="480" data-seed="{{ xySeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;display:flex;gap:12px;font-variant-numeric:tabular-nums;white-space:nowrap"><span style="font-weight:800">XY</span><span style="opacity:.7">z {{ z }} / {{ zMax }}</span><span style="opacity:.7">t {{ t }} / {{ tMax }}</span></div>
+            <div style="position:absolute;right:10px;bottom:8px;display:flex;align-items:center;gap:6px;font-size:11px;color:#f3f2f2"><span style="width:60px;height:2px;background:#f3f2f2"></span>10 µm</div>
+          </div>
+          <div onClick="{{ clickYZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="240" height="480" data-seed="{{ yzSeed }}" data-kind="yz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ zP }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;font-weight:800">YZ</div>
+          </div>
+          <div onClick="{{ clickXZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="640" height="180" data-seed="{{ xzSeed }}" data-kind="xz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ zP }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;font-weight:800">XZ</div>
+          </div>
+          <div style="position:relative;overflow:hidden;background:#0a0909">
+            <canvas width="240" height="180" data-seed="{{ mipSeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%;opacity:.9"></canvas>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;font-weight:800">MIP · Z</div>
+          </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ vFocus }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;display:grid;grid-template-columns:1fr 200px;gap:2px">
+          <div onClick="{{ clickXY }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909">
+            <canvas width="900" height="640" data-seed="{{ xySeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+            <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+            <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;display:flex;gap:12px;font-variant-numeric:tabular-nums;white-space:nowrap"><span style="font-weight:800">XY</span><span style="opacity:.7">z {{ z }} / {{ zMax }}</span><span style="opacity:.7">t {{ t }} / {{ tMax }}</span></div>
+          </div>
+          <div style="display:grid;grid-template-rows:1fr 1fr 1fr;gap:2px">
+            <div onClick="{{ clickXZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909"><canvas width="200" height="200" data-seed="{{ xzSeed }}" data-kind="xz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas><sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:0;right:0;top:{{ zP }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if><div style="position:absolute;left:8px;top:6px;font-size:11px;color:#f3f2f2;font-weight:800">XZ</div></div>
+            <div onClick="{{ clickYZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909"><canvas width="200" height="200" data-seed="{{ yzSeed }}" data-kind="yz" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas><sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ zP }}%;width:1px;background:var(--color-accent);pointer-events:none"></div></sc-if><div style="position:absolute;left:8px;top:6px;font-size:11px;color:#f3f2f2;font-weight:800">YZ</div></div>
+            <div style="position:relative;overflow:hidden;background:#0a0909"><canvas width="200" height="200" data-seed="{{ mipSeed }}" data-kind="xy" data-tint="{{ tints }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas><div style="position:absolute;left:8px;top:6px;font-size:11px;color:#f3f2f2;font-weight:800">MIP</div></div>
+          </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ vChannels }}" hint-placeholder-val="{{ false }}">
+        <div style="height:100%;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-rows:1fr 160px;gap:2px">
+          <sc-for list="{{ chanTiles }}" as="c" hint-placeholder-count="2">
+            <div onClick="{{ clickXY }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909;grid-row:1">
+              <canvas width="480" height="480" data-seed="{{ c.seed }}" data-kind="xy" data-tint="{{ c.tint }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+              <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;top:0;bottom:0;left:{{ cx }}%;width:1px;background:var(--color-accent);pointer-events:none"></div><div style="position:absolute;left:0;right:0;top:{{ cy }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+              <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;letter-spacing:0.08em;display:flex;gap:10px;align-items:center"><span style="width:10px;height:10px;background:{{ c.color }}"></span><span style="font-weight:800">{{ c.label }}</span><span style="opacity:.7">{{ c.nm }} nm</span></div>
+            </div>
+          </sc-for>
+          <sc-for list="{{ chanTiles }}" as="c" hint-placeholder-count="2">
+            <div onClick="{{ clickXZ }}" style="position:relative;overflow:hidden;cursor:crosshair;background:#0a0909;grid-row:2">
+              <canvas width="480" height="160" data-seed="{{ c.seedXZ }}" data-kind="xz" data-tint="{{ c.tint }}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+              <sc-if value="{{ cross }}" hint-placeholder-val="{{ true }}"><div style="position:absolute;left:0;right:0;top:{{ zP }}%;height:1px;background:var(--color-accent);pointer-events:none"></div></sc-if>
+              <div style="position:absolute;left:10px;top:8px;font-size:11px;color:#f3f2f2;font-weight:800">XZ</div>
+            </div>
+          </sc-for>
+        </div>
+        </sc-if>
+      </div>
+      <!-- dimension sliders -->
+      <div style="flex:none;border-top:2px solid var(--color-divider);padding:10px 16px;display:grid;grid-template-columns:auto 1fr auto;row-gap:8px;column-gap:14px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums">
+        <div style="display:flex;align-items:center;gap:10px;width:120px"><span style="font-family:var(--font-heading);font-weight:800">Z</span><span style="color:var(--color-neutral-600)">{{ zUm }} µm</span></div>
+        <input type="range" min="0" max="{{ zMax }}" value="{{ z }}" onChange="{{ setZ }}" style="width:100%">
+        <span style="width:80px;text-align:right">{{ z }} / {{ zMax }}</span>
+        <div style="display:flex;align-items:center;gap:10px;width:120px"><span style="font-family:var(--font-heading);font-weight:800">T</span><span onClick="{{ togglePlay }}" style="cursor:pointer;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid var(--color-text);color:var(--color-text);font-size:10px" style-hover="border-color:var(--color-accent);color:var(--color-accent)">{{ playGlyph }}</span><span style="color:var(--color-neutral-600)">{{ tSec }}</span></div>
+        <input type="range" min="0" max="{{ tMax }}" value="{{ t }}" onChange="{{ setT }}" style="width:100%">
+        <span style="width:80px;text-align:right">{{ t }} / {{ tMax }}</span>
+      </div>
+    </div>
+
+    <!-- inspector dock -->
+    <div style="width:270px;flex:none;border-left:2px solid var(--color-divider);display:flex;flex-direction:column;overflow:auto">
+      <div style="padding:14px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Histogram</span><span style="font-size:11px;color:var(--color-neutral-600)">log · {{ activeLabel }}</span></div>
+        <div style="height:90px;display:flex;align-items:flex-end;gap:2px;border-bottom:2px solid var(--color-divider);padding-bottom:2px">
+          <sc-for list="{{ hist }}" as="h" hint-placeholder-count="24"><div style="flex:1;height:{{ h.h }}%;background:{{ h.c }}"></div></sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="field"><label>Min</label><input class="input" defaultValue="112" style="min-height:30px;font-variant-numeric:tabular-nums"></div>
+          <div class="field"><label>Max</label><input class="input" defaultValue="3 940" style="min-height:30px;font-variant-numeric:tabular-nums"></div>
+        </div>
+        <div style="display:flex;gap:6px"><button class="btn btn-secondary" style="font-size:12px;padding:5px 9px">Auto 0.2 – 99.8 %</button><button class="btn btn-ghost" style="font-size:12px">Reset</button></div>
+      </div>
+      <div style="border-top:2px solid var(--color-divider);padding:14px;display:flex;flex-direction:column;gap:2px;font-size:12px;font-variant-numeric:tabular-nums">
+        <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:6px">Cursor</span>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--color-divider)"><span style="color:var(--color-neutral-600)">x, y, z</span><span>{{ curX }}, {{ curY }}, {{ z }}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--color-divider)"><span style="color:var(--color-neutral-600)">Position</span><span>{{ curUm }}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--color-divider)"><span style="color:var(--color-neutral-600)">Value</span><span style="font-weight:800">{{ curVal }}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--color-divider)"><span style="color:var(--color-neutral-600)">Zoom</span><span>100 % · 1 px = {{ pxNm }} nm</span></div>
+      </div>
+      <div style="border-top:2px solid var(--color-divider);padding:14px;display:flex;flex-direction:column;gap:8px">
+        <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Annotations</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-icon" title="Point">•</button><button class="btn btn-secondary btn-icon" title="Line">/</button><button class="btn btn-secondary btn-icon" title="Box">▢</button><button class="btn btn-secondary btn-icon" title="Polygon">⬠</button><button class="btn btn-secondary btn-icon" title="Measure">↔</button></div>
+        <div style="font-size:12px;color:var(--color-neutral-600)">2 ROIs · line 14.2 µm</div>
+      </div>
+      <div style="margin-top:auto;border-top:2px solid var(--color-divider);padding:14px">
+        <button class="btn btn-primary btn-block" onClick="{{ goProcess }}" style="margin:0">Send to pipeline →</button>
+      </div>
+    </div>
+  </div>
+  <div style="flex:none;height:26px;border-top:2px solid var(--color-divider);display:flex;align-items:center;gap:24px;padding:0 14px;font-size:11px;color:var(--color-neutral-600);font-variant-numeric:tabular-nums">
+    <span>{{ dsName }}</span><span>{{ dsDims }}</span><span>uint16</span><span style="margin-left:auto">Loaded 1 / {{ tMaxP }} timepoints · lazy</span>
+  </div>
+  </sc-if>
+
+  <!-- ===== 03 PROCESS ===== -->
+  <sc-if value="{{ isProcess }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Process" style="flex:1;display:flex;min-height:0">
+    <!-- library -->
+    <div style="width:240px;flex:none;border-right:2px solid var(--color-divider);overflow:auto;display:flex;flex-direction:column">
+      <div style="padding:14px 14px 8px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Operations</div>
+      <sc-for list="{{ library }}" as="g" hint-placeholder-count="5">
+        <div style="padding:8px 14px 10px;border-top:1px solid var(--color-divider)">
+          <div style="font-family:var(--font-heading);font-weight:800;font-size:12px;margin-bottom:4px">{{ g.name }}</div>
+          <div style="display:flex;flex-direction:column">
+            <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+              <div onClick="{{ it.add }}" style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;cursor:pointer;color:var(--color-neutral-800)" style-hover="color:var(--color-accent)"><span>{{ it.name }}</span><span style="color:var(--color-neutral-500)">+</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- pipeline -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:2px solid var(--color-divider)">
+        <span style="font-family:var(--font-heading);font-weight:800;font-size:15px">llsm_max_merge_decon</span>
+        <span class="tag tag-neutral">{{ stepCount }} steps</span>
+        <span style="font-size:12px;color:var(--color-neutral-600)">on {{ dsName }}</span>
+        <div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-secondary" style="font-size:12px">Save preset</button><button class="btn btn-primary" onClick="{{ run }}" style="font-size:12px;min-width:120px;justify-content:flex-start">{{ runLabel }}</button></div>
+      </div>
+      <sc-if value="{{ running }}" hint-placeholder-val="{{ false }}"><div style="height:4px;background:var(--color-neutral-300)"><div style="height:100%;width:{{ runP }}%;background:var(--color-accent)"></div></div></sc-if>
+
+      <sc-if value="{{ pSteps }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow:auto;padding:18px 18px 18px 18px">
+        <div style="display:flex;flex-direction:column;max-width:640px">
+          <sc-for list="{{ steps }}" as="s" hint-placeholder-count="6">
+            <div onClick="{{ s.select }}" style="display:grid;grid-template-columns:56px 1fr auto;gap:14px;align-items:start;padding:14px 14px 14px 0;border-top:2px solid var(--color-divider);cursor:pointer;background:{{ s.bg }};opacity:{{ s.op }}" style-hover="background:var(--color-neutral-200)">
+              <div style="font-family:var(--font-heading);font-weight:800;font-size:28px;line-height:1;color:{{ s.numC }};padding-left:14px;font-variant-numeric:tabular-nums">{{ s.no }}</div>
+              <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+                <div style="display:flex;gap:10px;align-items:center"><span style="font-family:var(--font-heading);font-weight:800;font-size:15px">{{ s.name }}</span><span class="tag tag-neutral" style="font-size:10px">{{ s.kindLabel }}</span></div>
+                <div style="font-size:12px;color:var(--color-neutral-700);font-variant-numeric:tabular-nums">{{ s.sum }}</div>
+                <div style="font-size:11px;color:var(--color-neutral-500);font-variant-numeric:tabular-nums">→ {{ s.shape }}</div>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center;padding-top:4px">
+                <span style="font-size:11px;color:var(--color-neutral-600)">{{ s.time }}</span>
+                <span onClick="{{ s.toggle }}" style="width:14px;height:14px;border:1.5px solid var(--color-neutral-700);background:{{ s.boxBg }};cursor:pointer"></span>
+              </div>
+            </div>
+          </sc-for>
+          <div style="border-top:2px solid var(--color-divider);padding:14px 0;color:var(--color-neutral-500);font-size:12px">Drop an operation here, or pick one from the library</div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ pGraph }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;overflow:auto;position:relative;background-image:linear-gradient(var(--color-neutral-300) 1px, transparent 1px),linear-gradient(90deg, var(--color-neutral-300) 1px, transparent 1px);background-size:24px 24px">
+        <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" viewBox="0 0 900 500" preserveAspectRatio="none"><path d="{{ edgePath }}" fill="none" stroke="#201e1d" stroke-width="2"></path></svg>
+        <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="6">
+          <div onClick="{{ n.select }}" style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:170px;background:var(--color-bg);border:2px solid {{ n.border }};padding:10px 12px;cursor:pointer;display:flex;flex-direction:column;gap:3px;opacity:{{ n.op }};box-shadow:var(--shadow-sm)">
+            <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-accent)">{{ n.kindLabel }}</span><span style="font-family:var(--font-heading);font-weight:800;font-size:11px;color:var(--color-neutral-500)">{{ n.no }}</span></div>
+            <div style="font-family:var(--font-heading);font-weight:800;font-size:14px">{{ n.name }}</div>
+            <div style="font-size:11px;color:var(--color-neutral-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums">{{ n.shape }}</div>
+            <span style="position:absolute;left:-6px;top:50%;margin-top:-5px;width:10px;height:10px;background:var(--color-text)"></span>
+            <span style="position:absolute;right:-6px;top:50%;margin-top:-5px;width:10px;height:10px;background:var(--color-text)"></span>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+      <!-- preview strip -->
+      <div style="flex:none;border-top:2px solid var(--color-divider);display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--color-divider);height:150px">
+        <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600)">Input · step {{ prevNo }}</div><canvas width="480" height="120" data-seed="{{ prevSeedIn }}" data-kind="xy" style="flex:1;width:100%;min-height:0;display:block;background:#0a0909"></canvas></div>
+        <div style="background:var(--color-bg);display:flex;flex-direction:column"><div style="padding:6px 12px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-neutral-600);display:flex;justify-content:space-between"><span>Output · step {{ selNo }}</span><span style="color:var(--color-accent)">live preview</span></div><canvas width="480" height="120" data-seed="{{ prevSeedOut }}" data-kind="xy" data-tint="{{ prevTint }}" style="flex:1;width:100%;min-height:0;display:block;background:#0a0909"></canvas></div>
+      </div>
+    </div>
+
+    <!-- params -->
+    <div style="width:340px;flex:none;border-left:2px solid var(--color-divider);display:flex;flex-direction:column;overflow:auto">
+      <div style="padding:16px 18px 12px;display:flex;flex-direction:column;gap:4px">
+        <div class="card-kicker">Step {{ selNo }} · {{ selKindLabel }}</div>
+        <h4 style="margin:0">{{ selName }}</h4>
+      </div>
+      <sc-if value="{{ isReduce }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:16px">
+        <div>
+          <div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:8px">Input axes — click to keep or reduce</div>
+          <div style="display:flex;gap:2px">
+            <sc-for list="{{ axes }}" as="a" hint-placeholder-count="5">
+              <div onClick="{{ a.toggle }}" style="flex:1;padding:10px 0;text-align:center;font-family:var(--font-heading);font-weight:800;font-size:16px;cursor:pointer;border:1.5px solid {{ a.border }};background:{{ a.bg }};color:{{ a.fg }}" style-hover="border-color:var(--color-accent)">{{ a.name }}<div style="font-size:9px;letter-spacing:0.08em;font-weight:400;text-transform:uppercase;margin-top:2px">{{ a.state }}</div></div>
+            </sc-for>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:8px">Reduction</div>
+          <div style="display:flex;gap:2px">
+            <sc-for list="{{ ops }}" as="o" hint-placeholder-count="4">
+              <div onClick="{{ o.set }}" style="flex:1;padding:7px 0;text-align:center;font-size:12px;cursor:pointer;border:1.5px solid var(--color-divider);background:{{ o.bg }};color:{{ o.fg }}" style-hover="border-color:var(--color-accent)">{{ o.name }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="border-top:2px solid var(--color-divider);padding-top:12px">
+          <div style="font-size:11px;color:var(--color-neutral-600);margin-bottom:6px">Expression</div>
+          <div style="font-family:ui-monospace,Menlo,monospace;font-size:15px;padding:10px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">{{ einsumExpr }}</div>
+          <div style="font-size:11px;color:var(--color-neutral-600);margin-top:6px;font-variant-numeric:tabular-nums">{{ einsumNote }}</div>
+        </div>
+        <div class="field"><label>Chunking</label><select class="input" style="min-height:32px"><option>Auto (GPU memory)</option><option>Per timepoint</option><option>Per z-slab of 16</option></select></div>
+      </div>
+      </sc-if>
+      <sc-if value="{{ notReduce }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:12px">
+        <sc-for list="{{ selParams }}" as="p" hint-placeholder-count="3">
+          <div class="field"><label>{{ p.label }}</label><input class="input" defaultValue="{{ p.value }}" style="min-height:32px"></div>
+        </sc-for>
+      </div>
+      </sc-if>
+      <div style="padding:0 18px 16px;display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:11px;color:var(--color-neutral-600)">Backend</div>
+        <div class="seg" style="align-self:flex-start"><label class="seg-opt" style="font-size:12px"><input type="radio" name="be" defaultChecked>CUDA</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="be">CPU</label><label class="seg-opt" style="font-size:12px"><input type="radio" name="be">Dask</label></div>
+      </div>
+      <div style="margin-top:auto;border-top:2px solid var(--color-divider);padding:14px 18px;display:flex;gap:8px">
+        <button class="btn btn-secondary" style="font-size:12px;flex:1;justify-content:flex-start">Run to here</button>
+        <button class="btn btn-ghost" onClick="{{ removeSel }}" style="font-size:12px">Remove</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;viewerLayout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;quad&quot;,&quot;focus&quot;,&quot;channels&quot;],&quot;default&quot;:&quot;quad&quot;,&quot;tsType&quot;:&quot;'quad'|'focus'|'channels'&quot;,&quot;section&quot;:&quot;Layout options&quot;},&quot;pipelineModel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;steps&quot;,&quot;graph&quot;],&quot;default&quot;:&quot;steps&quot;,&quot;tsType&quot;:&quot;'steps'|'graph'&quot;,&quot;section&quot;:&quot;Layout options&quot;},&quot;browserLayout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;table&quot;,&quot;grid&quot;],&quot;default&quot;:&quot;table&quot;,&quot;tsType&quot;:&quot;'table'|'grid'&quot;,&quot;section&quot;:&quot;Layout options&quot;}}">
+const DATASETS = [
+  {name:'HeLa_H2B-mCh_LLSM_t200', fmt:'.zarr', c:2,t:200,z:151,y:512,x:1024, size:'31.4 GB', mod:'Today 09:12', px:'0.104 × 0.104 × 0.400 µm', obj:'25× / 1.1 NA water', mode:'Lattice light-sheet', chunk:'1×1×16×512×512',
+   ch:[{nm:488,label:'GFP-tubulin',exp:'8 ms',color:'#63e08a'},{nm:561,label:'H2B-mCherry',exp:'12 ms',color:'#e871d9'}]},
+  {name:'zebrafish_heart_SIM_3c', fmt:'.czi', c:3,t:1,z:64,y:2048,x:2048, size:'2.1 GB', mod:'Yesterday', px:'0.032 × 0.032 × 0.110 µm', obj:'63× / 1.4 NA oil', mode:'3D-SIM raw (15 phases)', chunk:'1×1×1×2048×2048',
+   ch:[{nm:405,label:'DAPI',exp:'50 ms',color:'#7c9cff'},{nm:488,label:'Myosin',exp:'40 ms',color:'#63e08a'},{nm:640,label:'Membrane',exp:'60 ms',color:'#ff7a5c'}]},
+  {name:'organoid_tile_3x3_reg', fmt:'.nd2', c:4,t:48,z:80,y:2304,x:2304, size:'58.9 GB', mod:'Aug 29', px:'0.216 × 0.216 × 0.500 µm', obj:'40× / 1.15 NA water', mode:'Spinning disk · 9 tiles', chunk:'1×1×8×768×768',
+   ch:[{nm:405,label:'Hoechst',exp:'30 ms',color:'#7c9cff'},{nm:488,label:'E-cad',exp:'40 ms',color:'#63e08a'},{nm:561,label:'Ki67',exp:'60 ms',color:'#e871d9'},{nm:640,label:'Cleaved casp-3',exp:'80 ms',color:'#ff7a5c'}]},
+  {name:'mito_decon_raw', fmt:'.tif', c:1,t:120,z:40,y:1024,x:1024, size:'10.1 GB', mod:'Aug 27', px:'0.065 × 0.065 × 0.200 µm', obj:'100× / 1.45 NA oil', mode:'Widefield · measured PSF', chunk:'—',
+   ch:[{nm:561,label:'TOM20-mScarlet',exp:'20 ms',color:'#e871d9'}]},
+  {name:'brain_slice_SIM_debug', fmt:'.czi', c:2,t:1,z:32,y:1024,x:1024, size:'16.1 GB', mod:'Aug 20', px:'0.040 × 0.040 × 0.125 µm', obj:'63× / 1.4 NA oil', mode:'3D-SIM raw (15 phases)', chunk:'—',
+   ch:[{nm:488,label:'Synapsin',exp:'35 ms',color:'#63e08a'},{nm:640,label:'PSD-95',exp:'45 ms',color:'#ff7a5c'}]},
+];
+const KIND_LABEL = {io:'Input', geom:'Geometry', reduce:'Einsum', contrast:'Intensity', combine:'Combine', recon:'Reconstruct', seg:'Segment'};
+const INIT_STEPS = [
+  {name:'Load', kind:'io', sum:'lazy · zarr · 16 z-slabs per chunk', time:'—', params:[{label:'Path',value:'/data/llsm/HeLa_H2B-mCh_LLSM_t200.zarr'},{label:'Cache policy',value:'Lazy · 12 GB'}]},
+  {name:'Deskew + rotate', kind:'geom', sum:'31.8° · dz 0.40 µm · rotate to coverslip · cubic', time:'~4 s / t', params:[{label:'Sheet angle',value:'31.8°'},{label:'Stage step',value:'0.40 µm'},{label:'Interpolation',value:'Cubic'},{label:'Rotate to coverslip',value:'Yes'}]},
+  {name:'Einsum reduce', kind:'reduce', time:'~9 s'},
+  {name:'Contrast', kind:'contrast', sum:'percentile 0.20 – 99.80 · per channel · gamma 1.0', time:'< 1 s', params:[{label:'Low percentile',value:'0.20'},{label:'High percentile',value:'99.80'},{label:'Gamma',value:'1.0'}]},
+  {name:'Merge channels', kind:'combine', sum:'488 → green · 561 → magenta · additive', time:'< 1 s', params:[{label:'488 GFP',value:'Green'},{label:'561 mCherry',value:'Magenta'},{label:'Blend',value:'Additive'}]},
+  {name:'Deconvolve', kind:'recon', sum:'Richardson–Lucy · 20 iter · measured PSF · TV 0.002', time:'~40 s', params:[{label:'Algorithm',value:'Richardson–Lucy'},{label:'Iterations',value:'20'},{label:'PSF',value:'psf_488_561_llsm.tif'},{label:'Regularisation (TV)',value:'0.002'}]},
+];
+const LIBRARY = [
+  {name:'Reduce', items:[['Einsum reduce','reduce'],['Max projection','reduce'],['Mean over time','reduce']]},
+  {name:'Intensity', items:[['Contrast','contrast'],['Flat-field','contrast'],['Bleach correction','contrast']]},
+  {name:'Geometry', items:[['Deskew + rotate','geom'],['Crop / pad','geom'],['Resample','geom']]},
+  {name:'Combine', items:[['Merge channels','combine'],['Stitch tiles','combine'],['Register','combine']]},
+  {name:'Reconstruct', items:[['Deconvolve','recon'],['SIM reconstruction','recon'],['Volume reconstruction','recon']]},
+  {name:'Segment', items:[['Torch model','seg'],['Threshold','seg'],['Label cleanup','seg']]},
+];
+const HIST = [4,9,22,48,71,88,96,90,79,66,54,46,40,35,31,27,23,19,15,12,9,7,5,4,3,2,2,1,1,1];
+
+function hexA(hex, a){ const n=parseInt(hex.slice(1),16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; }
+function drawVol(cv){
+  const W=cv.width,H=cv.height,ctx=cv.getContext('2d'),kind=cv.dataset.kind||'xy';
+  let s=(+cv.dataset.seed||1)*9301+49297; const rnd=()=>{s=(s*9301+49297)%233280;return s/233280};
+  ctx.globalCompositeOperation='source-over'; ctx.fillStyle='#0a0909'; ctx.fillRect(0,0,W,H);
+  const tints=(cv.dataset.tint||'#ffffff').split(',').filter(Boolean);
+  ctx.globalCompositeOperation='lighter';
+  tints.forEach(tint=>{
+    const n=kind==='xy'?38:22;
+    for(let i=0;i<n;i++){
+      const x=rnd()*W,y=rnd()*H,r=(0.035+rnd()*0.075)*Math.max(W,H*1.4),a=0.45+rnd()*0.55;
+      const g=ctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0,hexA(tint,a)); g.addColorStop(0.35,hexA(tint,a*0.5)); g.addColorStop(1,hexA(tint,0));
+      ctx.save(); if(kind!=='xy'){ctx.translate(x,y); ctx.scale(kind==='xz'?1:0.45, kind==='xz'?0.45:1); ctx.translate(-x,-y);}
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); ctx.restore();
+    }
+  });
+  ctx.globalCompositeOperation='source-over'; ctx.fillStyle='rgba(255,255,255,0.06)';
+  for(let i=0;i<1400;i++) ctx.fillRect(rnd()*W,rnd()*H,1.5,1.5);
+}
+
+class Component extends DCLogic {
+  state = { screen:'viewer', ds:0, cx:46, cy:58, z:76, t:12, playing:false, chVis:[true,true,true,true], merge:true, cross:true,
+    steps:INIT_STEPS.map(s=>({...s,enabled:true})), sel:2, kept:{c:true,t:false,z:true,y:true,x:true}, op:'max', run:0, running:false };
+  rootRef = React.createRef();
+  componentDidMount(){ this.paint(); }
+  componentDidUpdate(){ this.paint(); }
+  componentWillUnmount(){ clearInterval(this.pl); clearInterval(this.rn); }
+  paint(){
+    const root=this.rootRef.current; if(!root) return;
+    root.querySelectorAll('canvas[data-seed]').forEach(cv=>{
+      const key=cv.dataset.seed+'|'+(cv.dataset.tint||'')+'|'+cv.dataset.kind;
+      if(cv.dataset.painted===key) return; cv.dataset.painted=key; drawVol(cv);
+    });
+  }
+  clickView(ev, a, b){
+    const r=ev.currentTarget.getBoundingClientRect();
+    const px=Math.round((ev.clientX-r.left)/r.width*100), py=Math.round((ev.clientY-r.top)/r.height*100);
+    const d=DATASETS[this.state.ds], u={};
+    if(a==='cx') u.cx=px; if(a==='z') u.z=Math.round(px/100*(d.z-1));
+    if(b==='cy') u.cy=py; if(b==='z') u.z=Math.round(py/100*(d.z-1));
+    this.setState(u);
+  }
+  renderVals(){
+    const S=this.state, P=this.props, d=DATASETS[S.ds];
+    const viewerLayout=P.viewerLayout??'quad', pipelineModel=P.pipelineModel??'steps', browserLayout=P.browserLayout??'table';
+    const dims=`c${d.c} t${d.t} z${d.z} y${d.y} x${d.x}`;
+    const go=s=>()=>this.setState({screen:s});
+    const tabC=s=>S.screen===s?'var(--color-accent)':'transparent', tabW=s=>S.screen===s?800:400;
+    const rows=DATASETS.map((r,i)=>({...r, yx:`${r.y} × ${r.x}`, dims:`c${r.c} t${r.t} z${r.z} ${r.y}×${r.x}`, seed:i*7+3,
+      bg:i===S.ds?'var(--color-surface)':'transparent', cardBg:i===S.ds?'var(--color-neutral-200)':'var(--color-bg)',
+      fw:i===S.ds?800:400, fg:i===S.ds?'var(--color-accent)':'inherit', select:()=>this.setState({ds:i,z:Math.floor(r.z/2),t:0,sel:Math.min(S.sel,5)})}));
+    const vis=d.ch.map((c,i)=>S.chVis[i]!==false);
+    const chans=d.ch.map((c,i)=>{const lo=[112,240,98,180][i],hi=[3940,2860,5100,2200][i];return {...c, lo, hi, loP:[6,12,4,9][i], hiP:[28,42,18,55][i],
+      bg:vis[i]?'transparent':'var(--color-neutral-200)', boxBg:vis[i]?'var(--color-accent)':'transparent',
+      toggle:()=>{const v=vis.slice();v[i]=!v[i];this.setState({chVis:v});}}});
+    const visCh=d.ch.filter((c,i)=>vis[i]);
+    const tints=S.merge?visCh.map(c=>c.color).join(','):visCh.length?'#ffffff':'';
+    const chanTiles=d.ch.map((c,i)=>({...c, seed:S.ds*100+Math.floor(S.z/12)+i*31, seedXZ:S.ds*100+i*31+7, tint:S.merge?c.color:'#ffffff'}));
+    const zP=Math.round(S.z/(d.z-1)*100);
+    const pxUm=parseFloat(d.px);
+    const steps=S.steps.map((s,i)=>{
+      const isSel=i===S.sel; const shape=s.kind==='reduce'?this.outShape(d):(i===0?dims:(s.kind==='combine'?`c1 t${d.t} z${d.z} y${d.y} x${d.x} · rgb`:dims));
+      return {...s, no:String(i+1).padStart(2,'0'), kindLabel:KIND_LABEL[s.kind], sum:s.kind==='reduce'?this.einsum().note:s.sum, shape,
+        bg:isSel?'var(--color-surface)':'transparent', numC:isSel?'var(--color-accent)':'var(--color-neutral-400)', op:s.enabled?1:0.45,
+        boxBg:s.enabled?'var(--color-accent)':'transparent', border:isSel?'var(--color-accent)':'var(--color-text)',
+        select:()=>this.setState({sel:i}), toggle:e=>{e.stopPropagation();const st=S.steps.slice();st[i]={...s,enabled:!s.enabled};this.setState({steps:st});}};
+    });
+    const pos=[[30,40],[230,40],[430,40],[430,190],[630,190],[830,190],[630,340],[830,340],[230,340]];
+    const nodes=steps.map((s,i)=>({...s,x:pos[i%pos.length][0],y:pos[i%pos.length][1]}));
+    let edgePath='';
+    for(let i=0;i<nodes.length-1;i++){const a=nodes[i],b=nodes[i+1];const ax=a.x+170,ay=a.y+36,bx=b.x,by=b.y+36;
+      edgePath+=(ax<=bx)?`M${ax} ${ay} C${ax+30} ${ay} ${bx-30} ${by} ${bx} ${by} `:`M${ax} ${ay} L${ax+16} ${ay} L${ax+16} ${by-40} L${bx-16} ${by-40} L${bx-16} ${by} L${bx} ${by} `;}
+    const sel=S.steps[S.sel]||S.steps[0], selIdx=S.steps.indexOf(sel);
+    const AX=['c','t','z','y','x']; const ei=this.einsum();
+    const axes=AX.map(a=>({name:a, state:S.kept[a]?'keep':S.op, border:S.kept[a]?'var(--color-divider)':'var(--color-accent)', bg:S.kept[a]?'transparent':'var(--color-accent)', fg:S.kept[a]?'var(--color-text)':'var(--color-bg)',
+      toggle:()=>this.setState({kept:{...S.kept,[a]:!S.kept[a]}})}));
+    const ops=['sum','mean','max','min'].map(o=>({name:o, bg:S.op===o?'var(--color-text)':'transparent', fg:S.op===o?'var(--color-bg)':'var(--color-text)', set:()=>this.setState({op:o})}));
+    const library=LIBRARY.map(g=>({...g, items:g.items.map(([name,kind])=>({name, add:()=>{const st=S.steps.slice();st.push({name,kind,enabled:true,sum:'not configured',time:'—',params:[{label:'Preset',value:'Default'}]});this.setState({steps:st,sel:st.length-1});}}))}));
+    return {
+      rootRef:this.rootRef, dsName:d.name, dsDims:dims, dsPx:d.px, dsObj:d.obj, dsMode:d.mode, dsChunk:d.chunk, dsCh:d.ch, dsSeed:S.ds*7+3, dsTints:d.ch.map(c=>c.color).join(','), rowCount:DATASETS.length,
+      isBrowser:S.screen==='browser', isViewer:S.screen==='viewer', isProcess:S.screen==='process',
+      goBrowser:go('browser'), goViewer:go('viewer'), goProcess:go('process'),
+      tabB:tabC('browser'), tabV:tabC('viewer'), tabP:tabC('process'), wB:tabW('browser'), wV:tabW('viewer'), wP:tabW('process'),
+      bTable:browserLayout==='table', bGrid:browserLayout==='grid', rows,
+      vQuad:viewerLayout==='quad', vFocus:viewerLayout==='focus', vChannels:viewerLayout==='channels',
+      chans, chanTiles, tints, cross:S.cross, crossBox:S.cross?'var(--color-accent)':'transparent', mergeBox:S.merge?'var(--color-accent)':'transparent',
+      toggleCross:()=>this.setState({cross:!S.cross}), toggleMerge:()=>this.setState({merge:!S.merge}),
+      xySeed:S.ds*100+Math.floor(S.z/12), yzSeed:S.ds*100+11, xzSeed:S.ds*100+7, mipSeed:S.ds*100+99,
+      cx:S.cx, cy:S.cy, z:S.z, zMax:d.z-1, t:S.t, tMax:d.t-1, tMaxP:d.t, zP, zUm:(S.z*parseFloat(d.px.split('×')[2])).toFixed(1), tSec:(S.t*2.5).toFixed(1)+' s',
+      clickXY:e=>this.clickView(e,'cx','cy'), clickXZ:e=>this.clickView(e,'cx','z'), clickYZ:e=>this.clickView(e,'z','cy'),
+      setZ:e=>this.setState({z:+e.target.value}), setT:e=>this.setState({t:+e.target.value}),
+      playGlyph:S.playing?'❚❚':'▶', togglePlay:()=>{ if(S.playing){clearInterval(this.pl);this.setState({playing:false});} else {this.pl=setInterval(()=>this.setState(s=>({t:(s.t+1)%DATASETS[s.ds].t})),120);this.setState({playing:true});} },
+      hist:HIST.map((h,i)=>({h, c:(i<2||i>22)?'var(--color-neutral-400)':'var(--color-text)'})), activeLabel:visCh[0]?visCh[0].label:'—',
+      curX:Math.round(S.cx/100*d.x), curY:Math.round(S.cy/100*d.y), curUm:`${(S.cx/100*d.x*pxUm).toFixed(1)}, ${(S.cy/100*d.y*pxUm).toFixed(1)} µm`, curVal:1200+((S.cx*37+S.cy*91+S.z*13)%2700), pxNm:Math.round(pxUm*1000),
+      library, steps, nodes, edgePath, stepCount:S.steps.length, pSteps:pipelineModel==='steps', pGraph:pipelineModel==='graph',
+      selNo:String(selIdx+1).padStart(2,'0'), prevNo:String(Math.max(selIdx,1)).padStart(2,'0'), selName:sel.name, selKindLabel:KIND_LABEL[sel.kind], selParams:sel.params||[],
+      isReduce:sel.kind==='reduce', notReduce:sel.kind!=='reduce', axes, ops, einsumExpr:ei.expr, einsumNote:ei.note,
+      prevSeedIn:S.ds*100+selIdx*5, prevSeedOut:S.ds*100+selIdx*5+1, prevTint:(sel.kind==='combine'||selIdx>=4)?d.ch.map(c=>c.color).join(','):'#ffffff',
+      removeSel:()=>{if(S.steps.length<=1)return;const st=S.steps.filter((_,i)=>i!==selIdx);this.setState({steps:st,sel:Math.max(0,selIdx-1)});},
+      running:S.running, runP:S.run, runLabel:S.running?`Running ${S.run} %`:'Run pipeline',
+      run:()=>{ if(S.running) return; this.setState({running:true,run:0}); this.rn=setInterval(()=>this.setState(s=>{ if(s.run>=100){clearInterval(this.rn);return {running:false,run:0};} return {run:s.run+4}; }),140); },
+    };
+  }
+  einsum(){
+    const S=this.state, d=DATASETS[S.ds], AX=['c','t','z','y','x'], sizes={c:d.c,t:d.t,z:d.z,y:d.y,x:d.x};
+    const out=AX.filter(a=>S.kept[a]), red=AX.filter(a=>!S.kept[a]);
+    return { expr:`${AX.join('')} -> ${out.join('')||'·'}`, note:red.length?`${S.op} over ${red.join(', ')} · ${out.map(a=>a+sizes[a]).join(' ')}`:'identity — nothing reduced' };
+  }
+  outShape(d){ const S=this.state, sizes={c:d.c,t:d.t,z:d.z,y:d.y,x:d.x}; return ['c','t','z','y','x'].filter(a=>S.kept[a]).map(a=>a+sizes[a]).join(' ')||'scalar'; }
+}
+</script>
+</body>
+</html>

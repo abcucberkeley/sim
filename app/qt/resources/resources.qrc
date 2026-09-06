@@ -1,0 +1,9 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/fonts">
+    <file>fonts/Archivo-Regular.ttf</file>
+    <file>fonts/Archivo-SemiBold.ttf</file>
+    <file>fonts/Archivo-Bold.ttf</file>
+    <file>fonts/Archivo-ExtraBold.ttf</file>
+    <file>fonts/OFL.txt</file>
+</qresource>
+</RCC>
