@@ -5,13 +5,19 @@
 // defines one `std::unique_ptr<Operation> makeXxxOperation()`; the list in
 // builtin_list.cpp is what registerBuiltinOperations() walks.
 
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include <sirius/sim_parameters.hpp>
+
 #include "core/operation.hpp"
+#include "core/rpc.hpp"
 
 namespace sirius::app {
 
@@ -47,6 +53,44 @@ namespace sirius::app {
     std::string joinSummary(std::initializer_list<std::string> parts);
     // Channel label "488 α-actinin" for summaries.
     std::string channelName(const DatasetMeta& meta, Index c);
+    // "12.8 GB", "412 MB"
+    std::string formatBytes(std::uint64_t bytes);
+    std::string formatNumber(double v, int decimals);
+    // "~9 s" for `bytes` at a nominal throughput.
+    std::string estimatedTime(std::uint64_t bytes, double bytesPerSecond);
+    // Input / Output thumbnails, summary and cost facts (the "Einsum / other" panel).
+    Diagnostics genericDiagnostics(const StepInput& input, const StepOutput& output, const std::string& summary,
+                                   double bytesPerSecond = 2.0e9);
+    std::shared_ptr<Array5> allocateLike(const DatasetMeta& meta);
+    // Label table + review-queue facts (the segmentation panel's data).
+    Diagnostics labelDiagnostics(const LabelVolume& labels, const std::string& summary);
+
+    // Live preview of the contrast step's histograms without running it
+    // (sub-sampled so it stays under ~100 ms on large stacks).
+    Diagnostics contrastPreview(const StepInput& input, const ParamSet& params);
+    // "TorchScript · in (1, 1, Z, Y, X) float32 · out (1, 3, Z, Y, X) · 41 MB"
+    // from the worker's model_info; throws when the worker cannot load it.
+    nlohmann::json torchModelInfo(RemoteWorker& worker, const std::string& modelPath);
+    std::string torchModelSummary(const nlohmann::json& info);
+    // SIMParameters the SIM step would reconstruct with (pixel sizes from the
+    // input); the viewer's frequency-space overlays use it before any run.
+    SIMParameters simParametersFromStep(const ParamSet& params, const DatasetMeta& input);
+
+    // Instance labels from a (z, y, x) foreground probability (or any
+    // intensity: `threshold` applies to it) and an optional boundary map,
+    // shared by the segmentation steps: threshold, connected components or a
+    // seeded watershed, small-object removal, statistics and flags. Fills
+    // labels.volume(t); returns the label count.
+    struct LabelPostOptions {
+        std::string post = "Connected components";   // "Watershed on boundary channel" | "Connected components" | "None (raw probabilities)"
+        double threshold = 0.5;
+        Index minVoxels = 0;
+        double seedMinDistance = 5.0;                // voxels between watershed seeds
+        LabelFlagRules flags;
+        std::string className = "object";
+    };
+    std::uint32_t labelsFromProbabilities(const float* foreground, const float* boundary, Index z, Index y, Index x,
+                                          const LabelPostOptions& options, LabelVolume& labels, Index t);
 
 } // namespace sirius::app
 
