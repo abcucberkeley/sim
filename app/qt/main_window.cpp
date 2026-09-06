@@ -893,6 +893,11 @@ namespace sirius::app {
 
     void MainWindow::runAll() { impl_->bridge.startRun(-1); }
 
+    void MainWindow::askAssistant(const QString& text) {
+        impl_->assistantDock->show();
+        impl_->assistant->ask(text);
+    }
+
     void MainWindow::closeEvent(QCloseEvent* event) {
         if (impl_->bridge.running()) {
             const auto answer = QMessageBox::question(this, QStringLiteral("Quit"),

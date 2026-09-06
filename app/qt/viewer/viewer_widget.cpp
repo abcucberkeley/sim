@@ -782,13 +782,24 @@ namespace sirius::app {
             xz->setView(w);
         }
         mip->setView(mip->fitView(1.0, 1.0));
-        for (SlicePane* p : {cmpLeft, cmpRight}) {
-            const SlicePane::View f = p->fitView(1.0, 1.0);
+        {
+            // Both compare panes show the same physical field: the raw pane
+            // scales its (coarser or finer) voxels by the voxel-size ratio so
+            // a 64-pixel raw frame overlays a 128-pixel reconstruction.
+            const SlicePane::View f = cmpRight->fitView(1.0, 1.0);
             SlicePane::View w;
             w.zx = w.zy = f.zx * s.zoom;
-            w.ox = (p->width() - nx() * w.zx) / 2.0 + s.panX;
-            w.oy = (p->height() - ny() * w.zy) / 2.0 + s.panY;
-            p->setView(w);
+            w.ox = (cmpRight->width() - nx() * w.zx) / 2.0 + s.panX;
+            w.oy = (cmpRight->height() - ny() * w.zy) / 2.0 + s.panY;
+            cmpRight->setView(w);
+            SlicePane::View l = w;
+            if (rawModel.valid() && rawModel.meta().dx() > 0.0 && rawModel.meta().dy() > 0.0) {
+                // screen pixels per raw voxel: a raw voxel twice as large as
+                // the reconstruction's covers twice the screen
+                l.zx = w.zx * rawModel.meta().dx() / model.meta().dx();
+                l.zy = w.zy * rawModel.meta().dy() / model.meta().dy();
+            }
+            cmpLeft->setView(l);
         }
         // a coarser render is enough when the image is smaller than the pane
         const int wantFactor = std::max(1, static_cast<int>(std::floor(1.0 / std::max(v.zx, 1e-6))));
@@ -815,11 +826,18 @@ namespace sirius::app {
         yz->setCrosshair(QPointF(static_cast<double>(cz), static_cast<double>(curY())), st.crosshair, locked);
         xz->setCrosshair(QPointF(static_cast<double>(curX()), static_cast<double>(cz)), st.crosshair, locked);
         mip->setCrosshair(cross, st.crosshair, locked);
-        cmpLeft->setCrosshair(cross, st.crosshair, locked);
+        QPointF rawCross = cross;
+        double rawDx = model.meta().dx();
+        if (rawModel.valid() && rawModel.meta().dx() > 0.0 && rawModel.meta().dy() > 0.0) {
+            rawCross = QPointF(cross.x() * model.meta().dx() / rawModel.meta().dx(),
+                               cross.y() * model.meta().dy() / rawModel.meta().dy());
+            rawDx = rawModel.meta().dx();
+        }
+        cmpLeft->setCrosshair(rawCross, st.crosshair, locked);
         cmpRight->setCrosshair(cross, st.crosshair, locked);
         const double dx = model.meta().dx();
         xy->setScaleBar(dx);
-        cmpLeft->setScaleBar(dx);
+        cmpLeft->setScaleBar(rawDx);
         cmpRight->setScaleBar(dx);
         const QString zt = QStringLiteral("z %1 / %2  t %3 / %4  %5 %")
                                .arg(cz).arg(nz() - 1).arg(curT()).arg(nt() - 1).arg(std::lround(st.zoom * 100.0));

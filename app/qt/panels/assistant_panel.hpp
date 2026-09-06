@@ -32,6 +32,8 @@ namespace sirius::app {
         void setSettings(const AssistantSettings& s);
         AssistantSettings settings() const;
         void focusInput();
+        // Submit a message as if typed (scripting, tests).
+        void ask(const QString& text);
 
     signals:
         void closeRequested();

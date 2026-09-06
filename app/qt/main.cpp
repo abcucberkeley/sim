@@ -12,6 +12,9 @@
 #include <QCoreApplication>
 #include <QAction>
 #include <QDir>
+#include <QEventLoop>
+#include <QFileInfo>
+#include <QMenu>
 #include <QDockWidget>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -58,7 +61,10 @@ int main(int argc, char** argv) {
                                      QStringLiteral("json"));
     const QCommandLineOption actionOpt(QStringLiteral("action"), QStringLiteral("Trigger a menu action by its text (repeatable)"),
                                        QStringLiteral("text"));
-    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt});
+    const QCommandLineOption askOpt(QStringLiteral("ask"), QStringLiteral("Send a message to the assistant"), QStringLiteral("text"));
+    const QCommandLineOption settleOpt(QStringLiteral("settle"), QStringLiteral("Milliseconds to wait before the screenshot (default 600)"),
+                                       QStringLiteral("ms"));
+    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt});
     parser.process(app);
 
     sirius::app::registerBuiltinOperations();
@@ -84,6 +90,20 @@ int main(int argc, char** argv) {
     const QStringList toolCalls = parser.values(toolOpt);
     const QStringList actions = parser.values(actionOpt);
     sirius::app::ToolApi tools(workbench);
+    // Scripted runs block on the worker thread the way the assistant does.
+    tools.setRunHook([&bridge](int target) {
+        QEventLoop loop;
+        bool ok = false;
+        QString error;
+        QObject::connect(&bridge, &sirius::app::WorkbenchBridge::runFinished, &loop, [&](bool good, const QString& err) {
+            ok = good;
+            error = err;
+            loop.quit();
+        });
+        if (!bridge.startRun(target)) return nlohmann::json{{"ok", false}, {"error", "the run could not start (see the log)"}};
+        loop.exec();
+        return nlohmann::json{{"ok", ok}, {"error", sirius::app::toStd(error)}};
+    });
     auto script = [&] {
         for (const QString& call : toolCalls) {
             const QJsonObject j = QJsonDocument::fromJson(call.toUtf8()).object();
@@ -101,14 +121,16 @@ int main(int argc, char** argv) {
                 }
             if (!found) workbench.logLine("no action named " + sirius::app::toStd(text));
         }
+        if (parser.isSet(askOpt)) window.askAssistant(parser.value(askOpt));
     };
-    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty();
+    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt);
+    const int settle = parser.isSet(settleOpt) ? parser.value(settleOpt).toInt() : 600;
     if (parser.isSet(screenshotOpt) || scripted) {
         const QString path = parser.value(screenshotOpt);
-        auto finish = [&window, &app, &script, path, scripted] {
-            if (scripted) script();
-            if (path.isEmpty()) return;
-            QTimer::singleShot(600, &window, [&window, &app, path] {
+        auto finish = [&window, &app, &script, path, scripted, settle] {
+            // Arm the grab before scripting: a modal dialog opened by an
+            // action runs its own event loop, in which the timer still fires.
+            if (!path.isEmpty()) QTimer::singleShot(settle, &window, [&window, &app, path] {
                 // size report: which widget dictates the window's minimum
                 QString report = QStringLiteral("window %1x%2 min %3x%4").arg(window.width()).arg(window.height())
                                      .arg(window.minimumSizeHint().width()).arg(window.minimumSizeHint().height());
@@ -118,8 +140,20 @@ int main(int argc, char** argv) {
                     report += QStringLiteral(" %1-min %2x%3").arg(d->objectName()).arg(d->widget() ? d->widget()->minimumSizeHint().width() : -1).arg(d->widget() ? d->widget()->minimumSizeHint().height() : -1);
                 qInfo("%s", qPrintable(report));
                 window.grab().save(path);
+                // a dialog opened by --action is grabbed beside the window
+                if (QWidget* modal = QApplication::activeModalWidget()) {
+                    QFileInfo fi(path);
+                    modal->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral("-dialog.") + fi.suffix());
+                }
+                for (QWidget* top : QApplication::topLevelWidgets())
+                    if (top != &window && top->isVisible() && top->isWindow() && !qobject_cast<QMenu*>(top) && top->windowType() == Qt::Tool) {
+                        QFileInfo fi(path);
+                        top->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral("-tool.") + fi.suffix());
+                    }
+                while (QWidget* modal = QApplication::activeModalWidget()) modal->close();   // let exec() return
                 app.quit();
             });
+            if (scripted) script();
         };
         if (parser.isSet(runOpt)) {
             QObject::connect(&bridge, &sirius::app::WorkbenchBridge::runFinished, &window,

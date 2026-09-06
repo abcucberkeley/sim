@@ -251,7 +251,7 @@ namespace sirius::app {
         impl_->level->setPrefix(QStringLiteral("level "));
         tb->addWidget(field(QStringLiteral("Compression"), impl_->compression, right), 0, 0);
         tb->addWidget(field(QStringLiteral(" "), impl_->level, right), 0, 1);
-        impl_->predictor = new QCheckBox(QStringLiteral("Predictor (horizontal differencing)"), right);
+        impl_->predictor = new QCheckBox(QStringLiteral("Predictor"), right);
         impl_->tiled = new QCheckBox(QStringLiteral("Tiled"), right);
         impl_->tileW = new QSpinBox(right);
         impl_->tileW->setRange(16, 8192);
@@ -270,7 +270,7 @@ namespace sirius::app {
         tb->addLayout(tileRow, 1, 0, 1, 2);
         impl_->bigTiff = new QCheckBox(QStringLiteral("BigTIFF"), right);
         impl_->bigTiff->setChecked(true);
-        impl_->omeXml = new QCheckBox(QStringLiteral("OME-XML metadata"), right);
+        impl_->omeXml = new QCheckBox(QStringLiteral("OME-XML"), right);
         impl_->omeXml->setChecked(true);
         auto* flags = new QHBoxLayout();
         flags->addWidget(impl_->predictor);

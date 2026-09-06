@@ -28,6 +28,8 @@ namespace sirius::app {
         void openDatasetPath(const QString& path);
         void openPipelinePath(const QString& path);
         void runAll();
+        // Shows the assistant dock and submits `text` (scripting).
+        void askAssistant(const QString& text);
 
     protected:
         void closeEvent(QCloseEvent* event) override;

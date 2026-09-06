@@ -158,6 +158,10 @@ namespace sirius::app {
         impl_->vx = voxel();
         impl_->vy = voxel();
         impl_->vz = voxel();
+        // typical widefield sampling until a file says otherwise
+        impl_->vx->setValue(0.1);
+        impl_->vy->setValue(0.1);
+        impl_->vz->setValue(0.2);
         mg->addWidget(fieldLabel(QStringLiteral("Voxel x")), 0, 0);
         mg->addWidget(impl_->vx, 1, 0);
         mg->addWidget(fieldLabel(QStringLiteral("Voxel y")), 0, 1);
@@ -284,9 +288,9 @@ namespace sirius::app {
                     impl_->t->setValue(static_cast<int>(m.dims.t));
                     impl_->z->setValue(static_cast<int>(m.dims.z));
                 }
-                impl_->vx->setValue(m.voxelUm[0]);
-                impl_->vy->setValue(m.voxelUm[1]);
-                impl_->vz->setValue(m.voxelUm[2]);
+                if (m.voxelUm[0] > 0.0) impl_->vx->setValue(m.voxelUm[0]);
+                if (m.voxelUm[1] > 0.0) impl_->vy->setValue(m.voxelUm[1]);
+                if (m.voxelUm[2] > 0.0) impl_->vz->setValue(m.voxelUm[2]);
                 QStringList names;
                 for (const ChannelInfo& ch : m.channels) {
                     QString n = fromStd(ch.label);

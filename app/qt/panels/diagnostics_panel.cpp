@@ -18,11 +18,13 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QTableWidget>
+#include <QResizeEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include "qt/panels/diagnostic_cells.hpp"
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
@@ -417,6 +419,37 @@ namespace sirius::app {
         QHBoxLayout* tabLayout = nullptr;
         std::vector<TabButton*> tabs;
         QLabel* hint = nullptr;
+        QWidget* leftBox = nullptr;
+        QString hintText;
+        void applyHint() {
+            if (hint) hint->setText(widgets::elide(hint, hintText, std::max(20, hint->width())));
+        }
+        // The header clips rather than widening the window (its size policy
+        // is Ignored), so it decides itself what to show when squeezed: tabs
+        // that do not fit are dropped from the right, the hint goes first.
+        void layoutHeader() {
+            if (!header || !tabRow || !leftBox) return;
+            // the panel's width is current inside its resizeEvent; the
+            // header's is only updated by the layout afterwards
+            const int width = self->width();
+            constexpr int margins = 28, spacing = 16, buttons = 3 * 24 + 2 * 2;
+            const int avail = width - margins - leftBox->sizeHint().width() - spacing - buttons - spacing;
+            int used = 0;
+            bool any = false;
+            for (std::size_t i = 0; i < tabs.size(); ++i) {
+                const int w = tabs[i]->minimumWidth() + (i ? 2 : 0);   // fixed-size buttons: sizeHint() is unset
+                const bool fits = !collapsed && tabs.size() > 1 && used + w <= avail;
+                tabs[i]->setVisible(fits);
+                if (fits) {
+                    used += w;
+                    any = true;
+                }
+            }
+            tabRow->setVisible(any);
+            const int rest = avail - used - (any ? spacing : 0);
+            hint->setVisible(rest >= 80);
+            applyHint();
+        }
         GlyphButton* dockBtn = nullptr;
         GlyphButton* floatBtn = nullptr;
         GlyphButton* maxBtn = nullptr;
@@ -435,6 +468,7 @@ namespace sirius::app {
             h->setContentsMargins(14, 0, 14, 0);
             h->setSpacing(16);
             auto* left = new QWidget(header);
+            leftBox = left;
             left->setCursor(Qt::PointingHandCursor);
             auto* lh = new QHBoxLayout(left);
             lh->setContentsMargins(0, 0, 0, 0);
@@ -463,7 +497,7 @@ namespace sirius::app {
             hp.setColor(QPalette::WindowText, theme::kNeutral600);
             hint->setPalette(hp);
             hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-            hint->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            hint->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
             h->addWidget(hint, 1);
             auto* modes = new QHBoxLayout;
             modes->setSpacing(2);
@@ -520,7 +554,7 @@ namespace sirius::app {
                 tabLayout->addWidget(t);
                 tabs.push_back(t);
             }
-            tabRow->setVisible(!collapsed && names.size() > 1);
+            layoutHeader();
         }
 
         void refresh() {
@@ -546,7 +580,8 @@ namespace sirius::app {
             const QStringList names = DiagnosticsBody::tabNames(d, kind);
             tab = std::clamp(tab, 0, std::max(0, static_cast<int>(names.size()) - 1));
             rebuildTabs(names);
-            hint->setText(collapsed ? QStringLiteral("Click to expand") : QStringLiteral("Updates live as parameters change"));
+            hintText = collapsed ? QStringLiteral("Click to expand") : QStringLiteral("Updates live as parameters change");
+            applyHint();
             if (collapsed) return;
             if (kind == DiagnosticsKind::Segment) {
                 segment->refresh();
@@ -639,7 +674,7 @@ namespace sirius::app {
             d.expandedHeight = std::max(height(), theme::kDiagnosticsHeaderH + 60);
             d.stack->hide();
             d.rule->hide();
-            d.tabRow->hide();
+            d.layoutHeader();
             setMaximumHeight(theme::kDiagnosticsHeaderH);
             setMinimumHeight(theme::kDiagnosticsHeaderH);
         } else {
@@ -678,6 +713,11 @@ namespace sirius::app {
             return true;
         }
         return QWidget::eventFilter(watched, event);
+    }
+
+    void DiagnosticsPanel::resizeEvent(QResizeEvent* event) {
+        QWidget::resizeEvent(event);
+        impl_->layoutHeader();
     }
 
     void DiagnosticsPanel::paintEvent(QPaintEvent* event) {

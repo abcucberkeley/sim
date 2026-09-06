@@ -6,7 +6,10 @@
 #include <QEvent>
 #include <QFrame>
 #include <QGridLayout>
+#include <algorithm>
+
 #include <QLabel>
+#include <QResizeEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
@@ -163,8 +166,8 @@ namespace sirius::app {
                 enable_->setVisible(!step.pinned);
                 pin_->setVisible(step.pinned);
                 enable_->setChecked(step.enabled);
-                name_->setText(fromStd(step.name));
-                name_->setToolTip(fromStd(step.name));
+                fullName_ = fromStd(step.name);
+                name_->setToolTip(fullName_);
                 kind_->setText(fromStd(step.op().info().kindLabel));
                 const CacheLook look = cacheLook(step.cache);
                 cache_->setText(look.glyph);
@@ -176,8 +179,9 @@ namespace sirius::app {
                 const Validation v = wb.stepValidation(index);
                 if (!v.ok()) sum = fromStd(v.firstError());
                 else if (!step.enabled) sum += QStringLiteral(" — skipped");
-                summary_->setText(sum);
+                fullSummary_ = sum;
                 summary_->setToolTip(sum);
+                applyElide();
                 QPalette sp = summary_->palette();
                 sp.setColor(QPalette::WindowText, v.ok() ? theme::kNeutral600 : theme::kAccent);
                 summary_->setPalette(sp);
@@ -213,6 +217,18 @@ namespace sirius::app {
             EnableBox* enable_ = nullptr;
             QLabel* pin_ = nullptr;
             QWidget* body_ = nullptr;
+            // Labels do not elide by themselves: the full texts are kept and
+            // cut to the row's width on every resize (the design ellipsises both lines).
+            void applyElide() {
+                const int nameW = std::max(20, name_->width());
+                name_->setText(widgets::elide(name_, fullName_, nameW));
+                summary_->setText(widgets::elide(summary_, fullSummary_, std::max(20, summary_->width())));
+            }
+            void resizeEvent(QResizeEvent* e) override {
+                ClickRow::resizeEvent(e);
+                applyElide();
+            }
+            QString fullName_, fullSummary_;
             QLabel* name_ = nullptr;
             QLabel* kind_ = nullptr;
             QLabel* cache_ = nullptr;

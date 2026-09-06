@@ -36,6 +36,7 @@ namespace sirius::app {
     protected:
         bool eventFilter(QObject* watched, QEvent* event) override;
         void paintEvent(QPaintEvent* event) override;
+        void resizeEvent(QResizeEvent* event) override;
 
     private:
         struct Impl;

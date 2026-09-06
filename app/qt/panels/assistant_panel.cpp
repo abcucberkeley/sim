@@ -631,6 +631,8 @@ namespace sirius::app {
 
     AssistantSettings AssistantPanel::settings() const { return impl_->settings; }
 
+    void AssistantPanel::ask(const QString& text) { impl_->submit(text); }
+
     void AssistantPanel::focusInput() { impl_->input->setFocus(); }
 
     void AssistantPanel::resizeEvent(QResizeEvent* event) {
