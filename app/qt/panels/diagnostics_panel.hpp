@@ -33,6 +33,10 @@ namespace sirius::app {
         void maximizedChanged(bool on);
         void collapsedChanged(bool collapsed);
 
+    protected:
+        bool eventFilter(QObject* watched, QEvent* event) override;
+        void paintEvent(QPaintEvent* event) override;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;
