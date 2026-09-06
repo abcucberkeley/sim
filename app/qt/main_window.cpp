@@ -783,8 +783,10 @@ namespace sirius::app {
         splitDockWidget(d.paramsDock, d.assistantDock, Qt::Horizontal);
         addDockWidget(Qt::BottomDockWidgetArea, d.diagDock);
         d.assistantDock->hide();
-        resizeDocks({d.opsDock, d.paramsDock, d.assistantDock}, {theme::kOpsDockW, theme::kParamsDockW, theme::kAssistantW},
-                    Qt::Horizontal);
+        // Sizing a hidden dock here makes the first layout pass reserve its
+        // width and grow the window past 1600 px; the assistant dock is
+        // sized when it is first shown instead (toggleAssistant).
+        resizeDocks({d.opsDock, d.paramsDock}, {theme::kOpsDockW, theme::kParamsDockW}, Qt::Horizontal);
         resizeDocks({d.diagDock}, {theme::kDiagnosticsH}, Qt::Vertical);
         setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
         setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);

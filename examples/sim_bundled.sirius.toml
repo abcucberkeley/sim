@@ -1,0 +1,43 @@
+# SIRIUS pipeline: reconstruct the bundled 3D-SIM test stack, then window and
+# render it. Paths are relative to this file. Open it with
+#   sirius-app --pipeline examples/sim_bundled.sirius.toml --run
+# or File ▸ Load pipeline preset… in the app.
+version = 1
+
+[[steps]]
+kind = "load"
+name = "Load"
+enabled = true
+cache = "recompute"
+[steps.params]
+path = "../tests/data/raw.tif"
+sim_ndirs = 3
+sim_nphases = 5
+voxel_x = 0.08
+voxel_y = 0.08
+voxel_z = 0.125
+
+[[steps]]
+kind = "sim"
+name = "SIM reconstruction"
+enabled = true
+cache = "memory"
+[steps.params]
+mode = "From file"
+params_file = "../tests/data/config.txt"
+otf = "../tests/data/otf.tif"
+
+[[steps]]
+kind = "contrast"
+name = "Contrast"
+enabled = true
+cache = "memory"
+[steps.params]
+lo_percentile = 0.2
+hi_percentile = 99.8
+
+[[steps]]
+kind = "volrec"
+name = "Volume reconstruction"
+enabled = false
+cache = "memory"

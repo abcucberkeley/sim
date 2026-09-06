@@ -179,7 +179,9 @@ namespace sirius::app {
         void setStepCache(int index, CachePolicy policy);
         void renameStep(int index, const std::string& name);
         void replacePipeline(const Pipeline& p, const std::string& label);
-        void loadPipeline(const std::string& path);
+        void loadPipeline(const std::string& path);   // also opens the dataset the Load step names
+        // OpenOptions equivalent to a Load step's parameters (page order, voxel size, SIM layout).
+        static OpenOptions openOptionsFromLoadParams(const ParamSet& loadParams);
         void savePipeline(const std::string& path) const;
         void loadExamplePipeline();
         std::string pipelinePath() const noexcept { return pipelinePath_; }

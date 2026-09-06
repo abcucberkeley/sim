@@ -6,6 +6,7 @@
 
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QPainter>
 #include <QShortcut>
@@ -101,7 +102,8 @@ namespace sirius::app {
         SlicePane* yz = nullptr;
         SlicePane* xz = nullptr;
         SlicePane* mip = nullptr;
-        VolumeView* volume = nullptr;
+        VolumeView* volume = nullptr;      // null when the platform cannot host a QOpenGLWidget
+        QWidget* volumePage = nullptr;     // the VolumeView, or a notice
         QWidget* comparePage = nullptr;
         SlicePane* cmpLeft = nullptr;
         SlicePane* cmpRight = nullptr;
@@ -307,8 +309,20 @@ namespace sirius::app {
         grid->setRowStretch(0, 1);
         stack->addWidget(orthoPage);
 
-        volume = new VolumeView(stack);
-        stack->addWidget(volume);
+        // QOpenGLWidget is unsupported (and crashes at flush) on the
+        // offscreen / minimal platforms used by headless runs and tests.
+        const QString platform = QGuiApplication::platformName();
+        if (platform != QLatin1String("offscreen") && platform != QLatin1String("minimal") &&
+            platform != QLatin1String("vnc")) {
+            volume = new VolumeView(stack);
+            volumePage = volume;
+        } else {
+            auto* notice = new QLabel(QStringLiteral("3D rendering needs OpenGL, which the %1 platform does not provide").arg(platform), stack);
+            notice->setAlignment(Qt::AlignCenter);
+            notice->setStyleSheet(QStringLiteral("background:%1;color:%2;").arg(theme::hex(theme::kViewerGround), theme::hex(theme::kViewerText)));
+            volumePage = notice;
+        }
+        stack->addWidget(volumePage);
 
         comparePage = new QWidget(stack);
         auto* cgrid = new QHBoxLayout(comparePage);
@@ -466,17 +480,19 @@ namespace sirius::app {
         }
 
         // volume view
-        QObject::connect(volume, &VolumeView::orientationChanged, q, [this](double yaw, double pitch) {
-            ViewState s = vs();
-            s.yaw = yaw;
-            s.pitch = pitch;
-            wb.setViewState(s);
-        });
-        QObject::connect(volume, &VolumeView::clipChanged, q, [this](double lo, double hi) {
-            ViewState s = vs();
-            s.clipZ = {lo, hi};
-            wb.setViewState(s);
-        });
+        if (volume) {
+            QObject::connect(volume, &VolumeView::orientationChanged, q, [this](double yaw, double pitch) {
+                ViewState s = vs();
+                s.yaw = yaw;
+                s.pitch = pitch;
+                wb.setViewState(s);
+            });
+            QObject::connect(volume, &VolumeView::clipChanged, q, [this](double lo, double hi) {
+                ViewState s = vs();
+                s.clipZ = {lo, hi};
+                wb.setViewState(s);
+            });
+        }
 
         // workbench
         QObject::connect(&bridge, &WorkbenchBridge::datasetChanged, q, [this] { rebuildOutput(); });
@@ -576,7 +592,7 @@ namespace sirius::app {
     void ViewerWidget::Impl::refreshChrome() {
         const ViewState& s = vs();
         modeSeg->setCurrent(s.mode == ViewMode::Ortho ? 0 : s.mode == ViewMode::Volume ? 1 : 2);
-        stack->setCurrentWidget(s.mode == ViewMode::Ortho ? orthoPage : s.mode == ViewMode::Volume ? static_cast<QWidget*>(volume) : comparePage);
+        stack->setCurrentWidget(s.mode == ViewMode::Ortho ? orthoPage : s.mode == ViewMode::Volume ? volumePage : comparePage);
 
         // "Viewing 05 Contrast rgb z48 y4096 x4096"
         const int viewed = wb.viewedIndex();
@@ -618,6 +634,7 @@ namespace sirius::app {
         emit q->zoomChanged(zoomText);
         refreshHints();
         setCursorFor(s.tool);
+        if (!volume) return;
         volume->setBoundingBox(s.boundingBox);
         volume->setOrientation(s.yaw, s.pitch);
         volume->setClip(s.clipZ[0], s.clipZ[1]);
@@ -825,7 +842,7 @@ namespace sirius::app {
         if (!model.valid()) {
             for (SlicePane* p : {xy, yz, xz, mip, cmpLeft, cmpRight}) p->clearContent();
             xy->setMessage(wb.hasDataset() ? QStringLiteral("Nothing to display") : QStringLiteral("Open a dataset (File ▸ Open dataset…)"));
-            volume->clearVolumes();
+            if (volume) volume->clearVolumes();
             dirty = Dirty{};
             return;
         }
@@ -906,7 +923,7 @@ namespace sirius::app {
             key ^= (static_cast<quint64>(c + 1) * 0x9e3779b97f4a7c15ull) ^ static_cast<quint64>(std::hash<float>{}(w.lo) * 31 + std::hash<float>{}(w.hi));
             chans.push_back(ch);
         }
-        volume->setVolumes(key, chans, model.meta().voxelUm);
+        if (volume) volume->setVolumes(key, chans, model.meta().voxelUm);
     }
 
     // --- zoom / pan --------------------------------------------------------------------
@@ -1155,7 +1172,7 @@ namespace sirius::app {
 
     void ViewerWidget::zoomIn() {
         if (impl_->vs().mode == ViewMode::Volume) {
-            impl_->volume->setZoom(impl_->volume->zoom() * 1.5);
+            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() * 1.5);
             return;
         }
         impl_->zoomAround(1.5, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
@@ -1163,14 +1180,14 @@ namespace sirius::app {
 
     void ViewerWidget::zoomOut() {
         if (impl_->vs().mode == ViewMode::Volume) {
-            impl_->volume->setZoom(impl_->volume->zoom() / 1.5);
+            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() / 1.5);
             return;
         }
         impl_->zoomAround(1.0 / 1.5, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
     }
 
     void ViewerWidget::fitToWindow() {
-        if (impl_->vs().mode == ViewMode::Volume) impl_->volume->setZoom(1.0);
+        if (impl_->vs().mode == ViewMode::Volume && impl_->volume) impl_->volume->setZoom(1.0);
         impl_->fit();
     }
 
@@ -1191,7 +1208,7 @@ namespace sirius::app {
 
     QImage ViewerWidget::grabView() const {
         const ViewState& s = impl_->vs();
-        if (s.mode == ViewMode::Volume) return impl_->volume->grabImage();
+        if (s.mode == ViewMode::Volume && impl_->volume) return impl_->volume->grabImage();
         QWidget* page = s.mode == ViewMode::Ortho ? impl_->orthoPage : impl_->comparePage;
         return page->grab().toImage();
     }

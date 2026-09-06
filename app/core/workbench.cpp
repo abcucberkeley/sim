@@ -337,6 +337,33 @@ namespace sirius::app {
         }
     } // namespace
 
+    OpenOptions Workbench::openOptionsFromLoadParams(const ParamSet& p) {
+        OpenOptions o;
+        o.readAll = p.getString("read_as").rfind("Full", 0) == 0;
+        const std::string order = p.getString("page_order");
+        const Index c = p.getInt("c", 0), t = p.getInt("t", 0), z = p.getInt("z", 0);
+        if (c > 0 || t > 0 || z > 0 || (!order.empty() && order != "czt")) {
+            PageOrder po;
+            po.order = order.empty() ? "czt" : order;
+            po.c = std::max<Index>(c, 1);
+            po.t = std::max<Index>(t, 1);
+            po.z = z;
+            o.pageOrder = po;
+        }
+        const double vx = p.getDouble("voxel_x", 0.0), vy = p.getDouble("voxel_y", 0.0), vz = p.getDouble("voxel_z", 0.0);
+        if (vx > 0.0 && vy > 0.0 && vz > 0.0) o.voxelUm = std::array<double, 3>{vx, vy, vz};
+        const int ndirs = static_cast<int>(p.getInt("sim_ndirs", 0)), nphases = static_cast<int>(p.getInt("sim_nphases", 0));
+        if (ndirs > 0 && nphases > 0) {
+            SimLayout sim;
+            sim.present = true;
+            sim.ndirs = ndirs;
+            sim.nphases = nphases;
+            sim.fastSi = p.getBool("sim_fast", false);
+            o.sim = sim;
+        }
+        return o;
+    }
+
     void Workbench::openDataset(const std::string& path, const OpenOptions& options) {
         OpenResult opened = sirius::app::openDataset(path, options);   // throws with a message
         const Snapshot before = snapshot();
@@ -550,9 +577,40 @@ namespace sirius::app {
 
     void Workbench::loadPipeline(const std::string& path) {
         Pipeline p = Pipeline::load(path);
+        // Relative Path parameters (OTF, parameter file, model, flat field)
+        // are relative to the pipeline file, so pipelines travel with their data.
+        const std::filesystem::path base = std::filesystem::absolute(std::filesystem::path(path)).parent_path();
+        for (int i = 0; i < p.size(); ++i) {
+            Step& s = p.at(i);
+            const Operation* op = findOperation(s.kind);
+            if (!op) continue;
+            for (const ParamSpec& spec : op->info().params) {
+                if (spec.type != ParamType::Path) continue;
+                const std::string v = s.params.getString(spec.key);
+                if (v.empty() || std::filesystem::path(v).is_absolute()) continue;
+                std::error_code ec;
+                const std::filesystem::path beside = base / v;
+                if (std::filesystem::exists(beside, ec)) s.params.set(spec.key, beside.lexically_normal().string());
+            }
+        }
         replacePipeline(p, "Load pipeline " + std::filesystem::path(path).filename().string());
         pipelinePath_ = path;
         logLine("Loaded pipeline " + path);
+        // A pipeline that names its dataset opens it (relative paths resolve
+        // against the pipeline file, then the working directory).
+        const std::string dataset = pipeline_.at(0).params.getString("path");
+        if (dataset.empty() || (source_ && datasetMeta_.sourcePath == dataset)) return;
+        std::filesystem::path resolved = dataset;
+        if (resolved.is_relative()) {
+            const std::filesystem::path beside = std::filesystem::path(path).parent_path() / resolved;
+            std::error_code ec;
+            if (std::filesystem::exists(beside, ec)) resolved = beside;
+        }
+        try {
+            openDataset(resolved.string(), openOptionsFromLoadParams(pipeline_.at(0).params));
+        } catch (const std::exception& e) {
+            logLine("The pipeline's dataset could not be opened: " + std::string(e.what()));
+        }
     }
 
     void Workbench::savePipeline(const std::string& path) const {

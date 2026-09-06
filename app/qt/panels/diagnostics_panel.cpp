@@ -454,6 +454,9 @@ namespace sirius::app {
             tabLayout->setContentsMargins(0, 0, 0, 0);
             tabLayout->setSpacing(2);
             h->addWidget(tabRow);
+            // The header never dictates the dock's minimum width: a long tab
+            // row or hint clips instead of widening the whole window.
+            header->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
             hint = new QLabel(header);
             hint->setFont(theme::font(theme::kSmallPx));
             QPalette hp = hint->palette();
@@ -500,7 +503,15 @@ namespace sirius::app {
         }
 
         void rebuildTabs(const QStringList& names) {
-            for (TabButton* t : tabs) t->deleteLater();
+            // Detach the old buttons now: deleteLater() alone leaves them in
+            // the layout until the event loop runs, and several refreshes
+            // before the first paint would stack every generation of tabs
+            // into the header's minimum width (which the window then adopts).
+            for (TabButton* t : tabs) {
+                tabLayout->removeWidget(t);
+                t->hide();
+                t->deleteLater();
+            }
             tabs.clear();
             for (int i = 0; i < names.size(); ++i) {
                 auto* t = new TabButton(names[i], tabRow);
