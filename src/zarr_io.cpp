@@ -37,6 +37,13 @@
 namespace sirius {
 
     namespace fs = std::filesystem;
+
+// Most of the helpers below serve the TensorStore path; without it only the
+// store discovery is used, so silence the unused-function warnings there.
+#if !defined(SIRIUS_HAS_TENSORSTORE) && defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
     using json = nlohmann::json;
 
     // --- metadata discovery (no TensorStore needed) ---------------------------
@@ -289,6 +296,10 @@ namespace sirius {
         }
 
     } // namespace
+
+#if !defined(SIRIUS_HAS_TENSORSTORE) && defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
     bool isZarrStore(const std::string& path) noexcept {
         try {
