@@ -17,7 +17,7 @@
 
 namespace sirius::app {
 
-    class WorkbenchBridge : public QObject, private Workbench::Observer {
+    class WorkbenchBridge : public QObject {
         Q_OBJECT
     public:
         explicit WorkbenchBridge(Workbench& wb, QObject* parent = nullptr);
@@ -49,24 +49,31 @@ namespace sirius::app {
         void logged(const QString& line);
 
     private:
-        // Observer
-        void datasetChanged_() {}
-        void datasetChanged() override { emit datasetChanged(); }
-        void pipelineChanged() override { emit pipelineChanged(); }
-        void stepChanged(int index) override { emit stepChanged(index); }
-        void selectionChanged() override { emit selectionChanged(); }
-        void viewedStepChanged() override { emit viewedStepChanged(); }
-        void viewStateChanged() override { emit viewStateChanged(); }
-        void outputsChanged() override { emit outputsChanged(); }
-        void labelsChanged(StepId id) override { emit labelsChanged(static_cast<quint64>(id)); }
-        void runStateChanged() override;
-        void historyChanged() override { emit historyChanged(); }
-        void backendChanged() override { emit backendChanged(); }
-        void logged(const std::string& line) override { emit logged(QString::fromStdString(line)); }
+        // The Observer lives in a nested object: its callbacks share the
+        // signals' names, and a class cannot both declare a signal and
+        // override a virtual of the same signature.
+        struct Relay final : Workbench::Observer {
+            explicit Relay(WorkbenchBridge* b) : b(b) {}
+            void datasetChanged() override { emit b->datasetChanged(); }
+            void pipelineChanged() override { emit b->pipelineChanged(); }
+            void stepChanged(int index) override { emit b->stepChanged(index); }
+            void selectionChanged() override { emit b->selectionChanged(); }
+            void viewedStepChanged() override { emit b->viewedStepChanged(); }
+            void viewStateChanged() override { emit b->viewStateChanged(); }
+            void outputsChanged() override { emit b->outputsChanged(); }
+            void labelsChanged(StepId id) override { emit b->labelsChanged(static_cast<quint64>(id)); }
+            void runStateChanged() override { b->onRunStateChanged(); }
+            void historyChanged() override { emit b->historyChanged(); }
+            void backendChanged() override { emit b->backendChanged(); }
+            void logged(const std::string& line) override { emit b->logged(QString::fromStdString(line)); }
+            WorkbenchBridge* b;
+        };
+        void onRunStateChanged();
 
         void pollProgress();
 
         Workbench& wb_;
+        Relay relay_{this};
         QThread worker_;
         QTimer progressTimer_;
         std::shared_ptr<RunJob> job_;
