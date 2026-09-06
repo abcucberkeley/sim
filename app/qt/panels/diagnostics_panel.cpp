@@ -19,6 +19,7 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QResizeEvent>
+#include <QMenu>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -420,6 +421,7 @@ namespace sirius::app {
         std::vector<TabButton*> tabs;
         QLabel* hint = nullptr;
         QWidget* leftBox = nullptr;
+        GlyphButton* moreBtn = nullptr;
         QString hintText;
         void applyHint() {
             if (hint) hint->setText(widgets::elide(hint, hintText, std::max(20, hint->width())));
@@ -434,11 +436,24 @@ namespace sirius::app {
             const int width = self->width();
             constexpr int margins = 28, spacing = 16, buttons = 3 * 24 + 2 * 2;
             const int avail = width - margins - leftBox->sizeHint().width() - spacing - buttons - spacing;
+            // Show the tabs in order while they fit, always including the
+            // active one; the rest go behind the "…" button.
+            int total = 0;
+            for (std::size_t i = 0; i < tabs.size(); ++i) total += tabs[i]->minimumWidth() + (i ? 2 : 0);
+            const bool overflow = total > avail;
+            const int room = overflow ? avail - 26 - 2 : avail;   // the "…" button's share
             int used = 0;
-            bool any = false;
+            bool any = false, activeShown = false;
+            const std::size_t active = static_cast<std::size_t>(std::max(tab, 0));
             for (std::size_t i = 0; i < tabs.size(); ++i) {
-                const int w = tabs[i]->minimumWidth() + (i ? 2 : 0);   // fixed-size buttons: sizeHint() is unset
-                const bool fits = !collapsed && tabs.size() > 1 && used + w <= avail;
+                const int w = tabs[i]->minimumWidth() + (any ? 2 : 0);   // fixed-size buttons: sizeHint() is unset
+                const bool isActive = i == active;
+                bool fits = !collapsed && tabs.size() > 1 && used + w <= room;
+                if (fits && isActive) activeShown = true;
+                // reserve the active tab's width so it is never the one dropped
+                if (fits && !isActive && !activeShown && active < tabs.size() && i < active &&
+                    used + w + tabs[active]->minimumWidth() + 2 > room)
+                    fits = false;
                 tabs[i]->setVisible(fits);
                 if (fits) {
                     used += w;
@@ -446,7 +461,10 @@ namespace sirius::app {
                 }
             }
             tabRow->setVisible(any);
-            const int rest = avail - used - (any ? spacing : 0);
+            bool hidden = false;
+            for (TabButton* t : tabs) hidden = hidden || (!t->isVisible() && !collapsed && tabs.size() > 1);
+            moreBtn->setVisible(hidden);
+            const int rest = avail - used - (any ? spacing : 0) - (hidden ? 28 : 0);
             hint->setVisible(rest >= 80);
             applyHint();
         }
@@ -488,6 +506,19 @@ namespace sirius::app {
             tabLayout->setContentsMargins(0, 0, 0, 0);
             tabLayout->setSpacing(2);
             h->addWidget(tabRow);
+            // Tabs that do not fit stay reachable through this menu.
+            moreBtn = new GlyphButton(QStringLiteral("…"), QStringLiteral("More tabs"), QSize(24, 22), header);
+            moreBtn->hide();
+            QObject::connect(moreBtn, &QAbstractButton::clicked, self, [this] {
+                QMenu menu(self);
+                for (std::size_t i = 0; i < tabs.size(); ++i) {
+                    if (tabs[i]->isVisible()) continue;
+                    QAction* a = menu.addAction(tabs[i]->text());
+                    QObject::connect(a, &QAction::triggered, self, [this, i] { self->setTab(static_cast<int>(i)); });
+                }
+                menu.exec(moreBtn->mapToGlobal(QPoint(0, moreBtn->height())));
+            });
+            h->addWidget(moreBtn);
             // The header never dictates the dock's minimum width: a long tab
             // row or hint clips instead of widening the whole window.
             header->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);

@@ -3,6 +3,12 @@
 // propagation. The Python worker implements the same bytes; its own tests
 // live in app/python/tests.
 
+// requireOperation returns a reference to a registry-owned object; GCC 13's
+// -Wdangling-reference cannot see that and flags the binding.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
+#pragma GCC diagnostic ignored "-Wdangling-reference"
+#endif
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -188,6 +194,10 @@ TEST_CASE("connectTcp reports an unreachable port", "[app][rpc]") {
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sys/wait.h>
+
+#include "temp_path.hpp"
 
 TEST_CASE("the bundled Python worker answers hello and runs a numpy step", "[app][rpc][worker]") {
     const char* python = std::getenv("SIRIUS_PYTHON");
@@ -218,6 +228,90 @@ TEST_CASE("the bundled Python worker answers hello and runs a numpy step", "[app
     // element (c0, y0, x0): mean of 0, 4, 8 = 4
     CHECK(out.asFloat32()[0] == 4.0f);
     CHECK_THROWS(worker->call("run", {{"kind", "no_such_kind"}}));
+    (void)worker->call("shutdown", json::object());
+    worker->close();
+    ::pclose(pipe);
+}
+#endif
+
+#ifndef _WIN32
+#include "core/ops/builtin.hpp"
+#include "core/array_source.hpp"
+
+// End to end: a TorchScript model scripted by the worker's own Python, the
+// worker launched as the app does, and the segmentation operation run
+// against it. Needs torch in SIRIUS_PYTHON; skips otherwise.
+TEST_CASE("the segmentation step runs a TorchScript model through the worker", "[app][rpc][worker][seg]") {
+    const char* python = std::getenv("SIRIUS_PYTHON");
+    if (!python || !*python) SKIP("SIRIUS_PYTHON is not set");
+    const std::string dir = workerScriptPath();
+    if (dir.empty()) SKIP("sirius_worker not found");
+    registerBuiltinOperations();
+
+    // foreground probability = sigmoid of the intensity around 0.5; boundary channel = 0
+    test::TempFile model("segmodel", ".pt");
+    const std::string script =
+        "import sys\n"
+        "try:\n    import torch\nexcept ImportError:\n    sys.exit(3)\n"
+        "class M(torch.nn.Module):\n"
+        "    def forward(self, x):\n"
+        "        fg = torch.sigmoid((x - 0.5) * 20.0)\n"
+        "        return torch.cat([fg, torch.zeros_like(x)], 1)\n"
+        "torch.jit.script(M()).save(" + json(model.str).dump() + ")\n";
+    test::TempFile scriptFile("segmodel", ".py");
+    {
+        std::ofstream out(scriptFile.path);
+        out << script;
+    }
+    const int rc = std::system((std::string("'") + python + "' '" + scriptFile.str + "' >/dev/null 2>&1").c_str());
+    if (WEXITSTATUS(rc) == 3) SKIP("torch is not importable in SIRIUS_PYTHON");
+    REQUIRE(WEXITSTATUS(rc) == 0);
+
+    const std::string cmd = std::string("cd '") + dir + "' && exec '" + python +
+                            "' -m sirius_worker --host 127.0.0.1 --port 0 --token seg --device cpu 2>/dev/null";
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    REQUIRE(pipe);
+    char line[512] = {0};
+    REQUIRE(std::fgets(line, sizeof line, pipe));
+    const int port = json::parse(line).value("port", 0);
+    REQUIRE(port > 0);
+    auto worker = RemoteWorker::connect("127.0.0.1", port, "seg");
+
+    // two bright cubes in a (1, 1, 8, 32, 32) volume
+    const Dims5 dims{1, 1, 8, 32, 32};
+    auto array = std::make_shared<Array5>(Array5::zeros(dims));
+    for (Index z = 1; z < 6; ++z)
+        for (Index y = 2; y < 9; ++y)
+            for (Index x = 2; x < 9; ++x) {
+                array->at(0, 0, z, y, x) = 1.0f;
+                array->at(0, 0, z, y + 15, x + 15) = 1.0f;
+            }
+    DatasetMeta meta;
+    meta.dims = dims;
+    meta.normalizeChannels();
+    StepInput in{meta, array, nullptr, nullptr};
+
+    const Operation& seg = requireOperation("seg");
+    ParamSet p = seg.defaults();
+    p.set("model", model.str);
+    p.set("post", std::string("Connected components"));
+    p.set("tile", std::vector<double>{8, 32, 32});
+    p.set("overlap", std::int64_t{0});
+    p.set("min_voxels", std::int64_t{5});
+    StepContext ctx;
+    ctx.remote = worker.get();
+    std::vector<double> progress;
+    ctx.progress = [&](double f, const std::string&) { progress.push_back(f); };
+    const StepOutput out = seg.run(in, p, ctx);
+    REQUIRE(out.labels);
+    CHECK(out.labels->stats().size() == 2);
+    CHECK(out.labels->at(0, 3, 5, 5) != 0);
+    CHECK(out.labels->at(0, 3, 20, 20) != 0);
+    CHECK(out.labels->at(0, 3, 5, 5) != out.labels->at(0, 3, 20, 20));
+    CHECK(out.labels->at(0, 0, 0, 0) == 0);
+    CHECK_FALSE(progress.empty());
+    CHECK(out.diagnostics.kind == DiagnosticsKind::Segment);
+
     (void)worker->call("shutdown", json::object());
     worker->close();
     ::pclose(pipe);

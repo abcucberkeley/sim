@@ -278,55 +278,82 @@ larger mosaics need `planStitch`/`fuseTiles` driven over a tile-at-a-time
 reader. Tiles are placed on the voxel grid (positions are rounded), so
 sub-voxel placement would need a resampling step that does not exist yet.
 
-## Desktop application (`app/`)
+## Workbench application (`app/`)
 
-`sirius-app` is a Qt Widgets front end for the reconstruction pipeline: load a raw
-stack, optionally an OTF, and a parameter file (TOML or legacy cudasirecon `key=value`),
-edit the parameters, reconstruct on the CPU or any CUDA device, inspect the volumes,
-read off the fitted pattern vectors and save the result as a float32 TIFF.
-Reconstructions run on a worker thread; the `SimReconstructor` (FFT plans) and the
-device copy of the raw stack are kept between runs and only rebuilt when the
-parameters, OTF or device change.
+`sirius-app` is the microscopy processing workbench from the design handoff in
+[docs/design](docs/design/README.md): one window with the viewer in the centre, an
+ordered (and freely reorderable) stack of processing steps on the left, the selected
+step's parameters on the right, a dockable diagnostics area at the bottom and an
+optional assistant panel. Data is a `(c, t, z, y, x)` float32 array; steps run top to
+bottom, a skipped step passes its input through, and every step's output is cached
+by its own policy (memory, disk, recompute) and invalidated exactly when it or
+anything upstream changes.
 
-- **OTF is optional.** Without a file the theoretical OTF of an aberration-free objective
-  is computed from NA, immersion index and emission wavelength (`sirius::idealOTF`; 3D
-  with the missing cone when the stack has several z planes, in-focus 2D otherwise).
-  The `Ideal` button next to the OTF drops a loaded file again.
-- **Viewers** (Raw, OTF, Reconstruction, crops): mouse-wheel zoom around the cursor,
-  drag to pan, `Fit`/`1:1`, min/max contrast sliders with `Auto` (percentiles) and
-  `Reset`, `Log` display, `Select` + `Crop` to open a rectangle (all slices) in a new
-  closable tab, `Ortho` for XZ/YZ views through a click-positioned crosshair
-  (`Physical z` scales them by dz/dx), and `Spectrum` to show the centered |FFT| of the
-  displayed planes. In spectrum mode the raw and result views overlay the OTF support
-  circle (2NA/λ), the pattern vectors predicted from the parameters (yellow crosses)
-  and, after a run, the fitted ones with their modulation amplitudes (cyan circles).
-- **OTF tab**: one order of the OTF (loaded or ideal) resampled onto the stack's grid,
-  exactly as the reconstruction interpolates it; step through kz with the slice slider.
-- **Bands tab**: with `Capture intermediate spectra` ticked, a run keeps the separated
-  band spectra and their Wiener-filtered versions (`SimReconstructor::setCaptureDiagnostics`),
-  browsable by direction, order (± side bands) and stage. Off by default: it holds two
-  host copies of every band volume.
+**Operations** (`app/core/ops`, one file each, registered in `ops/builtin_list.cpp`):
+Load (TIFF / OME-TIFF / zarr / N5, lazy planes) · SIM reconstruction (the library's
+`SimReconstructor`, CPU or CUDA; estimated, manual or file-given pattern; measured or
+theoretical OTF; band diagnostics) · Deconvolve (Richardson–Lucy with total-variation
+prior) · Volume reconstruction (isotropic resampling for the 3D view) · Einsum reduce,
+Max projection, Mean over time · Contrast (percentile window + gamma, live histograms) ·
+Flat-field · Bleach correction · Deskew + rotate · Crop / pad · Resample · Merge
+channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Torch
+segmentation (a TorchScript / ONNX model run tile-wise by the Python worker, labels by
+watershed or connected components) · Threshold · Label cleanup. Labels are painted,
+filled, merged, split and deleted in the viewer; every edit, parameter change and
+assistant action is one undo entry.
+
+**Viewer**: Ortho (XY, YZ, XZ, MIP·Z with a shared crosshair, physical z scaling, scale
+bars, zoom/pan), 3D (OpenGL ray casting or MIP with presets, yaw/pitch, z clip,
+bounding box), Compare (raw next to the viewed step over the same physical field);
+tools Navigate, Probe, Measure, ROI, Paint. The diagnostics dock shows what the
+selected step reports: SIM spectra and the fitted k₀ / phase / modulation table,
+deconvolution convergence, contrast histograms, alignment maps, the label review table
+and queue, or a shape preview before a run. `?` / F1 opens the step's help page
+(Markdown + LaTeX in `app/help`, editable, reloaded on save).
+
+**Backends**: CUDA (when the build has it and a device is present), CPU, or HPC — a
+Python worker on a cluster node reached over TCP (see "Python worker and HPC backend").
+Torch models always go through the worker; the app starts one locally from
+Preferences ▸ Python when a segmentation step runs.
+
+**Assistant**: any OpenAI-compatible chat endpoint with tool calling; presets for
+Ollama (`http://localhost:11434/v1`, the model list is fetched) and OpenRouter (API
+key). The model drives the typed tool API of `app/core/tool_api.hpp` (inspect state and
+diagnostics, add / remove / move / enable steps, set parameters, run, change the view,
+read help pages); every call is applied through the workbench, undoable, and shown as
+an action card. "Ask before acting" makes mutating calls wait for confirmation.
+
+**Pipelines** are TOML (`*.sirius.toml`, File ▸ Save pipeline); relative paths in them
+resolve against the file, and the Load step's path opens the dataset when the pipeline
+is loaded. [examples/sim_bundled.sirius.toml](examples/sim_bundled.sirius.toml)
+reconstructs the bundled test stack:
 
 ```
-export SIRIUS_QT_DIR=/path/to/Qt/6.x/gcc_64        # any Qt 6 or Qt 5.15 prefix
-cmake --preset linux-gcc-app-dev
+export SIRIUS_QT_DIR=/path/to/Qt/6.x/gcc_64        # only when Qt is not the system one
+cmake --preset linux-gcc-app-dev                    # add -DSIRIUS_ENABLE_TENSORSTORE=OFF to skip zarr/N5
 cmake --build --preset linux-gcc-app-dev
-ctest --preset linux-gcc-app-dev                    # includes the app core tests
-./build/linux-gcc-app-dev/app/sirius-app --raw raw.tif [--otf otf.tif] --params config.txt [--reconstruct]
+ctest --preset linux-gcc-app-dev                    # library + app core tests
+build/linux-gcc-app-dev/app/sirius-app --pipeline examples/sim_bundled.sirius.toml --run
 ```
 
-`SIRIUS_ENABLE_APP=ON` locates Qt with `find_package` (Qt is a system dependency
-like the CUDA toolkit, not something FetchContent builds); the `*-app-*` presets
-take the prefix from `$SIRIUS_QT_DIR`, or pass `-DQt6_DIR=.../lib/cmake/Qt6`
-(or `Qt5_DIR`) for a Qt that lives inside a larger prefix such as a conda
-environment. The layout separates a Qt-free model (`app/core`: `ReconSession`,
-parameter-format detection, display mapping) that `tests/test_app_core.cpp`
-covers without a display from the Widgets layer (`app/qt`). On Windows,
-`windeployqt` copies the Qt runtime next to the executable after every link
-(`SIRIUS_APP_DEPLOY_QT`; turn it off for Qt builds it cannot process, such as
-conda-forge's renamed `Qt5*_conda.dll`, and run with the Qt `bin` directory on
-`PATH` instead). Add `-DSIRIUS_ENABLE_APP=ON` to any CUDA preset to get the GPU
-devices in the device list.
+Command line: `--dataset`, `--pipeline`, `--run`, and for scripting and smoke tests
+`--tool '{"name":"set_view","args":{"mode":"3d"}}'` (any assistant tool), `--action
+"Export result"` (a menu item by text), `--ask "…"` (a message to the assistant),
+`--screenshot out.png` (grab the window, and any dialog, after the run and quit) and
+`--quit-after ms`. `QT_QPA_PLATFORM=offscreen` runs without a display (the 3D view then
+shows a notice: Qt's offscreen platform has no OpenGL widgets).
+
+Layout: `app/core` is Qt-free and unit-tested without a display (`tests/test_app_*.cpp`:
+array model, parameters, pipeline files, executor caching, workbench and undo, tool API,
+worker protocol, I/O, help pages, labels, every operation); `app/qt` is the Widgets
+layer (`theme.cpp` holds every colour, font and metric of the design as QSS and
+constants). `SIRIUS_ENABLE_APP=ON` finds Qt 6 (Widgets, OpenGL, OpenGLWidgets, Network)
+with `find_package`; the `*-app-*` presets take the prefix from `$SIRIUS_QT_DIR` or the
+system Qt, and turn on TensorStore (zarr / N5), whose first configure fetches and builds
+it — several minutes, about 1.5 GB, and it needs `nasm` (`conda install -c conda-forge
+nasm` when there is no system package). Add `-DSIRIUS_ENABLE_APP=ON` to a CUDA preset
+for the GPU backend. On Windows `windeployqt` copies the Qt runtime next to the
+executable after every link (`SIRIUS_APP_DEPLOY_QT`).
 
 ## Python Bindings
 Dev install

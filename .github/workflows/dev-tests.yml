@@ -33,6 +33,42 @@ jobs:
       - name: Test
         run: ctest --preset linux-gcc-dev
 
+  app-tests:
+    # The workbench (Qt Widgets) with its Qt-free core tests, plus a headless
+    # smoke run of the bundled SIM pipeline. TensorStore stays off here: its
+    # build needs nasm and a quarter of an hour; the zarr tests skip.
+    name: Workbench build and tests (Linux, Qt 6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build gcc g++ \
+            qt6-base-dev libgl1-mesa-dev libglx-dev libxkbcommon-dev
+
+      - name: Configure
+        run: cmake --preset linux-gcc-app-dev -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF -DSIRIUS_ENABLE_TENSORSTORE=OFF
+
+      - name: Build
+        run: cmake --build --preset linux-gcc-app-dev
+
+      - name: Test
+        run: ctest --preset linux-gcc-app-dev
+
+      - name: Headless smoke run
+        run: |
+          QT_QPA_PLATFORM=offscreen build/linux-gcc-app-dev/app/sirius-app \
+            --pipeline examples/sim_bundled.sirius.toml --run --screenshot smoke.png
+          test -s smoke.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-smoke
+          path: smoke.png
+
   python-tests:
     name: Python binding tests
     runs-on: ubuntu-latest
