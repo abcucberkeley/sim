@@ -343,3 +343,33 @@ FFT vs NumPy:
 ```
 python bindings/benchmarks/bench_fft.py
 ```
+## Python worker and HPC backend
+
+`app/python/sirius_worker` is a small TCP service the application uses for
+work that lives in Python -- Torch segmentation models locally -- and the
+same service that serves the **HPC** backend from a cluster node. It needs
+only the standard library and `numpy`; `torch` enables models, `scipy` the
+label post-processing and resampling, and the `sirius` wheel SIM
+reconstruction on the node. The protocol (length-prefixed JSON headers plus
+raw tensors, mirrored by `app/core/rpc.hpp`), the run kinds and their
+parameter keys are documented in [app/python/README.md](app/python/README.md).
+
+```
+python -m sirius_worker --host 127.0.0.1 --port 0 --token X --device auto   # prints {"port": N, ...}
+python -m unittest discover -s app/python/tests -v
+```
+
+Every step the worker can run is implemented once, in
+`sirius.workbench` (`bindings/python/sirius/workbench.py`); the worker
+imports the installed package or loads that file from the checkout / build
+tree. `sirius.workbench.run_pipeline(dataset, pipeline_json)` is what the
+application's "Export pipeline as Python script" produces a call to: it
+loads a TIFF / OME-TIFF / zarr dataset as `(c, t, z, y, x)` float32 and
+runs the numpy, SIM (via the bindings) and Torch steps, raising
+`NotImplementedError` for the steps only the C++ application implements
+(deconvolution, deskew, volume rendering, stitching, registration).
+
+On a cluster, submit [app/python/slurm/sirius_worker.sbatch](app/python/slurm/sirius_worker.sbatch)
+with `SIRIUS_TOKEN` set, tunnel the port (`ssh -N -L 7645:<node>:7645 <login-node>`)
+and enter host, port and token under Preferences ▸ HPC; see
+[app/python/slurm/README.md](app/python/slurm/README.md).
