@@ -19,6 +19,7 @@ namespace sirius::app {
         ~OpsPanel() override;
 
         void openAddMenu();                 // Process ▸ Add operation…
+        void refresh();                     // rebuild the rows from the workbench
 
     signals:
         void exportRequested();

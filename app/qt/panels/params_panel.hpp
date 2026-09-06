@@ -23,6 +23,9 @@ namespace sirius::app {
     signals:
         void helpRequested(bool open);      // ? clicked (toggle)
 
+    protected:
+        bool eventFilter(QObject* watched, QEvent* event) override;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;

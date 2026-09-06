@@ -6,7 +6,11 @@
 // thread and reports their progress on the GUI thread. Every panel takes a
 // WorkbenchBridge& and talks to `wb()` directly for reads and edits.
 
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 
 #include <QObject>
 #include <QString>
@@ -17,7 +21,7 @@
 
 namespace sirius::app {
 
-    class WorkbenchBridge : public QObject, private Workbench::Observer {
+    class WorkbenchBridge : public QObject {
         Q_OBJECT
     public:
         explicit WorkbenchBridge(Workbench& wb, QObject* parent = nullptr);
@@ -31,6 +35,18 @@ namespace sirius::app {
         bool startRun(int target = -1);
         void cancelRun();
         bool running() const noexcept { return wb_.running(); }
+
+        // Any other long task (an export, a probe) on the same worker thread:
+        // `task` receives a progress callback and a cancellation query and
+        // may throw; the outcome arrives as taskFinished. One task at a time;
+        // false when one is already running.
+        using TaskProgress = std::function<void(double, const std::string&)>;
+        using TaskCancelled = std::function<bool()>;
+        using Task = std::function<void(const TaskProgress&, const TaskCancelled&)>;
+        bool startTask(const QString& label, Task task);
+        void cancelTask();
+        bool taskRunning() const noexcept { return taskActive_.load(); }
+        QString taskLabel() const { return taskLabel_; }
 
     signals:
         void datasetChanged();
@@ -47,29 +63,36 @@ namespace sirius::app {
         void historyChanged();
         void backendChanged();
         void logged(const QString& line);
+        void taskStarted(const QString& label);
+        void taskProgress(double fraction, const QString& message);
+        void taskFinished(bool ok, const QString& error);
 
     private:
-        // Observer
-        void datasetChanged_() {}
-        void datasetChanged() override { emit datasetChanged(); }
-        void pipelineChanged() override { emit pipelineChanged(); }
-        void stepChanged(int index) override { emit stepChanged(index); }
-        void selectionChanged() override { emit selectionChanged(); }
-        void viewedStepChanged() override { emit viewedStepChanged(); }
-        void viewStateChanged() override { emit viewStateChanged(); }
-        void outputsChanged() override { emit outputsChanged(); }
-        void labelsChanged(StepId id) override { emit labelsChanged(static_cast<quint64>(id)); }
-        void runStateChanged() override;
-        void historyChanged() override { emit historyChanged(); }
-        void backendChanged() override { emit backendChanged(); }
-        void logged(const std::string& line) override { emit logged(QString::fromStdString(line)); }
+        // The Workbench::Observer lives in a relay object so its callbacks can
+        // share names with the signals they forward to.
+        struct Relay;
+        friend struct Relay;
+        void runStateChanged();
 
         void pollProgress();
+        void onJobFinished();
+        void onTaskFinished();
 
         Workbench& wb_;
+        std::unique_ptr<Relay> relay_;
         QThread worker_;
+        QObject* dispatcher_ = nullptr;      // lives on worker_
         QTimer progressTimer_;
         std::shared_ptr<RunJob> job_;
+
+        // task state (written on the worker thread, read on the GUI thread)
+        std::atomic<bool> taskActive_{false};
+        std::atomic<bool> taskCancel_{false};
+        std::atomic<double> taskFraction_{0.0};
+        std::mutex taskMutex_;
+        std::string taskMessage_;
+        std::string taskError_;
+        QString taskLabel_;
     };
 
 } // namespace sirius::app
