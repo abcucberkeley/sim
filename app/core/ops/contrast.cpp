@@ -106,6 +106,12 @@ namespace sirius::app {
 
             const OpInfo& info() const noexcept override { return info_; }
 
+            // Histograms update live while the percentiles are dragged.
+            std::optional<Diagnostics> preview(const StepInput& input, const ParamSet& params) const override {
+                if (!input.hasArray() && !input.source) return std::nullopt;
+                return contrastPreview(input, params);
+            }
+
             std::string summary(const ParamSet& params, const DatasetMeta&) const override {
                 char buf[64];
                 std::snprintf(buf, sizeof buf, "percentile %.1f – %.1f", params.getDouble("lo_percentile", 0.2),

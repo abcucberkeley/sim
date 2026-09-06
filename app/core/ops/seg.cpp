@@ -177,7 +177,7 @@ namespace sirius::app {
     } // namespace
 
     nlohmann::json torchModelInfo(RemoteWorker& worker, const std::string& modelPath) {
-        WorkerResult r = worker.call("model_info", {{"model", modelPath}});
+        WorkerResult r = worker.call("model_info", {{"path", modelPath}, {"model", modelPath}});
         return r.result;
     }
 
