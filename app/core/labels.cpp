@@ -401,7 +401,12 @@ namespace sirius::app {
         std::uint32_t* v = volume(diff.t);
         const std::vector<std::uint32_t>& values = forward ? diff.after : diff.before;
         const Index n = volumeSize();
-        for (std::size_t k = 0; k < diff.indices.size(); ++k) {
+        // A stroke's diff is the concatenation of every mouse move, so one
+        // voxel may appear twice; replaying it backwards in reverse order
+        // restores the value it had before the first touch.
+        const std::size_t count = diff.indices.size();
+        for (std::size_t step = 0; step < count; ++step) {
+            const std::size_t k = forward ? step : count - 1 - step;
             const Index i = diff.indices[k];
             if (i < 0 || i >= n) throw std::out_of_range("LabelVolume::apply: index outside the volume");
             v[i] = values[k];
