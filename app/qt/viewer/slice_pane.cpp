@@ -1,0 +1,253 @@
+#include "qt/viewer/slice_pane.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPen>
+#include <QResizeEvent>
+#include <QWheelEvent>
+
+#include "qt/theme.hpp"
+#include "qt/viewer/viewer_widgets.hpp"
+
+namespace sirius::app {
+
+    SlicePane::SlicePane(Kind kind, QWidget* parent) : QWidget(parent), kind_(kind) {
+        setMouseTracking(true);
+        setMinimumSize(40, 40);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setAutoFillBackground(false);
+        setAttribute(Qt::WA_OpaquePaintEvent);
+        setCursor(Qt::CrossCursor);
+    }
+
+    void SlicePane::setContent(const QImage& img, int factor, Index cols, Index rows) {
+        image_ = img;
+        factor_ = std::max(factor, 1);
+        cols_ = cols;
+        rows_ = rows;
+        update();
+    }
+
+    void SlicePane::clearContent() {
+        image_ = QImage();
+        cols_ = rows_ = 0;
+        update();
+    }
+
+    void SlicePane::setView(const View& v) {
+        view_ = v;
+        update();
+    }
+
+    SlicePane::View SlicePane::fitView(double ax, double ay) const {
+        View v;
+        if (cols_ <= 0 || rows_ <= 0) return v;
+        const double ex = static_cast<double>(cols_) * ax, ey = static_cast<double>(rows_) * ay;
+        const double z = std::max(1e-6, std::min(width() / ex, height() / ey));
+        v.zx = z * ax;
+        v.zy = z * ay;
+        v.ox = (width() - cols_ * v.zx) / 2.0;
+        v.oy = (height() - rows_ * v.zy) / 2.0;
+        return v;
+    }
+
+    QPointF SlicePane::toVoxel(const QPointF& s) const {
+        return {(s.x() - view_.ox) / view_.zx, (s.y() - view_.oy) / view_.zy};
+    }
+
+    QPointF SlicePane::toScreen(const QPointF& v) const {
+        return {view_.ox + v.x() * view_.zx, view_.oy + v.y() * view_.zy};
+    }
+
+    bool SlicePane::inside(const QPointF& v) const {
+        return v.x() >= 0.0 && v.y() >= 0.0 && v.x() < static_cast<double>(cols_) && v.y() < static_cast<double>(rows_);
+    }
+
+    void SlicePane::setTitle(const QString& t) { title_ = t; update(); }
+    void SlicePane::setHint(const QString& h) { hint_ = h; update(); }
+    void SlicePane::setScaleBar(double um) { umPerVoxel_ = um; update(); }
+
+    void SlicePane::setCrosshair(const QPointF& voxel, bool visible, bool locked) {
+        cross_ = voxel;
+        crossVisible_ = visible;
+        crossLocked_ = locked;
+        update();
+    }
+
+    void SlicePane::setBrushCursor(bool on, double radiusVoxels) {
+        brush_ = on;
+        brushRadius_ = radiusVoxels;
+        update();
+    }
+
+    void SlicePane::setMeasure(const QVector<QPointF>& voxels, const QString& text) {
+        measure_ = voxels;
+        measureText_ = text;
+        update();
+    }
+
+    void SlicePane::setRoi(const QRectF& voxels) { roi_ = voxels; update(); }
+    void SlicePane::setMessage(const QString& text) { message_ = text; update(); }
+
+    // --- painting ----------------------------------------------------------------
+
+    void SlicePane::paintEvent(QPaintEvent*) {
+        QPainter p(this);
+        p.fillRect(rect(), theme::kViewerGround);
+
+        if (!image_.isNull() && cols_ > 0 && rows_ > 0) {
+            p.save();
+            QTransform t;
+            t.translate(view_.ox, view_.oy);
+            t.scale(view_.zx * factor_, view_.zy * factor_);
+            p.setTransform(t);
+            // nearest neighbour when magnifying keeps voxels crisp; smooth
+            // when shrinking avoids aliasing on large frames
+            p.setRenderHint(QPainter::SmoothPixmapTransform, smooth_ || view_.zx * factor_ < 1.0);
+            p.drawImage(QPointF(0, 0), image_);
+            p.restore();
+        }
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // ROI (dashed) and measure marks sit under the crosshair
+        if (!roi_.isNull() && hasContent()) {
+            const QRectF r(toScreen(roi_.topLeft()), toScreen(roi_.bottomRight()));
+            QPen pen(theme::kViewerText, 1.0, Qt::DashLine);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(r);
+        }
+        if (!measure_.isEmpty() && hasContent()) {
+            p.setPen(QPen(theme::kAccent, 1.5));
+            for (int i = 0; i + 1 < measure_.size(); ++i) p.drawLine(toScreen(measure_[i]), toScreen(measure_[i + 1]));
+            for (const QPointF& v : measure_) {
+                const QPointF s = toScreen(v);
+                p.drawLine(s + QPointF(-4, 0), s + QPointF(4, 0));
+                p.drawLine(s + QPointF(0, -4), s + QPointF(0, 4));
+            }
+            if (!measureText_.isEmpty()) drawOverlayText(p, toScreen(measure_.last()) + QPointF(8, -16), measureText_, true);
+        }
+
+        if (crossVisible_ && hasContent()) {
+            const QPointF c = toScreen(cross_ + QPointF(0.5, 0.5));
+            QPen pen(theme::kAccent, 1.0);
+            if (crossLocked_) {
+                pen.setStyle(Qt::DashLine);
+                p.setOpacity(0.45);
+            }
+            p.setPen(pen);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            const double x = std::round(c.x()) + 0.5, y = std::round(c.y()) + 0.5;
+            p.drawLine(QPointF(x, 0), QPointF(x, height()));
+            p.drawLine(QPointF(0, y), QPointF(width(), y));
+            p.setOpacity(1.0);
+            p.setRenderHint(QPainter::Antialiasing, true);
+        }
+
+        if (brush_ && mouseIn_ && hasContent()) {
+            const double r = std::max(1.0, brushRadius_ * view_.zx);
+            p.setPen(QPen(theme::kViewerText, 1.5));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(mouse_, r, r * (view_.zy / std::max(1e-9, view_.zx)));
+        }
+
+        // corner label, scale bar, hint
+        if (!title_.isEmpty()) {
+            // bold first token, the rest at 70 %
+            const int cut = title_.indexOf(QLatin1String("  "));
+            QFont bold(theme::kFontFamily);
+            bold.setPixelSize(11);
+            bold.setWeight(QFont::ExtraBold);
+            bold.setLetterSpacing(QFont::PercentageSpacing, 108);
+            const QFontMetrics fm(bold);
+            const QString head = cut < 0 ? title_ : title_.left(cut);
+            drawOverlayText(p, QPointF(10, 8), head, true);
+            if (cut >= 0) drawOverlayText(p, QPointF(10 + fm.horizontalAdvance(head) + 12, 8), title_.mid(cut + 2), false, 0.7);
+        }
+        if (umPerVoxel_ > 0.0 && hasContent()) {
+            // largest of the design's steps that stays under 140 px
+            static const double steps[] = {50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05};
+            double um = steps[sizeof steps / sizeof steps[0] - 1];
+            for (double s : steps) {
+                if (s / umPerVoxel_ * view_.zx <= 140.0) {
+                    um = s;
+                    break;
+                }
+            }
+            const double px = um / umPerVoxel_ * view_.zx;
+            QString label = um >= 1.0 ? QString::number(um) + QStringLiteral(" µm") : QString::number(um * 1000.0) + QStringLiteral(" nm");
+            QFont f(theme::kFontFamily);
+            f.setPixelSize(11);
+            const QFontMetrics fm(f);
+            const int lw = fm.horizontalAdvance(label);
+            const double x1 = width() - 10.0 - lw - 6.0;
+            p.fillRect(QRectF(x1 - px, height() - 8.0 - 8.0, px, 2.0), theme::kViewerText);
+            drawOverlayText(p, QPointF(width() - 10.0 - lw, height() - 8.0 - fm.height()), label);
+        }
+        if (!hint_.isEmpty()) {
+            QFont f(theme::kFontFamily);
+            f.setPixelSize(11);
+            const QFontMetrics fm(f);
+            drawOverlayText(p, QPointF(10, height() - 8.0 - fm.height()), hint_, false, 0.75);
+        }
+        if (!message_.isEmpty()) {
+            p.setFont(theme::font(12));
+            p.setPen(QColor(243, 242, 242, 180));
+            p.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, message_);
+        }
+    }
+
+    // --- mouse ----------------------------------------------------------------------
+
+    void SlicePane::mousePressEvent(QMouseEvent* e) {
+        mouse_ = e->position();
+        button_ = e->button();
+        pressPos_ = lastDrag_ = mouse_;
+        moved_ = false;
+        emit pressed(toVoxel(mouse_), e->button(), e->modifiers());
+    }
+
+    void SlicePane::mouseMoveEvent(QMouseEvent* e) {
+        mouse_ = e->position();
+        mouseIn_ = true;
+        if (button_ != Qt::NoButton && (e->buttons() & button_)) {
+            const QPointF delta = mouse_ - lastDrag_;
+            lastDrag_ = mouse_;
+            if ((mouse_ - pressPos_).manhattanLength() > 2) moved_ = true;
+            emit dragged(toVoxel(mouse_), delta, button_, e->modifiers());
+        }
+        emit hovered(toVoxel(mouse_));
+        if (brush_) update();
+    }
+
+    void SlicePane::mouseReleaseEvent(QMouseEvent* e) {
+        mouse_ = e->position();
+        const Qt::MouseButton b = button_;
+        button_ = Qt::NoButton;
+        emit released(toVoxel(mouse_), b == Qt::NoButton ? e->button() : b, e->modifiers(), moved_);
+    }
+
+    void SlicePane::mouseDoubleClickEvent(QMouseEvent* e) {
+        if (e->button() == Qt::LeftButton) emit doubleClicked(toVoxel(e->position()), e->modifiers());
+    }
+
+    void SlicePane::wheelEvent(QWheelEvent* e) {
+        const double steps = e->angleDelta().y() / 120.0;
+        if (steps == 0.0) return;
+        emit wheeled(e->position(), steps);
+        e->accept();
+    }
+
+    void SlicePane::leaveEvent(QEvent*) {
+        mouseIn_ = false;
+        emit exited();
+        if (brush_) update();
+    }
+
+    void SlicePane::resizeEvent(QResizeEvent*) { emit resized(); }
+
+} // namespace sirius::app

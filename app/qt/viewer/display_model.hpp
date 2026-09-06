@@ -1,0 +1,117 @@
+#ifndef SIRIUS_APP_VIEWER_DISPLAY_MODEL_HPP
+#define SIRIUS_APP_VIEWER_DISPLAY_MODEL_HPP
+
+// Turns one step output into the pixels the panes draw: per-channel display
+// windows (robust percentiles, computed once per output and channel), the
+// additive channel blend into an RGB image, the XZ / YZ re-slices and the
+// z maximum projection, and the label overlay. Lazy (on-disk) outputs are
+// read plane by plane for XY and as one (c, t) volume, cached, for the
+// re-slices; everything else reads straight out of the in-memory array.
+//
+// All buffers persist between calls so scrubbing through a stack allocates
+// nothing; a change of output, t or channel invalidates only what depends
+// on it.
+
+#include <array>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
+
+#include <QImage>
+
+#include "core/operation.hpp"
+#include "core/workbench.hpp"
+
+namespace sirius::app {
+
+    struct DisplayWindow {
+        float lo = 0.0f;
+        float hi = 1.0f;
+    };
+
+    class DisplayModel {
+    public:
+        // Bytes of one (c, t) volume kept for the re-slices; above it the panes
+        // that need a whole volume report "too large" instead of reading it.
+        static constexpr std::size_t kVolumeCacheLimit = std::size_t{3} << 30;   // 3 GiB
+
+        void setOutput(std::shared_ptr<const StepOutput> out);
+        std::shared_ptr<const StepOutput> output() const noexcept { return out_; }
+        bool valid() const noexcept;
+        const DatasetMeta& meta() const noexcept { return meta_; }
+        const Dims5& dims() const noexcept { return meta_.dims; }
+        bool hasLabels() const noexcept;
+        const LabelVolume* labels() const noexcept;
+
+        // --- windows ---------------------------------------------------------
+        DisplayWindow window(Index c, Index t);
+        void setWindow(Index c, DisplayWindow w);
+        void resetWindows();
+
+        // --- data (cached) ---------------------------------------------------
+        // The (y, x) plane; null when it cannot be read.
+        const float* plane(Index c, Index t, Index z);
+        // The (z, y, x) volume; null when the source is lazy and the volume
+        // exceeds kVolumeCacheLimit (see volumeTooLarge()).
+        const float* volume(Index c, Index t);
+        const float* mip(Index c, Index t);
+        bool volumeTooLarge() const noexcept;
+        std::optional<float> valueAt(Index c, Index t, Index z, Index y, Index x);
+        void dropVolumeCaches();
+
+        // --- rendering -------------------------------------------------------
+        // `factor` sub-samples the plane (image pixel = factor voxels).
+        // Every renderer resizes `img` as needed (Format_RGB32) and blends the
+        // visible channels of `vs` additively with their colours.
+        void renderXY(Index t, Index z, const ViewState& vs, int factor, QImage& img);
+        void renderXZ(Index t, Index y, const ViewState& vs, QImage& img);   // rows z, cols x
+        void renderYZ(Index t, Index x, const ViewState& vs, QImage& img);   // rows y, cols z
+        void renderMIP(Index t, const ViewState& vs, int factor, QImage& img);
+
+        // Label overlay on an image produced by the matching renderer.
+        void overlayLabelsXY(Index t, Index z, int factor, const ViewState& vs, QImage& img);
+        void overlayLabelsXZ(Index t, Index y, const ViewState& vs, QImage& img);
+        void overlayLabelsYZ(Index t, Index x, const ViewState& vs, QImage& img);
+
+    private:
+        struct Key {
+            Index c, t;
+            bool operator<(const Key& o) const noexcept { return c < o.c || (c == o.c && t < o.t); }
+        };
+        struct PlaneKey {
+            Index c = -1, t = -1, z = -1;
+            bool operator==(const PlaneKey& o) const noexcept { return c == o.c && t == o.t && z == o.z; }
+        };
+        struct ChannelPlane {
+            const float* data = nullptr;
+            Index rowStride = 0;    // floats between rows
+            Index colStride = 1;    // floats between columns
+            std::array<int, 3> tint{256, 256, 256};
+            DisplayWindow window;
+        };
+
+        DisplayWindow computeWindow(Index c, Index t);
+        std::vector<ChannelPlane> visibleChannels(const ViewState& vs, Index t);
+        void blend(std::vector<ChannelPlane> chans, Index rows, Index cols, int factor, QImage& img);
+        void overlay(const std::uint32_t* lab, Index rows, Index cols, Index rowStride, Index colStride, int factor,
+                     float opacity, std::uint32_t selected, QImage& img);
+        static std::array<int, 3> tintOf(const DatasetMeta& m, Index c, bool rgb);
+
+        std::shared_ptr<const StepOutput> out_;
+        DatasetMeta meta_;
+        std::map<Index, DisplayWindow> windows_;          // per channel
+        std::map<Key, Buffer<float>> volumes_;            // lazy sources only
+        std::map<Key, Buffer<float>> mips_;
+        bool tooLarge_ = false;
+        // one cached plane per channel for lazy sources without a cached volume
+        std::map<Index, std::pair<PlaneKey, Buffer<float>>> planes_;
+        std::vector<float> sliceScratch_;                 // YZ column gather
+        std::vector<std::uint32_t> labelScratch_;
+    };
+
+} // namespace sirius::app
+
+#endif // SIRIUS_APP_VIEWER_DISPLAY_MODEL_HPP
