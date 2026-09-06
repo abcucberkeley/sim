@@ -61,6 +61,9 @@ namespace sirius::app {
                                                  std::vector<StepReport>* reports = nullptr,
                                                  const std::function<void(const StepReport&)>& onStep = {});
 
+        // Install an output for step `index` as if it had just run (the Load
+        // step's lazy source when a dataset is opened).
+        void seed(const Pipeline& p, int index, std::shared_ptr<const StepOutput> out);
         void invalidate(StepId id);
         void clear();
         std::size_t cachedBytes() const;
@@ -75,6 +78,7 @@ namespace sirius::app {
         struct Entry;
         std::shared_ptr<const StepOutput> load(Entry& e) const;
         void store(const Step& step, const std::string& fp, std::shared_ptr<const StepOutput> out);
+        void refreshPolicies(const Pipeline& p);   // caller holds mutex_
 
         std::filesystem::path scratch_;
         mutable std::mutex mutex_;

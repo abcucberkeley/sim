@@ -128,13 +128,16 @@ namespace sirius::app {
         if (loadIt != steps.end() && !keepLoad) {
             load.params = loadIt->params;
             load.name = loadIt->name.empty() ? "Load" : loadIt->name;
+            if (loadIt->id != 0) load.id = loadIt->id;
         }
         load.enabled = true;
         load.pinned = true;
         steps_.push_back(load);
+        // Keep ids that are unique (undo restores snapshots whose ids the
+        // executor's cache and the selection refer to); assign fresh ones otherwise.
         for (Step& s : steps) {
             if (s.kind == "load") continue;
-            s.id = 0;
+            if (s.id != 0 && (s.id == load.id || find(s.id) != nullptr)) s.id = 0;
             insertStep(std::move(s));
         }
     }
@@ -159,13 +162,19 @@ namespace sirius::app {
         for (const json& sj : j["steps"]) {
             Step s;
             s.kind = sj.value("kind", "");
-            if (!findOperation(s.kind)) throw std::runtime_error("pipeline: unknown operation '" + s.kind + "'");
-            s.name = sj.value("name", s.op().info().name);
+            const Operation* op = findOperation(s.kind);
+            // The Load step is structural: it needs no registered operation
+            // (tests and tools may run without the built-ins).
+            if (!op && s.kind != "load") throw std::runtime_error("pipeline: unknown operation '" + s.kind + "'");
+            s.name = sj.value("name", op ? op->info().name : std::string("Load"));
             s.enabled = sj.value("enabled", true);
-            s.cache = cachePolicyFromString(sj.value("cache", "recompute")).value_or(s.op().info().defaultCache);
+            s.cache = cachePolicyFromString(sj.value("cache", "recompute"))
+                          .value_or(op ? op->info().defaultCache : CachePolicy::Recompute);
             s.params = ParamSet::fromJson(sj.value("params", json::object()));
-            s.params.applyDefaults(s.op().info().params);
-            s.params.coerce(s.op().info().params);
+            if (op) {
+                s.params.applyDefaults(op->info().params);
+                s.params.coerce(op->info().params);
+            }
             if (sj.contains("id") && sj["id"].is_number_unsigned()) s.id = sj["id"].get<StepId>();
             steps.push_back(std::move(s));
         }
@@ -222,9 +231,10 @@ namespace sirius::app {
                 for (const auto& [k, v] : *t) out[std::string(k.str())] = tomlToJson(v);
                 return out;
             }
-            std::ostringstream ss;
-            ss << n;
-            return ss.str();
+            if (const auto* d = n.as_date()) { std::ostringstream ss; ss << *d; return ss.str(); }
+            if (const auto* t = n.as_time()) { std::ostringstream ss; ss << *t; return ss.str(); }
+            if (const auto* dt = n.as_date_time()) { std::ostringstream ss; ss << *dt; return ss.str(); }
+            return json();
         }
     } // namespace
 

@@ -186,7 +186,7 @@ namespace sirius::app {
             const ParamValue* v = find(s.key);
             if (!v) continue;
             try {
-                set(s.key, coerceToSpec(s, toJson(*v)));
+                set(s.key, coerceToSpec(s, sirius::app::toJson(*v)));
             } catch (const std::exception&) {
                 set(s.key, s.defaultValue);
             }

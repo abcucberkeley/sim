@@ -17,7 +17,9 @@ namespace sirius::app {
         std::function<void()> undo;
         std::function<void()> redo;
         // Consecutive commands with the same non-empty merge key collapse into
-        // one entry (slider drags, brush strokes).
+        // one entry (slider drags, brush strokes): the newest command's
+        // closures replace the entry's, so the caller composes them to span
+        // the whole merged range (see Workbench::pushEdit).
         std::string mergeKey;
     };
 

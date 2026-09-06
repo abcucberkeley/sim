@@ -120,6 +120,11 @@ namespace sirius::app {
 
         virtual StepOutput run(const StepInput& input, const ParamSet& params, const StepContext& ctx) const = 0;
 
+        // Cheap diagnostics computed without running the step (the contrast
+        // histograms update live while the percentiles are dragged). Default:
+        // none; the workbench then shows a generic shape preview.
+        virtual std::optional<Diagnostics> preview(const StepInput&, const ParamSet&) const { return std::nullopt; }
+
         // Convenience for implementations.
         const std::string& kind() const noexcept { return info().kind; }
         ParamSet defaults() const { return ParamSet(info().params); }

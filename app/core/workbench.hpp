@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -233,6 +234,11 @@ namespace sirius::app {
         void setCudaDevice(int index);
         const RemoteConfig& remoteConfig() const noexcept { return remote_; }
         void setRemoteConfig(RemoteConfig c);
+        // Steps that need the Python worker (Operation::remoteCapable) get a
+        // local worker from this launcher when the backend is not HPC; the
+        // Qt layer installs one that spawns app/python/sirius_worker.
+        using WorkerLauncher = std::function<std::unique_ptr<RemoteWorker>()>;
+        void setLocalWorkerLauncher(WorkerLauncher launcher) { launcher_ = std::move(launcher); }
         // A job for step `target` (or the last step when -1); null with a log
         // line when nothing can run. The caller executes it and calls finishRun.
         std::shared_ptr<RunJob> createRun(int target = -1);
@@ -243,6 +249,9 @@ namespace sirius::app {
 
         // --- labels (undoable, on the viewed output) -------------------------
         std::shared_ptr<LabelVolume> viewedLabels() const;
+        // One brush stroke = one undo entry: call beginPaintStroke() on press,
+        // paintLabels() on every move.
+        void beginPaintStroke();
         void paintLabels(Index z, Index y, Index x, bool erase);          // uses brush size / label
         void fillLabel(Index z, Index y, Index x);
         void mergeLabels(const std::vector<std::uint32_t>& ids);
@@ -263,7 +272,11 @@ namespace sirius::app {
         Executor& executor() noexcept { return executor_; }
 
     private:
-        struct Snapshot;
+        struct Snapshot {
+            nlohmann::json pipeline;
+            int selected = 1, viewed = 1;
+            ViewState view;
+        };
         Snapshot snapshot() const;
         void restore(const Snapshot& s);
         void pushEdit(const std::string& label, const Snapshot& before, const std::string& mergeKey = {});
@@ -291,6 +304,12 @@ namespace sirius::app {
         std::vector<std::string> log_;
         std::optional<std::pair<std::string, ParamSet>> clipboard_;
         std::shared_ptr<const StepOutput> loadOutput_;   // the Load step's lazy output
+        WorkerLauncher launcher_;
+        std::map<std::string, Snapshot> mergeBefore_;    // first "before" of an open merge group
+        std::string lastMergeKey_;
+        int strokeCounter_ = 0;
+        LabelDiff strokeDiff_;
+        StepId strokeStep_ = 0;
     };
 
 } // namespace sirius::app

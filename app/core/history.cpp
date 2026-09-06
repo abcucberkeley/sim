@@ -7,9 +7,7 @@ namespace sirius::app {
     void History::push(Command c) {
         redo_.clear();
         if (!c.mergeKey.empty() && !undo_.empty() && undo_.back().mergeKey == c.mergeKey) {
-            // keep the oldest undo, take the newest redo
-            undo_.back().redo = std::move(c.redo);
-            undo_.back().label = std::move(c.label);
+            undo_.back() = std::move(c);   // the newest command spans the whole group
             return;
         }
         undo_.push_back(std::move(c));

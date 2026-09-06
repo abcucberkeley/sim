@@ -1,2 +1,300 @@
-// placeholder: filled by the module that owns it
+// Label volumes of the workbench: connected components and watershed on
+// synthetic objects, the editing operations and their reversible diffs,
+// statistics and review flags.
+
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "core/labels.hpp"
+
+using namespace sirius;
+using namespace sirius::app;
+using Catch::Matchers::WithinAbs;
+
+namespace {
+
+    struct Mask {
+        Index z, y, x;
+        std::vector<std::uint8_t> v;
+        Mask(Index nz, Index ny, Index nx) : z(nz), y(ny), x(nx), v(static_cast<std::size_t>(nz * ny * nx), 0) {}
+        Index at(Index iz, Index iy, Index ix) const { return (iz * y + iy) * x + ix; }
+        void sphere(Index cz, Index cy, Index cx, double r) {
+            for (Index iz = 0; iz < z; ++iz)
+                for (Index iy = 0; iy < y; ++iy)
+                    for (Index ix = 0; ix < x; ++ix) {
+                        const double d2 = static_cast<double>((iz - cz) * (iz - cz) + (iy - cy) * (iy - cy) + (ix - cx) * (ix - cx));
+                        if (d2 <= r * r) v[static_cast<std::size_t>(at(iz, iy, ix))] = 1;
+                    }
+        }
+    };
+
+    std::set<std::uint32_t> distinct(const std::vector<std::uint32_t>& labels) {
+        std::set<std::uint32_t> s(labels.begin(), labels.end());
+        s.erase(0);
+        return s;
+    }
+
+} // namespace
+
+TEST_CASE("connectedComponents labels 6-connected blobs densely", "[app][labels]") {
+    Mask m(8, 16, 16);
+    m.sphere(3, 4, 4, 2.0);
+    m.sphere(3, 11, 11, 2.5);
+    // two voxels touching only diagonally are separate components in 6-connectivity
+    m.v[static_cast<std::size_t>(m.at(7, 0, 0))] = 1;
+    m.v[static_cast<std::size_t>(m.at(7, 1, 1))] = 1;
+    std::vector<std::uint32_t> out(m.v.size());
+    const std::uint32_t n = connectedComponents(m.v.data(), m.z, m.y, m.x, out.data());
+    CHECK(n == 4);
+    CHECK(distinct(out) == std::set<std::uint32_t>{1, 2, 3, 4});
+    // background stays 0, every masked voxel is labelled, one label per blob
+    for (std::size_t i = 0; i < out.size(); ++i) CHECK((out[i] != 0) == (m.v[i] != 0));
+    CHECK(out[static_cast<std::size_t>(m.at(3, 4, 4))] == out[static_cast<std::size_t>(m.at(4, 4, 5))]);
+    CHECK(out[static_cast<std::size_t>(m.at(3, 4, 4))] != out[static_cast<std::size_t>(m.at(3, 11, 11))]);
+    CHECK(out[static_cast<std::size_t>(m.at(7, 0, 0))] != out[static_cast<std::size_t>(m.at(7, 1, 1))]);
+
+    SECTION("a U shape closed late in the raster scan is still one component") {
+        Mask u(1, 5, 5);
+        for (Index iy = 0; iy < 5; ++iy) {
+            u.v[static_cast<std::size_t>(u.at(0, iy, 0))] = 1;
+            u.v[static_cast<std::size_t>(u.at(0, iy, 4))] = 1;
+        }
+        for (Index ix = 0; ix < 5; ++ix) u.v[static_cast<std::size_t>(u.at(0, 4, ix))] = 1;
+        std::vector<std::uint32_t> lab(u.v.size());
+        CHECK(connectedComponents(u.v.data(), 1, 5, 5, lab.data()) == 1);
+    }
+    SECTION("removeSmall drops the specks and renumbers") {
+        std::vector<std::uint32_t> lab = out;
+        const std::uint32_t kept = removeSmall(lab.data(), static_cast<Index>(lab.size()), 10);
+        CHECK(kept == 2);
+        CHECK(distinct(lab) == std::set<std::uint32_t>{1, 2});
+        CHECK(lab[static_cast<std::size_t>(m.at(7, 0, 0))] == 0);
+    }
+}
+
+TEST_CASE("distanceTransform is the exact Euclidean distance to the background", "[app][labels]") {
+    Mask m(5, 9, 9);
+    m.sphere(2, 4, 4, 3.0);
+    std::vector<float> d(m.v.size());
+    distanceTransform(m.v.data(), m.z, m.y, m.x, d.data());
+    // brute force reference
+    for (Index iz = 0; iz < m.z; ++iz)
+        for (Index iy = 0; iy < m.y; ++iy)
+            for (Index ix = 0; ix < m.x; ++ix) {
+                double best = 1e300;
+                for (Index jz = 0; jz < m.z; ++jz)
+                    for (Index jy = 0; jy < m.y; ++jy)
+                        for (Index jx = 0; jx < m.x; ++jx)
+                            if (!m.v[static_cast<std::size_t>(m.at(jz, jy, jx))])
+                                best = std::min(best, std::sqrt(static_cast<double>((iz - jz) * (iz - jz) + (iy - jy) * (iy - jy) + (ix - jx) * (ix - jx))));
+                const float got = d[static_cast<std::size_t>(m.at(iz, iy, ix))];
+                if (!m.v[static_cast<std::size_t>(m.at(iz, iy, ix))]) CHECK(got == 0.0f);
+                else CHECK_THAT(got, WithinAbs(best, 1e-4));
+            }
+    SECTION("a mask without background reads the volume's extent") {
+        std::vector<std::uint8_t> full(8, 1);
+        std::vector<float> dd(8);
+        distanceTransform(full.data(), 2, 2, 2, dd.data());
+        for (float v : dd) CHECK(v == 2.0f);
+    }
+}
+
+TEST_CASE("watershed splits two touching spheres from distance seeds", "[app][labels]") {
+    Mask m(9, 15, 25);
+    m.sphere(4, 7, 7, 4.0);
+    m.sphere(4, 7, 15, 4.0);   // centres 8 apart, radii 4: they touch in a neck
+    std::vector<std::uint32_t> cc(m.v.size());
+    REQUIRE(connectedComponents(m.v.data(), m.z, m.y, m.x, cc.data()) == 1);
+
+    std::vector<std::uint32_t> seeds(m.v.size());
+    const std::uint32_t nSeeds = distanceSeeds(m.v.data(), m.z, m.y, m.x, 5.0, seeds.data());
+    REQUIRE(nSeeds == 2);
+    std::vector<float> dist(m.v.size());
+    distanceTransform(m.v.data(), m.z, m.y, m.x, dist.data());
+    for (float& v : dist) v = -v;   // ridges high, basins low
+
+    std::vector<std::uint32_t> labels = seeds;
+    watershed(dist.data(), m.v.data(), m.z, m.y, m.x, labels.data());
+    CHECK(distinct(labels) == std::set<std::uint32_t>{1, 2});
+    Index n1 = 0, n2 = 0;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        CHECK((labels[i] != 0) == (m.v[i] != 0));
+        if (labels[i] == 1) ++n1;
+        if (labels[i] == 2) ++n2;
+    }
+    // the two halves are the same size and each centre keeps its own label
+    CHECK(std::abs(n1 - n2) <= 12);
+    CHECK(labels[static_cast<std::size_t>(m.at(4, 7, 7))] != labels[static_cast<std::size_t>(m.at(4, 7, 15))]);
+    CHECK(labels[static_cast<std::size_t>(m.at(4, 7, 7))] == labels[static_cast<std::size_t>(m.at(4, 7, 5))]);
+    CHECK(labels[static_cast<std::size_t>(m.at(4, 7, 15))] == labels[static_cast<std::size_t>(m.at(4, 7, 17))]);
+}
+
+TEST_CASE("LabelVolume edits produce reversible diffs", "[app][labels]") {
+    LabelVolume vol(2, 6, 12, 12);
+    CHECK(vol.maxLabel() == 0);
+    CHECK(vol.volumeSize() == 6 * 12 * 12);
+
+    const LabelDiff brush = vol.paint(1, 3, 6, 6, 2.0, 1, 7);
+    CHECK_FALSE(brush.empty());
+    CHECK(vol.maxLabel() == 7);
+    CHECK(vol.at(1, 3, 6, 6) == 7);
+    CHECK(vol.at(1, 3, 6, 8) == 7);   // on the ring
+    CHECK(vol.at(1, 3, 6, 9) == 0);   // outside the radius
+    CHECK(vol.at(1, 4, 6, 6) == 7);   // one plane up, on the ellipsoid's axis
+    CHECK(vol.at(1, 4, 6, 8) == 0);   // one plane up, ring shrinks
+    CHECK(vol.at(1, 5, 6, 6) == 0);   // beyond zRadius
+    CHECK(vol.at(0, 3, 6, 6) == 0);   // other time point untouched
+    for (std::size_t k = 0; k < brush.indices.size(); ++k) {
+        CHECK(brush.before[k] == 0);
+        CHECK(brush.after[k] == 7);
+    }
+
+    SECTION("undo through apply(forward = false) restores every voxel") {
+        vol.apply(brush, false);
+        for (Index i = 0; i < vol.volumeSize(); ++i) CHECK(vol.volume(1)[i] == 0);
+        vol.apply(brush, true);
+        CHECK(vol.at(1, 3, 6, 6) == 7);
+    }
+    SECTION("painting the same label again changes nothing; onlyLabel restricts") {
+        CHECK(vol.paint(1, 3, 6, 6, 2.0, 1, 7).empty());
+        const LabelDiff restricted = vol.paint(1, 3, 6, 6, 4.0, 0, 9, 7);
+        for (std::uint32_t b : restricted.before) CHECK(b == 7);
+        CHECK(vol.at(1, 3, 6, 6) == 9);
+        CHECK(vol.at(1, 3, 6, 9) == 0);   // was background, left alone
+    }
+    SECTION("erase is painting 0") {
+        const LabelDiff erase = vol.paint(1, 3, 6, 6, 1.0, 0, 0);
+        CHECK(vol.at(1, 3, 6, 6) == 0);
+        CHECK(vol.at(1, 3, 6, 8) == 7);
+        vol.apply(erase, false);
+        CHECK(vol.at(1, 3, 6, 6) == 7);
+    }
+    SECTION("fill recolours the connected region under the seed") {
+        vol.paint(1, 0, 1, 1, 1.0, 0, 3);   // a separate small object
+        const LabelDiff filled = vol.fill(1, 3, 6, 6, 4);
+        CHECK(filled.indices.size() == brush.indices.size());
+        CHECK(vol.at(1, 3, 6, 6) == 4);
+        CHECK(vol.at(1, 0, 1, 1) == 3);
+        CHECK(vol.fill(1, 3, 6, 6, 4).empty());
+        CHECK_THROWS_AS(vol.fill(1, 99, 0, 0, 4), std::out_of_range);
+    }
+    SECTION("merge keeps the smallest id, remove clears") {
+        vol.paint(1, 0, 1, 1, 1.0, 0, 3);
+        vol.paint(1, 0, 10, 10, 1.0, 0, 12);
+        const LabelDiff merged = vol.merge(1, {12, 7, 3});
+        CHECK(vol.at(1, 3, 6, 6) == 3);
+        CHECK(vol.at(1, 0, 10, 10) == 3);
+        CHECK(vol.at(1, 0, 1, 1) == 3);
+        for (std::uint32_t a : merged.after) CHECK(a == 3);
+        vol.apply(merged, false);
+        CHECK(vol.at(1, 3, 6, 6) == 7);
+        const LabelDiff removed = vol.remove(1, 7);
+        CHECK(removed.indices.size() == brush.indices.size());
+        CHECK(vol.at(1, 3, 6, 6) == 0);
+        CHECK(vol.remove(1, 0).empty());
+    }
+    SECTION("split separates a dumbbell at its neck") {
+        LabelVolume w(1, 9, 15, 25);
+        for (Index z = 0; z < 9; ++z)
+            for (Index y = 0; y < 15; ++y)
+                for (Index x = 0; x < 25; ++x) {
+                    const bool a = (z - 4) * (z - 4) + (y - 7) * (y - 7) + (x - 7) * (x - 7) <= 16;
+                    const bool b = (z - 4) * (z - 4) + (y - 7) * (y - 7) + (x - 15) * (x - 15) <= 16;
+                    if (a || b) w.volume(0)[(z * 15 + y) * 25 + x] = 5;
+                }
+        w.recomputeStats(0);
+        REQUIRE(w.maxLabel() == 5);
+        const LabelDiff split = w.split(0, 5, {4, 7, 7}, {4, 7, 15});
+        CHECK_FALSE(split.empty());
+        CHECK(w.maxLabel() == 6);
+        CHECK(w.at(0, 4, 7, 7) == 5);
+        CHECK(w.at(0, 4, 7, 15) == 6);
+        CHECK(w.at(0, 4, 7, 17) == 6);
+        CHECK(w.at(0, 4, 7, 5) == 5);
+        for (std::uint32_t b : split.before) CHECK(b == 5);
+        w.apply(split, false);
+        CHECK(w.at(0, 4, 7, 15) == 5);
+        CHECK_THROWS_AS(w.split(0, 5, {0, 0, 0}, {4, 7, 15}), std::invalid_argument);
+    }
+    SECTION("clone is independent") {
+        auto c = vol.clone();
+        c->paint(1, 3, 6, 6, 3.0, 2, 0);
+        CHECK(vol.at(1, 3, 6, 6) == 7);
+        CHECK(c->at(1, 3, 6, 6) == 0);
+        CHECK(c->t() == 2);
+    }
+}
+
+TEST_CASE("LabelVolume statistics and review flags", "[app][labels]") {
+    LabelVolume vol(1, 5, 20, 20);
+    vol.paint(0, 2, 10, 10, 3.0, 1, 1);   // a healthy object
+    vol.paint(0, 2, 3, 3, 1.0, 0, 2);     // small
+    vol.paint(0, 2, 10, 0, 1.5, 0, 3);    // touches the x border
+    vol.paint(0, 0, 16, 16, 0.0, 0, 4);   // single voxel on the z border
+    std::vector<float> prob(static_cast<std::size_t>(vol.volumeSize()), 0.9f);
+    // low confidence under object 2
+    for (Index i = 0; i < vol.volumeSize(); ++i)
+        if (vol.volume(0)[i] == 2) prob[static_cast<std::size_t>(i)] = 0.3f;
+
+    vol.recomputeStats(0, prob.data());
+    REQUIRE(vol.stats().size() == 4);
+    const LabelStats* one = vol.statsOf(1);
+    REQUIRE(one);
+    CHECK(one->voxels > 30);
+    CHECK_THAT(one->confidence, WithinAbs(0.9, 1e-5));
+    CHECK(one->bbox == std::array<Index, 6>{1, 4, 7, 14, 7, 14});
+    CHECK_FALSE(one->touchesBorder);
+    const LabelStats* two = vol.statsOf(2);
+    REQUIRE(two);
+    CHECK_THAT(two->confidence, WithinAbs(0.3, 1e-5));
+    CHECK(vol.statsOf(3)->touchesBorder);
+    CHECK(vol.statsOf(4)->touchesBorder);
+    CHECK(vol.statsOf(4)->voxels == 1);
+    CHECK(vol.statsOf(99) == nullptr);
+
+    LabelFlagRules rules;
+    rules.minVoxels = 3;
+    vol.applyFlags(rules);
+    CHECK(vol.statsOf(2)->flagText() == "low conf");
+    CHECK(vol.flaggedCount("low conf") == 1);
+    CHECK(vol.flaggedCount("touching border") == 2);
+    CHECK(vol.flaggedCount("small") == 1);   // object 4
+    // object 1 dwarfs the median: the only thing wrong with it is its size
+    CHECK(vol.statsOf(1)->flags == std::vector<std::string>{"merged?"});
+    CHECK(vol.flaggedCount("merged?") == 1);
+
+    SECTION("review marks and classes survive a recompute") {
+        vol.stats()[0].reviewed = true;
+        vol.stats()[0].cls = "nucleus";
+        CHECK(vol.reviewedCount() == 1);
+        vol.recomputeStats(0);
+        CHECK(vol.statsOf(1)->reviewed);
+        CHECK(vol.statsOf(1)->cls == "nucleus");
+        CHECK(vol.statsOf(1)->confidence == 1.0);   // no probabilities this time
+    }
+    SECTION("distance seeds mark one seed per object") {
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(vol.volumeSize()));
+        for (Index i = 0; i < vol.volumeSize(); ++i) mask[static_cast<std::size_t>(i)] = vol.volume(0)[i] ? 1 : 0;
+        std::vector<std::uint32_t> seeds(mask.size());
+        // the rim of a flat disc is a plateau of distance 1, so the minimum
+        // seed distance has to exceed the disc radius to get one seed per object
+        CHECK(distanceSeeds(mask.data(), 5, 20, 20, 4.0, seeds.data()) == 4);
+        CHECK(distanceSeeds(mask.data(), 5, 20, 20, 3.0, seeds.data()) > 4);
+    }
+}
+
+TEST_CASE("labelColor cycles the palette and keeps the background black", "[app][labels]") {
+    CHECK(labelColor(0) == std::array<float, 3>{0.f, 0.f, 0.f});
+    CHECK(labelColor(1) == labelColor(8));
+    CHECK(labelColor(1) != labelColor(2));
+    CHECK_THAT(labelColor(2)[2], WithinAbs(1.0, 1e-6));   // #7c9cff
+}
