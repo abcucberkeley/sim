@@ -36,6 +36,9 @@ namespace sirius::app {
     signals:
         void closeRequested();
 
+    protected:
+        void resizeEvent(QResizeEvent* event) override;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;
