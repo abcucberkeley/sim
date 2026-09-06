@@ -68,7 +68,13 @@ target_link_libraries(sirius
         ${SIRIUS_FFTW_TARGETS}
         sirius_simd
         tomlplusplus::tomlplusplus
+        nlohmann_json::nlohmann_json   # zarr / N5 metadata (zarr_io.cpp)
 )
+
+if(SIRIUS_ENABLE_TENSORSTORE)
+    target_compile_definitions(sirius PRIVATE SIRIUS_HAS_TENSORSTORE=1)
+    target_link_libraries(sirius PRIVATE sirius::tensorstore)
+endif()
 
 # The public headers never depend on these macros (see device.hpp); they only
 # select implementation paths inside the library.

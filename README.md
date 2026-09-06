@@ -33,7 +33,7 @@ Fiona supports avx2 so make sure to pass `-DSIRIUS_ENABLE_AVX2=ON`; the `fiona-a
 ## TODO
 - detect/handle int overflow and use fftw_plan_guru64_dft instead of fftw_plan_many_dft
 - Remove port overlay after the next nanobind release (due to missing tensor header)
-- Add tensorstore
+- TensorStore: remote kvstores (gcs, s3, http) are compiled out; add them behind an option when a cluster needs them
 - Sanitizers.cmake only enables ASan+UBSan for non-MSVC. Add tsan/msan as separate options (mutually exclusive with ASan), and on MSVC, /fsanitize=address doesn't co-exist with /RTC1, which Debug enables by default. Worth a string(REGEX REPLACE) to strip /RTC* when sanitizers are on.
 - cmake install command so the downstream user can simply do
 ```cmake
@@ -97,7 +97,83 @@ in advance. Read calls return with the data ready (they synchronize the stream).
 
 The Eigen API (`readTiff`, `readTiffStack`, `readTiffStackAny`, `writeTiff*`) is
 unchanged and implemented on top of `TiffFile`; the writers also accept `BufferView`s
-on either device.
+on either device. `inspectTiff` also reports the first page's `ImageDescription`
+(OME-XML, ImageJ metadata) and the resolution tags, which the workbench turns into
+dimensions, voxel sizes and channel names.
+
+### TIFF writing (`TiffWriteOptions`)
+
+`writeTiffStack(path, view, options)` gives full control over the container:
+
+```cpp
+TiffWriteOptions o;
+o.tiled = true;  o.tileWidth = o.tileHeight = 512;   // or strips with rowsPerStrip
+o.compression = TiffCompression::Deflate;  o.compressionLevel = 6;  o.predictor = true;
+o.bigTiff = true;
+o.pyramidLevels = 4;  o.downsample = 2;    // reduced-resolution SubIFDs under every page
+o.description = omeXml;                    // ImageDescription of the first page
+o.xPixelUm = o.yPixelUm = 0.104;           // XResolution / YResolution in cm
+o.progress = [](double f) { ... };  o.cancelled = [] { return stop; };
+writeTiffStack<std::uint16_t>("out.ome.tif", stack.view(), o);
+```
+
+Pyramid levels are box means (rounded for integer types) and come back through
+`TiffInfo::levels` / `readLevel`, so a file written with `pyramidLevels = 4` reads
+like any other pyramidal TIFF. The predictor is off by default because nvTIFF cannot
+decode the floating-point predictor; the older `writeTiffStack(path, view, comp)`
+keeps its original behaviour (predictor on, BigTIFF).
+
+### zarr, OME-Zarr and N5 (TensorStore)
+
+`zarr_io.hpp` reads and writes chunked stores through
+[TensorStore](https://google.github.io/tensorstore/): zarr v2, zarr v3 (with
+sharding) and N5, plus OME-NGFF metadata (axes, coordinate scales, `omero`
+channels, multiscale pyramids). Shapes, chunks and axis names are always given in C
+order (last axis fastest); N5's reversed on-disk dimension list is handled inside.
+
+```cpp
+ZarrArray a("/data/cells.zarr");            // an OME-NGFF group opens its level-0 array
+a.info().shape, a.info().axes, a.info().scale, a.info().multiscalePaths
+Buffer<float> plane = a.read<float>({t, c, z, 0, 0}, {1, 1, 1, 0, 0});   // 0 = to the end
+
+ZarrWriteOptions w;
+w.zarrVersion = 3;  w.chunks = {1, 1, 16, 512, 512};  w.codec = "blosc-zstd";  w.level = 3;
+w.shard = true;  w.shardFactor = 4;         // zarr 3 sharding_indexed
+w.axes = {"t", "c", "z", "y", "x"};  w.scale = {1, 1, 0.3, 0.1, 0.1};
+w.pyramidLevels = 4;                        // OME-NGFF multiscales "0".."3", box mean over y and x
+writeZarr<std::uint16_t>("/data/out.zarr", data, {T, C, Z, Y, X}, w);
+```
+
+Codecs: `blosc-zstd`, `blosc-lz4`, `zstd`, `gzip`, `none`; `zarrVersion = 0` writes N5.
+The feature is gated by `SIRIUS_ENABLE_TENSORSTORE` (off by default, on in the
+`*-app-*` presets): TensorStore is a Bazel project built through its CMake bridge,
+which fetches about forty dependencies, needs `python3` and the NASM assembler at
+configure time (`apt install nasm`, or `conda install -c conda-forge nasm` without
+root; CMake also looks in the usual conda prefixes) and takes several minutes and
+about 1.5 GB on the first build. zlib, libtiff and nlohmann/json are shared with the
+rest of SIRIUS rather than built twice. Without the option `zarrSupported()` is
+false and every zarr call throws a clear error, so the workbench simply hides the
+formats.
+
+### Workbench datasets and export formats
+
+The workbench (`app/core/array_source.hpp`, `app/core/export.hpp`) opens multi-page
+TIFF / OME-TIFF (dimensions, voxel size, frame interval and channel names from the
+OME-XML or ImageJ description and the resolution tags; otherwise a page-order
+dialog assigns c / t / z), zarr v2, zarr v3 and N5 (OME-NGFF axes map onto
+c, t, z, y, x by name, unnamed axes by position). Planes are decoded on demand
+through a small cache, so scrubbing a 15 GB stack never loads it; a step
+materializes only the (c, t) volumes it works on. Export writes any pixel type
+(cast, min/max, fixed-range or percentile rescale) and any t / z / channel subset as
+
+- **TIFF / OME-TIFF**: strips or tiles, None/LZW/Deflate with level and predictor,
+  BigTIFF, resolution pyramid, OME-XML (`DimensionOrder="XYZTC"`, planes z-fastest);
+- **OME-Zarr / N5**: zarr 2 or 3, chunk shape, `blosc-zstd` / `blosc-lz4` / `zstd` /
+  `gzip` / `none`, sharding, multiscale levels, `omero` channel metadata; labels go to
+  `<store>/labels/labels` as OME-NGFF expects;
+- **Raw**: little-endian planes in (c, t, z, y, x) order plus a JSON sidecar;
+
+with optional `<name>.pipeline.toml` and label sidecars.
 
 ### Building with CUDA
 
