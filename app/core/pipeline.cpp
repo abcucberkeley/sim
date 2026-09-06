@@ -14,7 +14,7 @@ namespace sirius::app {
     using json = nlohmann::json;
 
     std::string Step::number(int index) {
-        char buf[8];
+        char buf[16];
         std::snprintf(buf, sizeof buf, "%02d", index + 1);
         return buf;
     }
