@@ -23,6 +23,15 @@ cmake_dependent_option(SIRIUS_ENABLE_NVCOMP "Fetch nvCOMP so nvTIFF can decode D
 set(SIRIUS_NVTIFF_ROOT "" CACHE PATH "Existing nvTIFF install (include/ and lib/) to use instead of downloading")
 set(SIRIUS_NVCOMP_ROOT "" CACHE PATH "Existing nvCOMP install (include/ and lib/) to use instead of downloading")
 
+# TensorStore gives the library (and the workbench's Load / Export) zarr v2,
+# zarr v3 and N5 stores. It is a Bazel project built through its CMake bridge
+# (bazel_to_cmake), which fetches ~40 dependencies and needs NASM and a
+# python3 at configure time; the first build takes several minutes and about
+# 1.5 GB. Off by default so the plain library/CI builds stay light; the
+# *-app-* presets turn it on. See cmake/Dependencies.cmake for the wiring.
+option(SIRIUS_ENABLE_TENSORSTORE "Enable zarr / N5 stores through TensorStore (long first build, needs nasm)" OFF)
+set(SIRIUS_TENSORSTORE_VERSION "0.1.78" CACHE STRING "TensorStore release to fetch")
+
 # scikit-build-core always builds the Python extension
 if(SKBUILD)
     set(SIRIUS_ENABLE_PYTHON_BINDINGS ON CACHE BOOL "" FORCE)

@@ -140,6 +140,72 @@ FetchContent_Declare(
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 
+# TensorStore (zarr / N5). Its CMake bridge normally fetches private copies of
+# zlib, libtiff and nlohmann/json under the same target names we already
+# define (ZLIB::ZLIB, TIFF::TIFF, nlohmann_json::nlohmann_json), and two zlibs
+# in one static link would clash anyway. So those three are declared "system"
+# packages for TensorStore and find_package() is redirected to the targets
+# built above; everything else (abseil, blosc, zstd, riegeli, ...) is fetched
+# and built by the bridge, out of sight.
+if(SIRIUS_ENABLE_TENSORSTORE)
+    # The bridge enables the ASM_NASM language (libjpeg-turbo / BoringSSL).
+    # Look where package managers put nasm when it is not on PATH; conda-forge's
+    # `conda install nasm` is the no-sudo route on a shared machine.
+    if(NOT DEFINED CMAKE_ASM_NASM_COMPILER AND NOT DEFINED ENV{ASM_NASM})
+        find_program(SIRIUS_NASM NAMES nasm
+            HINTS ENV CONDA_PREFIX "$ENV{HOME}/miniconda3" "$ENV{HOME}/anaconda3" "$ENV{HOME}/mambaforge"
+                  "$ENV{HOME}/miniforge3" /opt/conda /usr/local
+            PATH_SUFFIXES bin)
+        if(SIRIUS_NASM)
+            set(CMAKE_ASM_NASM_COMPILER "${SIRIUS_NASM}" CACHE FILEPATH "NASM assembler for TensorStore's dependencies" FORCE)
+        else()
+            message(FATAL_ERROR "SIRIUS_ENABLE_TENSORSTORE needs the NASM assembler (apt install nasm, "
+                                "conda install -c conda-forge nasm, or set CMAKE_ASM_NASM_COMPILER).")
+        endif()
+    endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)   # bazel_to_cmake
+
+    set(TENSORSTORE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(TENSORSTORE_USE_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+    set(TENSORSTORE_USE_SYSTEM_TIFF ON CACHE BOOL "" FORCE)
+    set(TENSORSTORE_USE_SYSTEM_NLOHMANN_JSON ON CACHE BOOL "" FORCE)
+    # find_package(TIFF) / find_package(nlohmann_json) inside the bridge must
+    # resolve to our targets: drop config files into the redirects directory
+    # CMake consults before any module or installed package (zlib already has
+    # one from OVERRIDE_FIND_PACKAGE above).
+    foreach(_pkg TIFF nlohmann_json)
+        string(TOLOWER "${_pkg}" _lc)
+        file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/${_lc}-config.cmake"
+             "# ${_pkg} is built in-tree by SIRIUS (cmake/Dependencies.cmake); the targets already exist.\n"
+             "set(${_pkg}_FOUND TRUE)\n")
+        file(WRITE "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/${_pkg}Config.cmake"
+             "include(\"\${CMAKE_CURRENT_LIST_DIR}/${_lc}-config.cmake\")\n")
+    endforeach()
+    set(TIFF_LIBRARIES TIFF::TIFF)
+    set(TIFF_INCLUDE_DIRS "")
+
+    FetchContent_Declare(
+        tensorstore
+        URL      https://github.com/google/tensorstore/archive/refs/tags/v${SIRIUS_TENSORSTORE_VERSION}.tar.gz
+        URL_HASH SHA256=f59667a32357b8cc0c752429927ad97654f6a67c7d3d62b9efea902c6798d473
+        SYSTEM
+    )
+    FetchContent_MakeAvailable(tensorstore)
+    # The drivers the library uses. all_drivers would also pull gcs/s3/http.
+    add_library(sirius_tensorstore INTERFACE)
+    target_link_libraries(sirius_tensorstore INTERFACE
+        tensorstore::tensorstore
+        tensorstore::cast
+        tensorstore::index_space_dim_expression
+        tensorstore::driver_cast
+        tensorstore::driver_zarr
+        tensorstore::driver_zarr3
+        tensorstore::driver_n5
+        tensorstore::kvstore_file)
+    add_library(sirius::tensorstore ALIAS sirius_tensorstore)
+    message(STATUS "TensorStore ${SIRIUS_TENSORSTORE_VERSION} (zarr v2/v3, N5) enabled")
+endif()
+
 if(SIRIUS_ENABLE_TESTS)
     FetchContent_Declare(
         Catch2

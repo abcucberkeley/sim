@@ -2,7 +2,10 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <tiffio.h>
 
 #include "sirius/tiff_io.hpp"
@@ -612,4 +615,193 @@ TEST_CASE("Error handling", "[tiff][io][error_handling]") {
         ImageStack<float> empty;
         REQUIRE_THROWS_WITH(writeTiffStack("empty.tiff", empty), "Cannot write empty stack");
     }
+}
+
+// -----------------------------------------------------------------------
+// TiffWriteOptions: layout, codec, metadata, pyramids
+// -----------------------------------------------------------------------
+
+namespace {
+    template <typename T>
+    Buffer<T> testStack(Index pages, Index rows, Index cols) {
+        Buffer<T> b(Shape{pages, rows, cols});
+        for (Index z = 0; z < pages; ++z)
+            for (Index r = 0; r < rows; ++r)
+                for (Index c = 0; c < cols; ++c)
+                    b.data()[(z * rows + r) * cols + c] = static_cast<T>((z * 977 + r * 31 + c * 7) % 251);
+        return b;
+    }
+
+    template <typename T>
+    void requireSame(const Buffer<T>& a, const Buffer<T>& b) {
+        REQUIRE(a.shape() == b.shape());
+        for (Index i = 0; i < a.size(); ++i) {
+            if (a.data()[i] != b.data()[i]) {
+                FAIL("mismatch at " << i << ": " << +a.data()[i] << " vs " << +b.data()[i]);
+            }
+        }
+    }
+} // namespace
+
+TEST_CASE("TiffWriteOptions: strips and tiles with every codec round-trip", "[tiff][io][options]") {
+    const bool tiled = GENERATE(false, true);
+    const TiffCompression comp = GENERATE(TiffCompression::None, TiffCompression::Lzw, TiffCompression::Deflate);
+    const bool predictor = GENERATE(false, true);
+    INFO("tiled=" << tiled << " comp=" << static_cast<int>(comp) << " predictor=" << predictor);
+    TempFile f(uniqueTempPath(".tif"));
+
+    TiffWriteOptions o;
+    o.tiled = tiled;
+    o.tileWidth = 32;
+    o.tileHeight = 16;
+    o.rowsPerStrip = 7;
+    o.compression = comp;
+    o.compressionLevel = 4;
+    o.predictor = predictor;
+    o.bigTiff = false;
+
+    SECTION("uint16") {
+        const auto stack = testStack<uint16_t>(3, 37, 53);   // not tile aligned
+        writeTiffStack<uint16_t>(f.path, stack.view(), o);
+        TiffFile file(f.path);
+        REQUIRE(file.info().pageCount() == 3);
+        REQUIRE_FALSE(file.info().bigTiff);
+        REQUIRE(file.info().page(0).layout == (tiled ? TiffLayout::Tiles : TiffLayout::Strips));
+        if (tiled) {
+            REQUIRE(file.info().page(0).tileWidth == 32);
+            REQUIRE(file.info().page(0).tileHeight == 16);
+        } else {
+            REQUIRE(file.info().page(0).rowsPerStrip == 7);
+        }
+        if (comp != TiffCompression::None) REQUIRE(file.info().page(0).predictor == (predictor ? 2 : 1));
+        requireSame(file.readStack<uint16_t>(), stack);
+    }
+    SECTION("float") {
+        const auto stack = testStack<float>(2, 20, 41);
+        writeTiffStack<float>(f.path, stack.view(), o);
+        TiffFile file(f.path);
+        if (comp != TiffCompression::None) REQUIRE(file.info().page(0).predictor == (predictor ? 3 : 1));
+        requireSame(file.readStack<float>(), stack);
+    }
+}
+
+TEST_CASE("TiffWriteOptions: every pixel type round-trips through tiles", "[tiff][io][options]") {
+    TempFile f(uniqueTempPath(".tif"));
+    TiffWriteOptions o;
+    o.tiled = true;
+    o.tileWidth = 16;
+    o.tileHeight = 16;
+    o.compression = TiffCompression::Deflate;
+    auto check = [&](auto tag) {
+        using T = decltype(tag);
+        const auto stack = testStack<T>(2, 19, 23);
+        writeTiffStack<T>(f.path, stack.view(), o);
+        TiffFile file(f.path);
+        REQUIRE(file.info().pixelType() == pixelTypeOf<T>());
+        requireSame(file.readStack<T>(), stack);
+    };
+    check(std::uint8_t{});
+    check(std::int8_t{});
+    check(std::uint16_t{});
+    check(std::int16_t{});
+    check(std::uint32_t{});
+    check(std::int32_t{});
+    check(float{});
+    check(double{});
+}
+
+TEST_CASE("TiffWriteOptions: description, resolution and BigTIFF are written and read back", "[tiff][io][options]") {
+    TempFile f(uniqueTempPath(".tif"));
+    TiffWriteOptions o;
+    o.description = "<?xml version=\"1.0\"?><OME><Image/></OME>";
+    o.xPixelUm = 0.1;
+    o.yPixelUm = 0.2;
+    o.bigTiff = true;
+    const auto stack = testStack<uint8_t>(2, 8, 8);
+    writeTiffStack<uint8_t>(f.path, stack.view(), o);
+
+    const TiffInfo info = inspectTiff(f.path);
+    REQUIRE(info.bigTiff);
+    REQUIRE(info.page(0).description == o.description);
+    REQUIRE(info.page(1).description.empty());
+    REQUIRE(info.page(0).resolutionUnit == 3);
+    REQUIRE_THAT(info.page(0).xResolution, Catch::Matchers::WithinRel(1e4 / 0.1, 1e-4));
+    REQUIRE_THAT(info.page(0).yResolution, Catch::Matchers::WithinRel(1e4 / 0.2, 1e-4));
+
+    // A file without the tags reports their absence
+    TempFile g(uniqueTempPath(".tif"));
+    writeTiffStack<uint8_t>(g.path, stack.view(), TiffWriteOptions{});
+    const TiffInfo plain = inspectTiff(g.path);
+    REQUIRE(plain.page(0).description.empty());
+    REQUIRE(plain.page(0).xResolution == 0.0);
+}
+
+TEST_CASE("TiffWriteOptions: pyramids are written as SubIFDs and discovered as levels", "[tiff][io][options][pyramid]") {
+    const bool tiled = GENERATE(false, true);
+    INFO("tiled=" << tiled);
+    TempFile f(uniqueTempPath(".tif"));
+    TiffWriteOptions o;
+    o.tiled = tiled;
+    o.tileWidth = 16;
+    o.tileHeight = 16;
+    o.pyramidLevels = 3;
+    o.downsample = 2;
+    o.compression = TiffCompression::Lzw;
+    const auto stack = testStack<uint16_t>(2, 45, 70);
+    double lastProgress = 0.0;
+    o.progress = [&](double p) { lastProgress = p; };
+    writeTiffStack<uint16_t>(f.path, stack.view(), o);
+    REQUIRE(lastProgress == 1.0);
+
+    TiffFile file(f.path);
+    const TiffInfo& info = file.info();
+    REQUIRE(info.pageCount() == 2);
+    REQUIRE(info.levelCount() == 3);
+    REQUIRE(info.page(0).subIfds.size() == 2);
+    REQUIRE(info.levels[1].width == 35);
+    REQUIRE(info.levels[1].height == 23);
+    REQUIRE(info.levels[2].width == 18);
+    REQUIRE(info.levels[2].height == 12);
+    REQUIRE(info.image(info.levels[1].ifds[0]).reducedResolution);
+    requireSame(file.readStack<uint16_t>(), stack);
+
+    // level 1 is the 2x2 box mean of level 0 (partial boxes at the far edge)
+    const Buffer<uint16_t> l1 = file.readLevel<uint16_t>(1);
+    REQUIRE(l1.shape() == Shape{2, 23, 35});
+    for (Index z = 0; z < 2; ++z)
+        for (Index r = 0; r < 23; ++r)
+            for (Index c = 0; c < 35; ++c) {
+                double acc = 0.0;
+                int n = 0;
+                for (Index y = 2 * r; y < std::min<Index>(2 * r + 2, 45); ++y)
+                    for (Index x = 2 * c; x < std::min<Index>(2 * c + 2, 70); ++x, ++n)
+                        acc += stack.data()[(z * 45 + y) * 70 + x];
+                const auto expected = static_cast<uint16_t>(std::llround(acc / n));
+                if (l1.data()[(z * 23 + r) * 35 + c] != expected)
+                    FAIL("level 1 mismatch at (" << z << "," << r << "," << c << ")");
+            }
+    const Buffer<uint16_t> l2 = file.readLevel<uint16_t>(2);
+    REQUIRE(l2.shape() == Shape{2, 12, 18});
+}
+
+TEST_CASE("TiffWriteOptions: cancellation removes the partial file", "[tiff][io][options]") {
+    TempFile f(uniqueTempPath(".tif"));
+    TiffWriteOptions o;
+    int pagesSeen = 0;
+    o.progress = [&](double) { ++pagesSeen; };
+    o.cancelled = [&] { return pagesSeen >= 2; };
+    const auto stack = testStack<uint8_t>(5, 4, 4);
+    REQUIRE_THROWS_WITH(writeTiffStack<uint8_t>(f.path, stack.view(), o), "cancelled");
+    REQUIRE_FALSE(std::filesystem::exists(f.path));
+}
+
+TEST_CASE("TiffWriteOptions: a rank-2 view writes a single image", "[tiff][io][options]") {
+    TempFile f(uniqueTempPath(".tif"));
+    Buffer<float> img(Shape{6, 9});
+    for (Index i = 0; i < img.size(); ++i) img.data()[i] = static_cast<float>(i) * 0.5f;
+    writeTiffStack<float>(f.path, img.view(), TiffWriteOptions{});
+    const Image<float> back = readTiff<float>(f.path);
+    REQUIRE(back.dimension(0) == 6);
+    REQUIRE(back.dimension(1) == 9);
+    REQUIRE(back(5, 8) == 53 * 0.5f);
 }

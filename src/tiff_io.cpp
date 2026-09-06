@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <stdexcept>
@@ -139,6 +141,18 @@ namespace sirius {
             uint64_t* subOffsets = nullptr;
             if (TIFFGetField(tif, TIFFTAG_SUBIFD, &subCount, &subOffsets) && subOffsets)
                 info.subIfds.assign(subOffsets, subOffsets + subCount);
+
+            // Metadata the workbench reads: OME-XML / ImageJ descriptions and
+            // the pixel size. Cheap when absent (TIFFGetField returns 0).
+            const char* description = nullptr;
+            if (TIFFGetField(tif, TIFFTAG_IMAGEDESCRIPTION, &description) && description)
+                info.description = description;
+            float xres = 0.0f, yres = 0.0f;
+            if (TIFFGetField(tif, TIFFTAG_XRESOLUTION, &xres)) info.xResolution = xres;
+            if (TIFFGetField(tif, TIFFTAG_YRESOLUTION, &yres)) info.yResolution = yres;
+            uint16_t unit = RESUNIT_INCH;
+            TIFFGetFieldDefaulted(tif, TIFFTAG_RESOLUTIONUNIT, &unit);
+            info.resolutionUnit = unit;
             return info;
         }
 
@@ -251,9 +265,21 @@ namespace sirius {
             else                  readStripsRegion(tif, g, r, dst, scratch);
         }
 
+        // ------------------------------------------------------------------
+        // Writing. One code path serves every writer: a page is described
+        // by its pixels and the options, written as strips or tiles, and
+        // optionally followed by its reduced-resolution SubIFDs (a pyramid).
+        // ------------------------------------------------------------------
+
+        struct PageTags {
+            bool page = false;          // FILETYPE_PAGE (multi-page stacks)
+            bool reduced = false;       // FILETYPE_REDUCEDIMAGE (pyramid level)
+            uint16_t subIfds = 0;       // SubIFD slots to reserve after this directory
+            const std::string* description = nullptr;
+        };
+
         template <typename T>
-        void writePageFrom(TIFF* tif, const T* src, uint32_t height, uint32_t width,
-                        bool multiPage, TiffCompression comp) {
+        void setPageTags(TIFF* tif, uint32_t height, uint32_t width, const TiffWriteOptions& o, const PageTags& tags) {
             TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, width);
             TIFFSetField(tif, TIFFTAG_IMAGELENGTH, height);
             TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, static_cast<uint16_t>(sizeof(T) * 8));
@@ -262,36 +288,153 @@ namespace sirius {
             TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
             TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
 
-            // Setup Compression
-            uint16_t tiffComp = mapCompression(comp);
-            TIFFSetField(tif, TIFFTAG_COMPRESSION, tiffComp);
-
-            // Set predictor for better compression ratios on compressed data
-            if (tiffComp == COMPRESSION_LZW || tiffComp == COMPRESSION_ADOBE_DEFLATE) {
-                if constexpr (std::is_integral_v<T>) {
-                    TIFFSetField(tif, TIFFTAG_PREDICTOR, PREDICTOR_HORIZONTAL);
-                } else {
-                    TIFFSetField(tif, TIFFTAG_PREDICTOR, PREDICTOR_FLOATINGPOINT);
+            const uint16_t comp = mapCompression(o.compression);
+            TIFFSetField(tif, TIFFTAG_COMPRESSION, comp);
+            if (comp == COMPRESSION_LZW || comp == COMPRESSION_ADOBE_DEFLATE) {
+                if (o.predictor) {
+                    if constexpr (std::is_integral_v<T>) TIFFSetField(tif, TIFFTAG_PREDICTOR, PREDICTOR_HORIZONTAL);
+                    else TIFFSetField(tif, TIFFTAG_PREDICTOR, PREDICTOR_FLOATINGPOINT);
                 }
+                if (comp == COMPRESSION_ADOBE_DEFLATE)
+                    TIFFSetField(tif, TIFFTAG_ZIPQUALITY, std::clamp(o.compressionLevel, 1, 9));
             }
 
-            TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+            if (o.tiled) {
+                // libtiff requires tile edges that are multiples of 16
+                const uint32_t tw = std::max<uint32_t>(16, (o.tileWidth + 15) / 16 * 16);
+                const uint32_t th = std::max<uint32_t>(16, (o.tileHeight + 15) / 16 * 16);
+                TIFFSetField(tif, TIFFTAG_TILEWIDTH, tw);
+                TIFFSetField(tif, TIFFTAG_TILELENGTH, th);
+            } else {
+                const uint32_t rps = o.rowsPerStrip > 0 ? std::min(o.rowsPerStrip, height) : TIFFDefaultStripSize(tif, 0);
+                TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, rps);
+            }
 
-            if (multiPage)
-                TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_PAGE);
+            uint32_t subfile = 0;
+            if (tags.page) subfile |= FILETYPE_PAGE;
+            if (tags.reduced) subfile |= FILETYPE_REDUCEDIMAGE;
+            TIFFSetField(tif, TIFFTAG_SUBFILETYPE, subfile);
 
-            // TIFFWriteScanline is documented as allowed to modify its input
-            // buffer (e.g. in-place byte-swap when writing non-native endian).
-            // Copy each row into a scratch buffer so the caller's const data
-            // is never touched — also lets us drop the const_cast UB.
-            std::vector<T> rowBuf(width);
-            const size_t rowBytes = static_cast<size_t>(width) * sizeof(T);
-            for (uint32_t row = 0; row < height; ++row) {
-                std::memcpy(rowBuf.data(),
-                            src + static_cast<size_t>(row) * width,
-                            rowBytes);
-                if (TIFFWriteScanline(tif, rowBuf.data(), row) < 0)
-                    throw std::runtime_error("Failed to write scanline " + std::to_string(row));
+            if (tags.description && !tags.description->empty())
+                TIFFSetField(tif, TIFFTAG_IMAGEDESCRIPTION, tags.description->c_str());
+            if (o.xPixelUm > 0.0 && o.yPixelUm > 0.0) {
+                // pixels per centimetre: 1 cm = 1e4 um
+                TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, RESUNIT_CENTIMETER);
+                TIFFSetField(tif, TIFFTAG_XRESOLUTION, static_cast<float>(1e4 / o.xPixelUm));
+                TIFFSetField(tif, TIFFTAG_YRESOLUTION, static_cast<float>(1e4 / o.yPixelUm));
+            }
+            if (tags.subIfds > 0) {
+                // Reserving slots makes libtiff link the next `subIfds`
+                // directories written as this page's SubIFDs (pyramid levels)
+                // instead of appending them to the main chain.
+                std::vector<uint64_t> zeros(tags.subIfds, 0);
+                TIFFSetField(tif, TIFFTAG_SUBIFD, tags.subIfds, zeros.data());
+            }
+        }
+
+        // libtiff may modify the buffers it encodes (byte swapping), so the
+        // caller's const pixels always go through `scratch`.
+        template <typename T>
+        void writePixels(TIFF* tif, const T* src, uint32_t height, uint32_t width, std::vector<T>& scratch) {
+            if (TIFFIsTiled(tif)) {
+                uint32_t tw = 0, th = 0;
+                TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tw);
+                TIFFGetField(tif, TIFFTAG_TILELENGTH, &th);
+                scratch.resize(static_cast<std::size_t>(tw) * th);
+                for (uint32_t ty = 0; ty < height; ty += th)
+                    for (uint32_t tx = 0; tx < width; tx += tw) {
+                        const uint32_t rows = std::min(th, height - ty), cols = std::min(tw, width - tx);
+                        if (rows < th || cols < tw) std::fill(scratch.begin(), scratch.end(), T{});
+                        for (uint32_t r = 0; r < rows; ++r)
+                            std::memcpy(scratch.data() + static_cast<std::size_t>(r) * tw,
+                                        src + static_cast<std::size_t>(ty + r) * width + tx, cols * sizeof(T));
+                        if (TIFFWriteTile(tif, scratch.data(), tx, ty, 0, 0) < 0)
+                            throw std::runtime_error("Failed to write TIFF tile at (" + std::to_string(tx) + "," +
+                                                     std::to_string(ty) + ")");
+                    }
+            } else {
+                uint32_t rps = 0;
+                TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rps);
+                if (rps == 0 || rps > height) rps = height;
+                scratch.resize(static_cast<std::size_t>(rps) * width);
+                for (uint32_t y = 0; y < height; y += rps) {
+                    const uint32_t rows = std::min(rps, height - y);
+                    const std::size_t bytes = static_cast<std::size_t>(rows) * width * sizeof(T);
+                    std::memcpy(scratch.data(), src + static_cast<std::size_t>(y) * width, bytes);
+                    const tstrip_t strip = TIFFComputeStrip(tif, y, 0);
+                    if (TIFFWriteEncodedStrip(tif, strip, scratch.data(), static_cast<tmsize_t>(bytes)) < 0)
+                        throw std::runtime_error("Failed to write TIFF strip at row " + std::to_string(y));
+                }
+            }
+        }
+
+        // Box down-sampling of a (rows, cols) plane by `f` in both axes;
+        // partial boxes at the far edges average what is inside them.
+        template <typename T>
+        void downsamplePlane(const T* src, uint32_t rows, uint32_t cols, int f, std::vector<T>& dst,
+                             uint32_t& outRows, uint32_t& outCols) {
+            outRows = (rows + f - 1) / f;
+            outCols = (cols + f - 1) / f;
+            dst.resize(static_cast<std::size_t>(outRows) * outCols);
+            for (uint32_t oy = 0; oy < outRows; ++oy)
+                for (uint32_t ox = 0; ox < outCols; ++ox) {
+                    double acc = 0.0;
+                    int n = 0;
+                    for (uint32_t y = oy * f; y < std::min<uint32_t>((oy + 1) * f, rows); ++y)
+                        for (uint32_t x = ox * f; x < std::min<uint32_t>((ox + 1) * f, cols); ++x, ++n)
+                            acc += static_cast<double>(src[static_cast<std::size_t>(y) * cols + x]);
+                    const double v = n ? acc / n : 0.0;
+                    if constexpr (std::is_integral_v<T>)
+                        dst[static_cast<std::size_t>(oy) * outCols + ox] = static_cast<T>(std::llround(v));
+                    else
+                        dst[static_cast<std::size_t>(oy) * outCols + ox] = static_cast<T>(v);
+                }
+        }
+
+        template <typename T>
+        void writePages(const std::string& path, const T* data, Index pages, Index rows, Index cols,
+                        const TiffWriteOptions& o, bool pageFlag) {
+            if (pages <= 0 || rows <= 0 || cols <= 0) throw std::runtime_error("Cannot write empty stack");
+            const int levels = std::max(o.pyramidLevels, 1);
+            const int f = std::max(o.downsample, 2);
+            auto tif = openTiff(path, o.bigTiff ? "w8" : "w");
+            std::vector<T> scratch;
+            std::vector<T> level, nextLevel;
+            const Index stride = rows * cols;
+            for (Index z = 0; z < pages; ++z) {
+                if (o.cancelled && o.cancelled()) {
+                    tif.reset();
+                    std::remove(path.c_str());
+                    throw std::runtime_error("cancelled");
+                }
+                PageTags tags;
+                tags.page = pageFlag;
+                tags.subIfds = static_cast<uint16_t>(levels - 1);
+                if (z == 0) tags.description = &o.description;
+                setPageTags<T>(tif.get(), static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), o, tags);
+                writePixels<T>(tif.get(), data + z * stride, static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), scratch);
+                if (!TIFFWriteDirectory(tif.get()))
+                    throw std::runtime_error("Failed to finalize TIFF directory for page " + std::to_string(z));
+
+                // reduced-resolution levels, each from the previous one
+                const T* srcLevel = data + z * stride;
+                uint32_t lr = static_cast<uint32_t>(rows), lc = static_cast<uint32_t>(cols);
+                for (int k = 1; k < levels; ++k) {
+                    uint32_t nr = 0, nc = 0;
+                    downsamplePlane<T>(srcLevel, lr, lc, f, nextLevel, nr, nc);
+                    std::swap(level, nextLevel);
+                    srcLevel = level.data();
+                    lr = nr;
+                    lc = nc;
+                    PageTags ltags;
+                    ltags.reduced = true;
+                    setPageTags<T>(tif.get(), lr, lc, o, ltags);
+                    writePixels<T>(tif.get(), srcLevel, lr, lc, scratch);
+                    if (!TIFFWriteDirectory(tif.get()))
+                        throw std::runtime_error("Failed to finalize TIFF pyramid level " + std::to_string(k) +
+                                                 " of page " + std::to_string(z));
+                }
+                if (o.progress) o.progress(static_cast<double>(z + 1) / static_cast<double>(pages));
             }
         }
 
@@ -762,6 +905,33 @@ namespace sirius {
     }
 
     template <typename T>
+    void writeTiffStack(const std::string& path, BufferView<const T> stack, const TiffWriteOptions& options) {
+        if (stack.rank() != 2 && stack.rank() != 3)
+            throw std::invalid_argument("writeTiffStack expects a (pages, rows, cols) or (rows, cols) view, got " +
+                                        stack.shape().toString());
+        if (stack.size() == 0) throw std::runtime_error("Cannot write empty stack");
+        if (!stack.device().isCpu()) {
+            writeTiffStack<T>(path, onHost(stack).view(), options);
+            return;
+        }
+        const BufferView<const T> s = stack.rank() == 3 ? stack : stack.asStack();
+        writePages<T>(path, s.data(), s.dim(0), s.dim(1), s.dim(2), options, stack.rank() == 3);
+    }
+
+    namespace {
+        // The original writers: compressed data always carried a predictor
+        // (the floating-point one for float data), classic TIFF for single
+        // images, BigTIFF for stacks.
+        TiffWriteOptions legacyOptions(TiffCompression comp, bool bigTiff) {
+            TiffWriteOptions o;
+            o.compression = comp;
+            o.predictor = true;
+            o.bigTiff = bigTiff;
+            return o;
+        }
+    } // namespace
+
+    template <typename T>
     void writeTiff(const std::string& path, BufferView<const T> image, TiffCompression comp) {
         if (image.rank() != 2)
             throw std::invalid_argument("writeTiff expects a rank-2 (rows, cols) view, got " + image.shape().toString());
@@ -769,9 +939,7 @@ namespace sirius {
             writeTiff<T>(path, onHost(image).view(), comp);
             return;
         }
-        auto tif = openTiff(path, "w");
-        writePageFrom<T>(tif.get(), image.data(),
-                         static_cast<uint32_t>(image.dim(0)), static_cast<uint32_t>(image.dim(1)), false, comp);
+        writePages<T>(path, image.data(), 1, image.dim(0), image.dim(1), legacyOptions(comp, false), false);
     }
 
     template <typename T>
@@ -785,27 +953,9 @@ namespace sirius {
             throw std::invalid_argument("writeTiffStack expects a rank-3 (pages, rows, cols) view, got " + stack.shape().toString());
         if (stack.size() == 0)
             throw std::runtime_error("Cannot write empty stack");
-        if (!stack.device().isCpu()) {
-            writeTiffStack<T>(path, onHost(stack).view(), comp);
-            return;
-        }
-
         // BigTIFF ("w8") lifts the 4 GiB offset limit. For small stacks this
         // is mild overhead; for large ones it is the only option that works.
-        auto tif = openTiff(path, "w8");
-
-        const Index pages  = stack.dim(0);
-        const Index rows   = stack.dim(1);
-        const Index cols   = stack.dim(2);
-        const Index stride = rows * cols; // 64-bit: safe for huge pages
-
-        for (Index z = 0; z < pages; ++z) {
-            writePageFrom<T>(tif.get(), stack.data() + z * stride,
-                             static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), true, comp);
-            if (!TIFFWriteDirectory(tif.get()))
-                throw std::runtime_error(
-                    "Failed to finalize TIFF directory for page " + std::to_string(z));
-        }
+        writeTiffStack<T>(path, stack, legacyOptions(comp, true));
     }
 
     template <typename T>
@@ -826,6 +976,7 @@ namespace sirius {
     template void writeTiff<T>(const std::string&, BufferView<const T>, TiffCompression);                   \
     template void writeTiff<T>(const std::string&, const Image<T>&, TiffCompression);                       \
     template void writeTiffStack<T>(const std::string&, BufferView<const T>, TiffCompression);              \
+    template void writeTiffStack<T>(const std::string&, BufferView<const T>, const TiffWriteOptions&);      \
     template void writeTiffStack<T>(const std::string&, const ImageStack<T>&, TiffCompression);
 
     SIRIUS_TIFF_INSTANTIATE(std::uint8_t)

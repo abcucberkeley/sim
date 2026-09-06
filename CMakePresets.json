@@ -43,8 +43,10 @@
       "hidden": true,
       "cacheVariables": {
         "SIRIUS_ENABLE_APP": "ON",
-        "CMAKE_PREFIX_PATH": "$env{SIRIUS_QT_DIR}"
-      }
+        "CMAKE_PREFIX_PATH": "$env{SIRIUS_QT_DIR}",
+        "SIRIUS_ENABLE_TENSORSTORE": "ON"
+      },
+      "description": "Qt workbench. Adds TensorStore (zarr/N5): the first configure fetches and builds it (several minutes, ~1.5 GB, needs nasm and python3); pass -DSIRIUS_ENABLE_TENSORSTORE=OFF to skip."
     },
     {
       "name": "win-msvc-dev",
