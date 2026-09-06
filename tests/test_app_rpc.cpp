@@ -179,3 +179,47 @@ TEST_CASE("connectTcp reports an unreachable port", "[app][rpc]") {
     CHECK_THROWS(rpc::connectTcp("127.0.0.1", 1, std::chrono::milliseconds(500)));
     (void)workerScriptPath("/definitely/not/here");   // must not throw
 }
+
+// --- the real Python worker ------------------------------------------------------
+// Runs only when SIRIUS_PYTHON names an interpreter with numpy (the conda one
+// on the dev machine); CI has no worker and skips.
+
+#ifndef _WIN32
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+
+TEST_CASE("the bundled Python worker answers hello and runs a numpy step", "[app][rpc][worker]") {
+    const char* python = std::getenv("SIRIUS_PYTHON");
+    if (!python || !*python) SKIP("SIRIUS_PYTHON is not set");
+    const std::string dir = workerScriptPath();
+    if (dir.empty()) SKIP("sirius_worker not found");
+    const std::string cmd = std::string("cd '") + dir + "' && exec '" + python +
+                            "' -m sirius_worker --host 127.0.0.1 --port 0 --token abc --device cpu 2>/dev/null";
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    REQUIRE(pipe);
+    char line[512] = {0};
+    REQUIRE(std::fgets(line, sizeof line, pipe));
+    const json hello = json::parse(line);
+    const int port = hello.value("port", 0);
+    REQUIRE(port > 0);
+
+    auto worker = RemoteWorker::connect("127.0.0.1", port, "abc");
+    CHECK(worker->supports("torch_segment"));
+    CHECK_FALSE(worker->capabilities().hostname.empty());
+    // mean over t of a (c, t, z, y, x) array through the "einsum" kind
+    std::vector<float> in(2 * 3 * 1 * 2 * 2);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<float>(i);
+    WorkerResult r = worker->call("run", {{"kind", "einsum"}, {"params", {{"axes", "czyx"}, {"reduction", "mean"}}}},
+                                  {{"input", "float32", {2, 3, 1, 2, 2}, in.data(), in.size() * sizeof(float)}});
+    REQUIRE_FALSE(r.tensors.empty());
+    const rpc::Tensor& out = r.tensors.front();
+    CHECK(out.shape == std::vector<Index>{2, 1, 1, 2, 2});
+    // element (c0, y0, x0): mean of 0, 4, 8 = 4
+    CHECK(out.asFloat32()[0] == 4.0f);
+    CHECK_THROWS(worker->call("run", {{"kind", "no_such_kind"}}));
+    (void)worker->call("shutdown", json::object());
+    worker->close();
+    ::pclose(pipe);
+}
+#endif
