@@ -4,6 +4,12 @@
 // Load and SIM steps, and the Torch segmentation step against a fake worker
 // speaking the RPC protocol over an in-memory transport.
 
+// requireOperation returns a reference to a registry-owned object; GCC 13's
+// -Wdangling-reference cannot see that and flags every binding of it.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
+#pragma GCC diagnostic ignored "-Wdangling-reference"
+#endif
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -125,7 +131,11 @@ TEST_CASE("the built-in operations are registered with complete metadata", "[app
         CHECK(defaults.size() == info.params.size());
         for (const ParamSpec& s : info.params) CHECK(defaults.has(s.key));
     }
-    CHECK(allOperations().size() == 19);
+    // other test files register synthetic "test_*" operations in the same process
+    std::size_t builtins = 0;
+    for (const Operation* op : allOperations())
+        if (op->kind().rfind("test_", 0) != 0) ++builtins;
+    CHECK(builtins == 19);
 
     SECTION("menu groups follow the design's order and exclude Load") {
         const auto groups = operationGroups();
@@ -468,7 +478,8 @@ TEST_CASE("Volume reconstruction resamples to isotropic voxels", "[app][ops][vol
     const Operation& op = requireOperation("volrec");
     ParamSet p = op.defaults();
     const DatasetMeta out = op.outputMeta(p, meta);
-    CHECK(out.dims.z == 16);
+    // 4 planes 0.4 um apart span 1.2 um between their centres: 13 planes at 0.1 um
+    CHECK(out.dims.z == 13);
     CHECK_THAT(out.dz(), WithinRel(0.1, 1e-9));
     Progress prog;
     const StepOutput r = op.run(inputOf(rampArray(dims), meta), p, prog.ctx);

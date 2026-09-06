@@ -68,7 +68,11 @@ namespace sirius::app {
         std::uint32_t at(Index t, Index z, Index y, Index x) const noexcept;
         BufferView<const std::uint32_t> view() const noexcept { return data_.view(); }
 
+        // Highest id handed out so far: monotonic, so ids never collide with
+        // labels that an undo may bring back. After a dense relabel
+        // (cleanup) call resetMaxLabel() to make it the highest id present.
         std::uint32_t maxLabel() const noexcept;
+        void resetMaxLabel() noexcept;
 
         // --- statistics ---------------------------------------------------
         // Recomputed from the voxels; `probabilities` (same (z, y, x) as one

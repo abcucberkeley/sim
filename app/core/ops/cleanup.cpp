@@ -78,6 +78,7 @@ namespace sirius::app {
                     labels->recomputeStats(t);
                     labels->applyFlags(rules);
                 }
+                if (relabel) labels->resetMaxLabel();   // ids are dense again
                 out.labels = labels;
                 out.ranOn = Backend::Cpu;
                 out.note = std::to_string(labels->stats().size()) + " labels kept · CPU";

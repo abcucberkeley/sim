@@ -128,6 +128,14 @@ namespace sirius::app {
 
     std::uint32_t LabelVolume::maxLabel() const noexcept { return maxLabel_; }
 
+    void LabelVolume::resetMaxLabel() noexcept {
+        std::uint32_t m = 0;
+        const std::uint32_t* v = data_.data();
+        const Index n = data_.size();
+        for (Index i = 0; i < n; ++i) m = std::max(m, v[i]);
+        maxLabel_ = m;
+    }
+
     void LabelVolume::recomputeStats(Index t, const float* probabilities) {
         if (t < 0 || t >= t_) throw std::out_of_range("LabelVolume::recomputeStats: t out of range");
         // annotations survive a recompute: keep class / reviewed of known ids
