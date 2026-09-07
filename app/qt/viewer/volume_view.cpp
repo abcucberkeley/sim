@@ -293,8 +293,9 @@ namespace sirius::app {
         update();
     }
 
-    void VolumeView::setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity) {
+    void VolumeView::setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity, std::uint32_t only) {
         labels_ = labels;
+        labelOnly_ = only;
         lz_ = z;
         ly_ = y;
         lx_ = x;
@@ -414,7 +415,7 @@ namespace sirius::app {
                 for (int x = 0; x < tx; ++x) {
                     const Index xx = std::min<Index>(static_cast<Index>(x) * fx + fx / 2, lx_ - 1);
                     const std::uint32_t id = row[xx];
-                    if (!id) continue;
+                    if (!id || (labelOnly_ != 0 && id != labelOnly_)) continue;
                     const std::array<float, 3> col = labelColor(id);
                     out[x * 4 + 0] = static_cast<unsigned char>(col[0] * 255.0f);
                     out[x * 4 + 1] = static_cast<unsigned char>(col[1] * 255.0f);

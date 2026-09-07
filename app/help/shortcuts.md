@@ -27,6 +27,7 @@ $$
 |---|---|
 | 1 · 2 · 3 | Ortho views · 3D volume · Compare raw vs. step |
 | H · L | Crosshair · Labels overlay |
+| O | Solo: only the selected label, in the slices and in 3D |
 | + · − · 0 | Zoom in · Zoom out · Fit to window |
 | ⇧A | Auto contrast (display) |
 | V · P · M · R · B · E | Navigate · Probe · Measure · ROI · Paint · Erase |

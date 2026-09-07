@@ -106,8 +106,9 @@ namespace sirius::app {
         DisplayWindow computeWindow(Index c, Index t);
         std::vector<ChannelPlane> visibleChannels(const ViewState& vs, Index t);
         void blend(std::vector<ChannelPlane> chans, Index rows, Index cols, int factor, QImage& img);
+        // `only` (non-zero) draws that label alone: the solo view.
         void overlay(const std::uint32_t* lab, Index rows, Index cols, Index rowStride, Index colStride, int factor,
-                     float opacity, std::uint32_t selected, QImage& img);
+                     float opacity, std::uint32_t selected, std::uint32_t only, QImage& img);
         static std::array<int, 3> tintOf(const DatasetMeta& m, Index c, bool rgb);
 
         std::shared_ptr<const StepOutput> out_;

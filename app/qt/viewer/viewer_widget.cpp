@@ -94,6 +94,7 @@ namespace sirius::app {
         QLabel* viewing = nullptr;
         QString viewingHtml;
         TokenCheck* labelsCheck = nullptr;
+        TokenCheck* soloCheck = nullptr;     // only the selected label
         TokenCheck* crossCheck = nullptr;
         TokenCheck* boxCheck = nullptr;
         QWidget* swatchHost = nullptr;
@@ -272,9 +273,12 @@ namespace sirius::app {
         bl->addWidget(viewing);
         bl->addStretch(1);
         labelsCheck = new TokenCheck(QStringLiteral("Labels"), bar);
+        soloCheck = new TokenCheck(QStringLiteral("Solo"), bar);
+        soloCheck->setToolTip(QStringLiteral("Show only the selected label, in the slices and in 3D; selecting a label jumps to it (O)"));
         crossCheck = new TokenCheck(QStringLiteral("Crosshair"), bar);
         boxCheck = new TokenCheck(QStringLiteral("Bounding box"), bar);
         bl->addWidget(labelsCheck);
+        bl->addWidget(soloCheck);
         bl->addWidget(crossCheck);
         bl->addWidget(boxCheck);
         swatchHost = new QWidget(bar);
@@ -451,6 +455,7 @@ namespace sirius::app {
             wb.setViewMode(i == 0 ? ViewMode::Ortho : i == 1 ? ViewMode::Volume : ViewMode::Compare);
         });
         QObject::connect(labelsCheck, &QAbstractButton::clicked, q, [this] { wb.toggleLabels(); });
+        QObject::connect(soloCheck, &QAbstractButton::clicked, q, [this] { wb.toggleSoloLabel(); });
         QObject::connect(crossCheck, &QAbstractButton::clicked, q, [this] { wb.toggleCrosshair(); });
         QObject::connect(boxCheck, &QAbstractButton::clicked, q, [this] {
             ViewState s = vs();
@@ -778,6 +783,10 @@ namespace sirius::app {
 
         labelsCheck->setChecked(s.labels);
         labelsCheck->setEnabled(model.hasLabels());
+        soloCheck->setChecked(s.soloLabel);
+        soloCheck->setEnabled(model.hasLabels());
+        soloCheck->setCaption(s.soloLabel ? (s.selectedLabel ? QStringLiteral("label %1").arg(s.selectedLabel) : QStringLiteral("select a label"))
+                                          : QString());
         crossCheck->setChecked(s.crosshair);
         crossCheck->setCaption(s.tool == ViewerTool::Probe ? QString() : QStringLiteral("locked"));
         crossCheck->setVisible(s.mode != ViewMode::Volume);
@@ -893,7 +902,8 @@ namespace sirius::app {
             if (s.z != prev.z) dirty.xy = dirty.cmp = true;
             if (s.cx != prev.cx || s.cy != prev.cy) dirty.xz = dirty.yz = true;
             if (s.channelVisible != prev.channelVisible) dirty = Dirty{};
-            if (s.labels != prev.labels || s.labelOpacity != prev.labelOpacity || s.selectedLabel != prev.selectedLabel)
+            if (s.labels != prev.labels || s.labelOpacity != prev.labelOpacity || s.selectedLabel != prev.selectedLabel ||
+                s.soloLabel != prev.soloLabel)
                 dirty.xy = dirty.xz = dirty.yz = dirty.cmp = dirty.vol = true;
             if (s.mode != prev.mode) {
                 if (s.mode == ViewMode::Volume) dirty.vol = true;
@@ -1172,9 +1182,10 @@ namespace sirius::app {
             // labels ride along as their own texture, toggled with the Labels box
             const LabelVolume* L = s.labels ? model.labels() : nullptr;
             if (L && t < L->t()) {
+                const std::uint32_t only = s.soloLabel ? s.selectedLabel : 0u;
                 const quint64 lkey = (static_cast<quint64>(reinterpret_cast<std::uintptr_t>(L)) ^ (static_cast<quint64>(t + 1) << 40) ^
-                                      (labelsVersion << 8)) | 1;
-                volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity));
+                                      (labelsVersion << 8) ^ (static_cast<quint64>(only) << 20)) | 1;
+                volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity), only);
             } else {
                 volume->clearLabels();
             }

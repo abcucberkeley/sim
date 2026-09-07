@@ -26,4 +26,4 @@ For nuclei and cells in fluorescence, Cellpose (`cellpose:default`) is the safes
 
 ## Note
 
-Every label gets a mean foreground probability as its confidence; labels below 0.6, touching the border or far from the median size are flagged for review in the cleanup panel.
+Every label gets a mean foreground probability as its confidence; labels below 0.6, touching the border or far from the median size are flagged for review in the cleanup panel. *Solo* in the viewer (O) shows one label at a time, in the slices and in 3D, for inspecting and correcting it on its own.

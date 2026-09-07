@@ -45,7 +45,7 @@ namespace sirius::app {
 
         // Instance labels of the same (z, y, x) grid, composited over the
         // volume in their palette colours; `key` changes with every edit.
-        void setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity);
+        void setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity, std::uint32_t only = 0);
         void clearLabels();
         bool hasLabels() const noexcept { return labels_ != nullptr; }
 
@@ -92,6 +92,7 @@ namespace sirius::app {
         Index lz_ = 0, ly_ = 0, lx_ = 0;
         quint64 labelsKey_ = 0, uploadedLabelsKey_ = 0;
         float labelOpacity_ = 0.45f;
+        std::uint32_t labelOnly_ = 0;   // non-zero: that label alone
         std::array<double, 3> voxelUm_{0.1, 0.1, 0.2};
         double yaw_ = 35.0, pitch_ = 22.0, zoom_ = 1.0;
         double clipLo_ = 0.0, clipHi_ = 1.0;

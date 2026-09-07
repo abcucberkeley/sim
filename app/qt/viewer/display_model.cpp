@@ -408,7 +408,7 @@ namespace sirius::app {
     // --- labels ----------------------------------------------------------------------
 
     void DisplayModel::overlay(const std::uint32_t* lab, Index rows, Index cols, Index rowStride, Index colStride,
-                               int factor, float opacity, std::uint32_t selected, QImage& img) {
+                               int factor, float opacity, std::uint32_t selected, std::uint32_t only, QImage& img) {
         if (!lab || img.isNull()) return;
         factor = std::max(factor, 1);
         const int w = img.width(), h = img.height();
@@ -436,7 +436,7 @@ namespace sirius::app {
             std::uint32_t* dst = reinterpret_cast<std::uint32_t*>(img.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 const std::uint32_t id = at(y, x);
-                if (id == 0) continue;
+                if (id == 0 || (only != 0 && id != only)) continue;
                 const bool border = (x > 0 && at(y, x - 1) != id) || (x + 1 < w && at(y, x + 1) != id) ||
                                     (y > 0 && at(y - 1, x) != id) || (y + 1 < h && at(y + 1, x) != id);
                 const std::array<float, 3> col = labelColor(id);
@@ -461,14 +461,14 @@ namespace sirius::app {
         if (!L || t >= L->t() || z >= L->z()) return;
         const QRect r = planeRegion(region, L->x(), L->y());
         overlay(L->plane(t, z) + static_cast<Index>(r.y()) * L->x() + r.x(), r.height(), r.width(), L->x(), 1, factor,
-                static_cast<float>(vs.labelOpacity), vs.selectedLabel, img);
+                static_cast<float>(vs.labelOpacity), vs.selectedLabel, vs.soloLabel ? vs.selectedLabel : 0u, img);
     }
 
     void DisplayModel::overlayLabelsXZ(Index t, Index y, const ViewState& vs, QImage& img) {
         const LabelVolume* L = labels();
         if (!L || t >= L->t() || y >= L->y()) return;
         overlay(L->volume(t) + y * L->x(), L->z(), L->x(), L->y() * L->x(), 1, 1,
-                static_cast<float>(vs.labelOpacity), vs.selectedLabel, img);
+                static_cast<float>(vs.labelOpacity), vs.selectedLabel, vs.soloLabel ? vs.selectedLabel : 0u, img);
     }
 
     void DisplayModel::overlayLabelsYZ(Index t, Index x, const ViewState& vs, QImage& img) {
@@ -476,7 +476,7 @@ namespace sirius::app {
         if (!L || t >= L->t() || x >= L->x()) return;
         // rows y, cols z: element (y, z) = volume[(z * Y + y) * X + x]
         overlay(L->volume(t) + x, L->y(), L->z(), L->x(), L->y() * L->x(), 1,
-                static_cast<float>(vs.labelOpacity), vs.selectedLabel, img);
+                static_cast<float>(vs.labelOpacity), vs.selectedLabel, vs.soloLabel ? vs.selectedLabel : 0u, img);
     }
 
 } // namespace sirius::app

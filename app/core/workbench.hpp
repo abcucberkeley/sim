@@ -63,6 +63,7 @@ namespace sirius::app {
         std::array<double, 2> clipZ{0.0, 1.0};
         double labelOpacity = 0.45;
         std::uint32_t selectedLabel = 0;
+        bool soloLabel = false;                 // draw only the selected label (slices and 3D)
 
         bool channelOn(Index c) const noexcept {
             return c < 0 || static_cast<std::size_t>(c) >= channelVisible.size() || channelVisible[static_cast<std::size_t>(c)];
@@ -214,6 +215,10 @@ namespace sirius::app {
         void setChannelVisible(Index c, bool on);
         void toggleCrosshair();
         void toggleLabels();
+        void toggleSoloLabel();                 // only the selected label is drawn
+        // Select a label and put the crosshair and z on it (its bounding box centre).
+        void focusLabel(std::uint32_t id);
+        bool centreOnLabel(std::uint32_t id);   // crosshair and z to its bounding box centre; false when unknown
 
         // --- outputs ---------------------------------------------------------
         // Last computed output of step `index` (fresh or stale), or null.

@@ -622,6 +622,27 @@ TEST_CASE("Painting labels on a disk-cached step edits the volume the viewer sho
     CHECK(shown->labels->at(0, 2, 4, 4) == 0);
     wb.redo();
     CHECK(shown->labels->at(0, 2, 4, 4) != 0);
+
+    // solo: only the selected label is drawn, and selecting one while solo
+    // brings the crosshair and z onto it
+    shown->labels->recomputeStats(0);
+    REQUIRE(shown->labels->statsOf(1));
+    wb.setCrosshair(0, 0, 0);
+    wb.toggleSoloLabel();
+    CHECK(wb.viewState().soloLabel);
+    CHECK(wb.viewState().labels);
+    ViewState s = wb.viewState();
+    s.selectedLabel = 1;
+    wb.setViewState(s);
+    const LabelStats* st = shown->labels->statsOf(1);
+    CHECK(wb.viewState().cx == (st->bbox[4] + st->bbox[5]) / 2);
+    CHECK(wb.viewState().cy == (st->bbox[2] + st->bbox[3]) / 2);
+    CHECK(wb.viewState().z == (st->bbox[0] + st->bbox[1]) / 2);
+    const ViewState back = ViewState::fromJson(wb.viewState().toJson());
+    CHECK(back.soloLabel);
+    CHECK(back.selectedLabel == 1);
+    wb.toggleSoloLabel();
+    CHECK_FALSE(wb.viewState().soloLabel);
 }
 
 TEST_CASE("Workbench loads pipelines and the example without losing the dataset", "[app][workbench]") {

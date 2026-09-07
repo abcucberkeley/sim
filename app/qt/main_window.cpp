@@ -257,6 +257,7 @@ namespace sirius::app {
         QAction* viewCompare = nullptr;
         QAction* crosshair = nullptr;
         QAction* labels = nullptr;
+        QAction* soloLabel = nullptr;
         QAction* scaleBar = nullptr;
         QAction* syncZT = nullptr;
         QAction* backendCuda = nullptr;
@@ -472,6 +473,9 @@ namespace sirius::app {
                 if (id) wb().deleteLabel(id);
             });
             segment->addSeparator();
+            soloLabel = action(segment, QStringLiteral("Only selected label"), QKeySequence(Qt::Key_O), [this] { wb().toggleSoloLabel(); });
+            soloLabel->setCheckable(true);
+            soloLabel->setStatusTip(QStringLiteral("Draw only the selected label in the slices and in 3D; selecting a label jumps to it"));
             action(segment, QStringLiteral("Next flagged label"), QKeySequence(Qt::Key_Right), [this] { selectFlagged(true); });
             action(segment, QStringLiteral("Previous flagged label"), QKeySequence(Qt::Key_Left), [this] { selectFlagged(false); });
             segment->addSeparator();
@@ -661,6 +665,7 @@ namespace sirius::app {
             viewCompare->setChecked(v.mode == ViewMode::Compare);
             crosshair->setChecked(v.crosshair);
             labels->setChecked(v.labels);
+            soloLabel->setChecked(v.soloLabel);
             scaleBar->setChecked(v.scaleBar);
             syncZT->setChecked(v.syncZT);
             backendCuda->setChecked(w.backend() == Backend::Cuda);

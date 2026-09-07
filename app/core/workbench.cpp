@@ -106,7 +106,8 @@ namespace sirius::app {
                 {"pitch", pitch},
                 {"clip_z", {clipZ[0], clipZ[1]}},
                 {"label_opacity", labelOpacity},
-                {"selected_label", selectedLabel}};
+                {"selected_label", selectedLabel},
+                {"solo_label", soloLabel}};
     }
 
     ViewState ViewState::fromJson(const json& j) { return fromJson(j, ViewState{}); }
@@ -150,6 +151,7 @@ namespace sirius::app {
             s.clipZ = {j["clip_z"][0].get<double>(), j["clip_z"][1].get<double>()};
         num("label_opacity", s.labelOpacity);
         num("selected_label", s.selectedLabel);
+        boolean("solo_label", s.soloLabel);
         return s;
     }
 
@@ -761,7 +763,36 @@ namespace sirius::app {
     }
 
     void Workbench::setViewState(const ViewState& s) {
+        const bool jump = s.soloLabel && s.selectedLabel != 0 && s.selectedLabel != view_.selectedLabel;
         view_ = s;
+        // inspecting one label at a time: a new selection brings it into view
+        if (jump) centreOnLabel(s.selectedLabel);
+        notify(&Observer::viewStateChanged);
+    }
+
+    bool Workbench::centreOnLabel(std::uint32_t id) {
+        auto labels = viewedLabels();
+        const LabelStats* st = labels ? labels->statsOf(id) : nullptr;
+        if (!st) return false;
+        view_.z = (st->bbox[0] + st->bbox[1]) / 2;
+        view_.cy = (st->bbox[2] + st->bbox[3]) / 2;
+        view_.cx = (st->bbox[4] + st->bbox[5]) / 2;
+        return true;
+    }
+
+    void Workbench::focusLabel(std::uint32_t id) {
+        view_.selectedLabel = id;
+        view_.labels = true;
+        centreOnLabel(id);
+        notify(&Observer::viewStateChanged);
+    }
+
+    void Workbench::toggleSoloLabel() {
+        view_.soloLabel = !view_.soloLabel;
+        if (view_.soloLabel) {
+            view_.labels = true;
+            if (view_.selectedLabel) centreOnLabel(view_.selectedLabel);
+        }
         notify(&Observer::viewStateChanged);
     }
 

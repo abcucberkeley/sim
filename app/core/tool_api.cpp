@@ -211,13 +211,15 @@ namespace sirius::app {
                  return json{{"selected_step", i + 1}};
              }});
         add({"set_view",
-             "Change the viewer: mode (ortho|3d|compare), tool (nav|probe|measure|roi|paint), z, t, crosshair [x, y], labels overlay, channel visibility list, yaw/pitch, diagnostics tab is not part of this.",
+             "Change the viewer: mode (ortho|3d|compare), tool (nav|probe|measure|roi|paint), z, t, crosshair [x, y], labels overlay, label (select one and jump to it), solo (draw only the selected label), channel visibility list, yaw/pitch, diagnostics tab is not part of this.",
              obj({{"mode", {{"type", "string"}, {"enum", {"ortho", "3d", "compare"}}}},
                   {"tool", {{"type", "string"}, {"enum", {"nav", "probe", "measure", "roi", "paint"}}}},
                   {"z", {{"type", "integer"}}},
                   {"t", {{"type", "integer"}}},
                   {"crosshair", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"description", "[x, y] or [x, y, z]"}}},
                   {"labels", {{"type", "boolean"}}},
+                  {"label", {{"type", "integer"}, {"description", "label id to select; the view jumps to it"}}},
+                  {"solo", {{"type", "boolean"}, {"description", "show only the selected label"}}},
                   {"channels", {{"type", "array"}, {"items", {{"type", "boolean"}}}}},
                   {"yaw", {{"type", "number"}}},
                   {"pitch", {{"type", "number"}}}}),
@@ -247,6 +249,9 @@ namespace sirius::app {
                      note("crosshair " + std::to_string(s.cx) + ", " + std::to_string(s.cy));
                  }
                  if (a.contains("labels")) { s.labels = a["labels"].get<bool>(); note(s.labels ? "labels on" : "labels off"); }
+                 if (a.contains("solo")) { s.soloLabel = a["solo"].get<bool>(); note(s.soloLabel ? "solo label" : "all labels"); }
+                 std::uint32_t focus = 0;
+                 if (a.contains("label")) { focus = a["label"].get<std::uint32_t>(); note("label " + std::to_string(focus)); }
                  if (a.contains("channels") && a["channels"].is_array()) {
                      s.channelVisible.clear();
                      for (const json& e : a["channels"]) s.channelVisible.push_back(e.get<bool>());
@@ -258,9 +263,10 @@ namespace sirius::app {
                  s.z = std::clamp<Index>(s.z, 0, std::max<Index>(meta.dims.z - 1, 0));
                  s.t = std::clamp<Index>(s.t, 0, std::max<Index>(meta.dims.t - 1, 0));
                  wb_.setViewState(s);
+                 if (focus) wb_.focusLabel(focus);
                  actions_.push_back({ActionRecord::Kind::View, "Viewer → " + (text.empty() ? std::string("unchanged") : text), "view",
-                                     json{{"view", s.toJson()}}, "set_view"});
-                 return s.toJson();
+                                     json{{"view", wb_.viewState().toJson()}}, "set_view"});
+                 return wb_.viewState().toJson();
              }});
         add({"get_diagnostics",
              "Diagnostics of a step (default: the selected one): summary, table, facts, curves, histograms, warnings.",
