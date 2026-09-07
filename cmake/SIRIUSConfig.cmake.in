@@ -1,0 +1,81 @@
+@PACKAGE_INIT@
+
+# SIRIUS package config -- see cmake/Install.cmake for the reasoning behind the
+# layout this file describes.
+#
+# What is in the install tree
+#   lib/sirius.lib (libsirius.a)         the library
+#   lib/sirius/                          the static dependencies it was built
+#                                        against (libtiff, zlib, FFTW): SIRIUS
+#                                        is static, so its PRIVATE dependencies
+#                                        are still needed at your link step,
+#                                        and they are built in-tree by
+#                                        FetchContent rather than found on the
+#                                        system, so they are shipped with it
+#   include/sirius/                      the public headers
+#   include/sirius-vendor/eigen3/        Eigen, bundled because the public API
+#                                        exposes it (<sirius/buffer.hpp>
+#                                        includes <unsupported/Eigen/CXX11/Tensor>)
+#
+# The bundled Eigen is @SIRIUS_VENDORED_EIGEN_VERSION@ and is put on your
+# include path as a SYSTEM directory. If your project already uses a different
+# Eigen, put yours first -- Eigen is header-only, so one translation unit must
+# not mix two of them.
+#
+# Everything a consumer must still provide is find_dependency()ed below: it is
+# exactly what SIRIUS took from the system rather than from FetchContent.
+
+set(SIRIUS_VERSION "@PROJECT_VERSION@")
+
+# How this copy was built -- query these to match your own build, e.g.
+#   if(SIRIUS_WITH_CUDA) enable_language(CUDA) endif()
+set(SIRIUS_WITH_CUDA        @SIRIUS_ENABLE_CUDA@)
+set(SIRIUS_WITH_NVTIFF      @SIRIUS_ENABLE_NVTIFF@)
+set(SIRIUS_WITH_NVCOMP      @SIRIUS_ENABLE_NVCOMP@)
+set(SIRIUS_WITH_TENSORSTORE @SIRIUS_ENABLE_TENSORSTORE@)
+set(SIRIUS_WITH_MPI         @SIRIUS_ENABLE_MPI@)
+set(SIRIUS_CXX_STANDARD     @CMAKE_CXX_STANDARD@)
+set(SIRIUS_VENDORED_DEPENDENCIES "@SIRIUS_VENDORED_SUMMARY@")
+
+set_and_check(SIRIUS_VENDOR_INCLUDE_DIR "@PACKAGE_SIRIUS_INSTALL_VENDOR_INCLUDEDIR@")
+set_and_check(SIRIUS_VENDOR_LIB_DIR     "@PACKAGE_SIRIUS_INSTALL_VENDOR_LIBDIR@")
+
+include(CMakeFindDependencyMacro)
+
+# OpenMP: the parallel loops in the library and in FFTW's threading layer.
+# Provided by the host compiler, so it is found, not vendored.
+find_dependency(OpenMP)
+# FFTW's OpenMP support is a C library, so the exported link line names
+# OpenMP::OpenMP_C. A consumer project that only enables CXX never gets that
+# target from find_package(OpenMP); the flag is identical for every compiler
+# SIRIUS supports, so borrow the C++ one rather than force a C toolchain on the
+# consumer.
+if(TARGET OpenMP::OpenMP_CXX AND NOT TARGET OpenMP::OpenMP_C)
+    add_library(OpenMP::OpenMP_C INTERFACE IMPORTED)
+    set_target_properties(OpenMP::OpenMP_C PROPERTIES
+        INTERFACE_LINK_LIBRARIES OpenMP::OpenMP_CXX)
+endif()
+
+# CUDA: device buffers, cuFFT. The toolkit is a system component (never
+# fetched), so a consumer of a CUDA build needs the same toolkit installed.
+if(SIRIUS_WITH_CUDA)
+    find_dependency(CUDAToolkit 12.0)
+endif()
+
+# nvTIFF / nvCOMP are NVIDIA redistributables downloaded at configure time and
+# TensorStore is a ~40-dependency Bazel build; none of them is installed by
+# SIRIUS, so builds that enable them do not generate install rules at all
+# (see SIRIUS_ENABLE_INSTALL in cmake/ProjectOptions.cmake). Reaching this
+# point with one of them on means the config was hand-edited or copied.
+foreach(_sirius_unpackaged NVTIFF NVCOMP TENSORSTORE)
+    if(SIRIUS_WITH_${_sirius_unpackaged})
+        message(FATAL_ERROR
+            "This SIRIUS package was built with ${_sirius_unpackaged}, whose libraries "
+            "are not part of the install tree. Rebuild SIRIUS without it, or add "
+            "install rules for it to cmake/Install.cmake.")
+    endif()
+endforeach()
+
+include("${CMAKE_CURRENT_LIST_DIR}/SIRIUSTargets.cmake")
+
+check_required_components(SIRIUS)

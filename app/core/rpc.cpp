@@ -1,5 +1,9 @@
 #include "core/rpc.hpp"
 
+#include "core/errors.hpp"
+
+#include <sirius/checked_math.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -32,6 +36,12 @@ using socket_t = int;
 
 namespace sirius::app::rpc {
 
+    // Frame size limits. Both lengths in a frame header come from the peer,
+    // so they are bounded before they are used for arithmetic or indexing.
+    constexpr std::uint64_t kMaxHeaderBytes = 64ull << 20;    // 64 MiB of JSON
+    constexpr std::uint64_t kMaxPayloadBytes = 32ull << 30;   // 32 GiB of tensors
+
+
     using json = nlohmann::json;
 
     namespace {
@@ -60,19 +70,20 @@ namespace sirius::app::rpc {
         }
     } // namespace
 
-    Index Tensor::numel() const noexcept {
-        Index n = 1;
-        for (Index d : shape) n *= d;
-        return n;
+    Index Tensor::numel() const {
+        // The shape arrives on the wire, so the product is checked: a wrapped
+        // one would pass the nbytes validation below and then let a consumer
+        // that walks the shape run off the end of the payload.
+        return sirius::detail::checkedProduct(shape.begin(), shape.end(), "rpc: tensor shape");
     }
 
     const float* Tensor::asFloat32() const {
-        if (dtype != "float32") throw std::runtime_error("rpc: tensor '" + name + "' is " + dtype + ", not float32");
+        if (dtype != "float32") throw ProtocolError("rpc: tensor '" + name + "' is " + dtype + ", not float32");
         return reinterpret_cast<const float*>(bytes.data());
     }
 
     const std::uint32_t* Tensor::asUInt32() const {
-        if (dtype != "uint32") throw std::runtime_error("rpc: tensor '" + name + "' is " + dtype + ", not uint32");
+        if (dtype != "uint32") throw ProtocolError("rpc: tensor '" + name + "' is " + dtype + ", not uint32");
         return reinterpret_cast<const std::uint32_t*>(bytes.data());
     }
 
@@ -107,9 +118,14 @@ namespace sirius::app::rpc {
     std::optional<Message> decodeFrame(std::vector<std::byte>& buffer) {
         if (buffer.size() < 4) return std::nullopt;
         const std::uint32_t hlen = getU32(buffer.data());
-        if (hlen > (64u << 20)) throw std::runtime_error("rpc: header of " + std::to_string(hlen) + " bytes is not plausible");
+        if (hlen > kMaxHeaderBytes) throw ProtocolError("rpc: header of " + std::to_string(hlen) + " bytes is not plausible");
         if (buffer.size() < 4 + hlen + 8) return std::nullopt;
         const std::uint64_t plen = getU64(buffer.data() + 4 + hlen);
+        // Both lengths are attacker-controlled. Without the cap the total
+        // below can wrap, the "is the frame complete" test then passes, and
+        // the payload pointer runs past the buffer.
+        if (plen > kMaxPayloadBytes)
+            throw ProtocolError("rpc: payload of " + std::to_string(plen) + " bytes exceeds the limit");
         const std::uint64_t total = 4 + hlen + 8 + plen;
         if (buffer.size() < total) return std::nullopt;
         Message m;
@@ -117,7 +133,7 @@ namespace sirius::app::rpc {
         try {
             m.header = json::parse(h);
         } catch (const json::exception& e) {
-            throw std::runtime_error(std::string("rpc: bad header JSON: ") + e.what());
+            throw ProtocolError(std::string("rpc: bad header JSON: ") + e.what());
         }
         const std::byte* payload = buffer.data() + 4 + hlen + 8;
         if (m.header.contains("tensors") && m.header["tensors"].is_array()) {
@@ -127,9 +143,10 @@ namespace sirius::app::rpc {
                 t.dtype = tj.value("dtype", "float32");
                 if (tj.contains("shape")) t.shape = tj["shape"].get<std::vector<Index>>();
                 const std::uint64_t off = tj.value("offset", 0ull), n = tj.value("nbytes", 0ull);
-                if (off + n > plen) throw std::runtime_error("rpc: tensor '" + t.name + "' exceeds the payload");
-                if (static_cast<std::size_t>(t.numel()) * dtypeSize(t.dtype) != n)
-                    throw std::runtime_error("rpc: tensor '" + t.name + "' size does not match its shape");
+                // Written so neither sum nor product can wrap.
+                if (n > plen || off > plen - n) throw ProtocolError("rpc: tensor '" + t.name + "' exceeds the payload");
+                if (sirius::detail::checkedBytes(t.numel(), dtypeSize(t.dtype), "rpc: tensor size") != n)
+                    throw ProtocolError("rpc: tensor '" + t.name + "' size does not match its shape");
                 t.bytes.assign(payload + off, payload + off + n);
                 m.tensors.push_back(std::move(t));
             }
@@ -197,29 +214,29 @@ namespace sirius::app::rpc {
             ~TcpTransport() override { close(); }
 
             void send(const std::vector<std::byte>& bytes) override {
-                if (sock_ == SIRIUS_INVALID_SOCKET) throw std::runtime_error("rpc: connection is closed");
+                if (sock_ == SIRIUS_INVALID_SOCKET) throw ProtocolError("rpc: connection is closed");
                 std::size_t sent = 0;
                 while (sent < bytes.size()) {
-                    if (!waitFor(sock_, true, std::chrono::seconds(30))) throw std::runtime_error("rpc: send timed out");
+                    if (!waitFor(sock_, true, std::chrono::seconds(30))) throw ProtocolError("rpc: send timed out");
                     const auto n = ::send(sock_, reinterpret_cast<const char*>(bytes.data() + sent),
                                           static_cast<int>(std::min<std::size_t>(bytes.size() - sent, 1u << 20)), 0);
                     if (n < 0) {
                         if (wouldBlock(lastError())) continue;
-                        throw std::runtime_error("rpc: send failed");
+                        throw ProtocolError("rpc: send failed");
                     }
                     sent += static_cast<std::size_t>(n);
                 }
             }
 
             bool receive(std::vector<std::byte>& into, std::chrono::milliseconds timeout) override {
-                if (sock_ == SIRIUS_INVALID_SOCKET) throw std::runtime_error("rpc: connection is closed");
+                if (sock_ == SIRIUS_INVALID_SOCKET) throw ProtocolError("rpc: connection is closed");
                 if (!waitFor(sock_, false, timeout)) return false;
                 std::byte buf[1 << 16];
                 const auto n = ::recv(sock_, reinterpret_cast<char*>(buf), sizeof buf, 0);
-                if (n == 0) throw std::runtime_error("rpc: the worker closed the connection");
+                if (n == 0) throw ProtocolError("rpc: the worker closed the connection");
                 if (n < 0) {
                     if (wouldBlock(lastError())) return false;
-                    throw std::runtime_error("rpc: receive failed");
+                    throw ProtocolError("rpc: receive failed");
                 }
                 into.insert(into.end(), buf, buf + n);
                 return true;
@@ -252,14 +269,14 @@ namespace sirius::app::rpc {
 
             void send(const std::vector<std::byte>& bytes) override {
                 std::lock_guard<std::mutex> g(out_->m);
-                if (out_->closed) throw std::runtime_error("rpc: connection is closed");
+                if (out_->closed) throw ProtocolError("rpc: connection is closed");
                 out_->data.insert(out_->data.end(), bytes.begin(), bytes.end());
                 out_->cv.notify_all();
             }
             bool receive(std::vector<std::byte>& into, std::chrono::milliseconds timeout) override {
                 std::unique_lock<std::mutex> lock(in_->m);
                 if (!in_->cv.wait_for(lock, timeout, [&] { return !in_->data.empty() || in_->closed; })) return false;
-                if (in_->data.empty() && in_->closed) throw std::runtime_error("rpc: the worker closed the connection");
+                if (in_->data.empty() && in_->closed) throw ProtocolError("rpc: the worker closed the connection");
                 into.insert(into.end(), in_->data.begin(), in_->data.end());
                 in_->data.clear();
                 return true;
@@ -288,7 +305,7 @@ namespace sirius::app::rpc {
         hints.ai_socktype = SOCK_STREAM;
         addrinfo* res = nullptr;
         if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res)
-            throw std::runtime_error("rpc: cannot resolve " + host);
+            throw ProtocolError("rpc: cannot resolve " + host);
         std::string lastErr = "no address";
         for (addrinfo* ai = res; ai; ai = ai->ai_next) {
             const socket_t s = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -318,7 +335,7 @@ namespace sirius::app::rpc {
             closeSocket(s);
         }
         freeaddrinfo(res);
-        throw std::runtime_error("rpc: cannot connect to " + host + ":" + std::to_string(port) + " (" + lastErr + ")");
+        throw ProtocolError("rpc: cannot connect to " + host + ":" + std::to_string(port) + " (" + lastErr + ")");
     }
 
     std::pair<std::unique_ptr<Transport>, std::unique_ptr<Transport>> loopbackPair() {
@@ -335,7 +352,21 @@ namespace sirius::app {
     RemoteWorker::RemoteWorker(std::unique_ptr<rpc::Transport> transport, std::string token)
         : transport_(std::move(transport)), token_(std::move(token)) {
         if (!transport_) throw std::invalid_argument("RemoteWorker: no transport");
-        const WorkerResult hello = call("hello", {{"token", token_}});
+        const WorkerResult hello = call("hello", {{"token", token_}, {"protocol_version", rpc::kProtocolVersion}});
+        // Same version on both ends or nothing: the framing and the method set
+        // are versioned together, so a mismatch is reported here rather than
+        // as a puzzling failure in the middle of a run. A worker predating the
+        // handshake sends no field at all and counts as version 0.
+        if (hello.result.contains("protocol_version") && hello.result["protocol_version"].is_number_integer())
+            caps_.protocolVersion = hello.result["protocol_version"].get<int>();
+        if (caps_.protocolVersion != rpc::kProtocolVersion)
+            throw ProtocolError(
+                "worker: protocol version mismatch. This application speaks version " +
+                std::to_string(rpc::kProtocolVersion) + ", the worker speaks version " +
+                std::to_string(caps_.protocolVersion) +
+                (caps_.protocolVersion < rpc::kProtocolVersion
+                     ? "; update sirius_worker (app/python) on the machine running the worker."
+                     : "; update SIRIUS on this machine."));
         caps_.version = hello.result.value("version", "");
         caps_.cuda = hello.result.value("cuda", false);
         caps_.device = hello.result.value("device", "");
@@ -361,7 +392,7 @@ namespace sirius::app {
                                     const std::vector<rpc::TensorRef>& tensors,
                                     const std::function<void(double, const std::string&)>& progress,
                                     const std::function<bool()>& cancelled) {
-        if (!transport_ || !transport_->isOpen()) throw std::runtime_error("worker: not connected");
+        if (!transport_ || !transport_->isOpen()) throw ProtocolError("worker: not connected");
         const std::uint64_t id = nextId_++;
         json header = {{"id", id}, {"type", "request"}, {"method", method}, {"params", params}};
         if (!token_.empty()) header["token"] = token_;

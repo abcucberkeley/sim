@@ -2,6 +2,8 @@
 
 #include "core/labels.hpp"
 
+#include <sirius/constants.hpp>
+
 #include <algorithm>
 #include <cmath>
 
@@ -19,13 +21,15 @@
 #include <QWheelEvent>
 
 #include "qt/theme.hpp"
+#include "qt/viewer/viewer_constants.hpp"
 #include "qt/viewer/viewer_widgets.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
     namespace {
-        constexpr int kMaxTexels = 256;   // per axis
-        constexpr int kMaxChannels = 4;
+        using viewer::kVolumeMaxChannels;
+        constexpr int kMaxChannels = kVolumeMaxChannels;
 
         const char* kVertex = R"(
             out vec2 vNdc;
@@ -158,7 +162,7 @@ namespace sirius::app {
             ph->setContentsMargins(0, 0, 0, 0);
             ph->setSpacing(8);
             for (const auto& p : presets) {
-                auto* b = new GlyphButton(QString::fromLatin1(p.name), presetHost, QSize(52, 22));
+                auto* b = new widgets::GlyphButton(QString::fromLatin1(p.name), QSize(52, 22), presetHost);
                 b->setGlyphPx(11);
                 b->setOnDark(true);
                 b->setCheckable(true);
@@ -176,14 +180,7 @@ namespace sirius::app {
             grid->setHorizontalSpacing(10);
             grid->setVerticalSpacing(6);
             auto label = [&](const QString& t) {
-                auto* l = new QLabel(t, sliderHost);
-                QFont f(theme::kFontFamily);
-                f.setPixelSize(11);
-                l->setFont(f);
-                QPalette pal = l->palette();
-                pal.setColor(QPalette::WindowText, theme::kViewerText);
-                l->setPalette(pal);
-                return l;
+                return widgets::label(t, 11, theme::kViewerText, -1, sliderHost);
             };
             yaw = new QSlider(Qt::Horizontal, sliderHost);
             yaw->setRange(0, 359);
@@ -245,7 +242,7 @@ namespace sirius::app {
         QSlider* yaw = nullptr;
         QSlider* pitch = nullptr;
         RangeSlider* clip = nullptr;
-        struct Preset { GlyphButton* button; double yaw, pitch; };
+        struct Preset { widgets::GlyphButton* button; double yaw, pitch; };
         std::vector<Preset> presetButtons;
         bool syncing = false;
     };
@@ -279,17 +276,29 @@ namespace sirius::app {
 
     // --- state -----------------------------------------------------------------------
 
-    void VolumeView::setVolumes(quint64 key, const std::vector<Channel>& channels, const std::array<double, 3>& voxelUm) {
-        channels_ = channels;
-        if (channels_.size() > kMaxChannels) channels_.resize(kMaxChannels);
+    void VolumeView::setTextures(quint64 key, std::vector<ReducedVolume> channels, const std::array<double, 3>& voxelUm,
+                                 Index nz, Index ny, Index nx) {
+        textures_ = std::move(channels);
+        if (textures_.size() > static_cast<std::size_t>(kMaxChannels)) textures_.resize(kMaxChannels);
         key_ = key;
         voxelUm_ = voxelUm;
+        vz_ = nz;
+        vy_ = ny;
+        vx_ = nx;
+        preparing_.clear();
         update();
     }
 
     void VolumeView::clearVolumes() {
-        channels_.clear();
+        textures_.clear();
+        vz_ = vy_ = vx_ = 0;
         key_ = 0;
+        update();
+    }
+
+    void VolumeView::setPreparing(const QString& text) {
+        if (preparing_ == text) return;
+        preparing_ = text;
         update();
     }
 
@@ -338,7 +347,7 @@ namespace sirius::app {
     }
 
     void VolumeView::setZoom(double zoom) {
-        zoom_ = std::clamp(zoom, 0.25, 8.0);
+        zoom_ = std::clamp(zoom, viewer::kMinVolumeZoom, viewer::kMaxVolumeZoom);
         update();
     }
 
@@ -399,9 +408,10 @@ namespace sirius::app {
         gl_->labelsUploaded = false;
         uploadedLabelsKey_ = labelsKey_;
         if (!labels_ || lx_ <= 0 || ly_ <= 0 || lz_ <= 0) return;
-        const int fx = static_cast<int>((lx_ + kMaxTexels - 1) / kMaxTexels);
-        const int fy = static_cast<int>((ly_ + kMaxTexels - 1) / kMaxTexels);
-        const int fz = static_cast<int>((lz_ + kMaxTexels - 1) / kMaxTexels);
+        const Index cap = viewer::kVolumeTexelsMax;
+        const int fx = static_cast<int>((lx_ + cap - 1) / cap);
+        const int fy = static_cast<int>((ly_ + cap - 1) / cap);
+        const int fz = static_cast<int>((lz_ + cap - 1) / cap);
         const int tx = static_cast<int>((lx_ + fx - 1) / fx), ty = static_cast<int>((ly_ + fy - 1) / fy),
                   tz = static_cast<int>((lz_ + fz - 1) / fz);
         std::vector<unsigned char> texels(static_cast<std::size_t>(tx) * ty * tz * 4, 0);
@@ -440,35 +450,10 @@ namespace sirius::app {
     void VolumeView::resizeGL(int, int) {}
 
     void VolumeView::uploadTextures() {
+        // The reduction happened on the loader thread: this is the upload.
         gl_->textureCount = 0;
-        std::vector<unsigned char> texels;
-        for (std::size_t i = 0; i < channels_.size(); ++i) {
-            const Channel& ch = channels_[i];
-            if (!ch.data || ch.x <= 0 || ch.y <= 0 || ch.z <= 0) continue;
-            const int fx = static_cast<int>((ch.x + kMaxTexels - 1) / kMaxTexels);
-            const int fy = static_cast<int>((ch.y + kMaxTexels - 1) / kMaxTexels);
-            const int fz = static_cast<int>((ch.z + kMaxTexels - 1) / kMaxTexels);
-            const int tx = static_cast<int>((ch.x + fx - 1) / fx), ty = static_cast<int>((ch.y + fy - 1) / fy),
-                      tz = static_cast<int>((ch.z + fz - 1) / fz);
-            texels.assign(static_cast<std::size_t>(tx) * ty * tz, 0);
-            const float scale = 255.0f / std::max(ch.hi - ch.lo, 1e-6f);
-            // average a coarse sub-grid of each box so the reduction stays cheap
-            const int sx = std::max(1, fx / 2), sy = std::max(1, fy / 2), sz = std::max(1, fz / 2);
-            for (int z = 0; z < tz; ++z)
-                for (int y = 0; y < ty; ++y)
-                    for (int x = 0; x < tx; ++x) {
-                        float acc = 0.0f;
-                        int n = 0;
-                        for (Index zz = static_cast<Index>(z) * fz; zz < std::min<Index>(static_cast<Index>(z + 1) * fz, ch.z); zz += sz)
-                            for (Index yy = static_cast<Index>(y) * fy; yy < std::min<Index>(static_cast<Index>(y + 1) * fy, ch.y); yy += sy)
-                                for (Index xx = static_cast<Index>(x) * fx; xx < std::min<Index>(static_cast<Index>(x + 1) * fx, ch.x); xx += sx) {
-                                    acc += ch.data[(zz * ch.y + yy) * ch.x + xx];
-                                    ++n;
-                                }
-                        const float v = n ? (acc / static_cast<float>(n) - ch.lo) * scale : 0.0f;
-                        texels[(static_cast<std::size_t>(z) * ty + y) * tx + x] =
-                            static_cast<unsigned char>(v > 255.0f ? 255 : (v > 0.0f ? static_cast<int>(v) : 0));
-                    }
+        for (const ReducedVolume& brick : textures_) {
+            if (brick.texels.empty() || brick.tx <= 0 || brick.ty <= 0 || brick.tz <= 0) continue;
             glBindTexture(GL_TEXTURE_3D, gl_->textures[gl_->textureCount]);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -476,7 +461,8 @@ namespace sirius::app {
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-            glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, tx, ty, tz, 0, GL_RED, GL_UNSIGNED_BYTE, texels.data());
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, brick.tx, brick.ty, brick.tz, 0, GL_RED, GL_UNSIGNED_BYTE,
+                         brick.texels.data());
             ++gl_->textureCount;
             if (gl_->textureCount >= kMaxChannels) break;
         }
@@ -494,10 +480,10 @@ namespace sirius::app {
         // physical box: the longest side is 1 world unit
         std::array<double, 3> ext{0.0, 0.0, 0.0};
         int nz = 1;
-        if (!channels_.empty()) {
-            const Channel& c = channels_.front();
-            ext = {c.x * voxelUm_[0], c.y * voxelUm_[1], c.z * voxelUm_[2]};
-            nz = static_cast<int>(c.z);
+        if (!textures_.empty() && vx_ > 0 && vy_ > 0 && vz_ > 0) {
+            ext = {static_cast<double>(vx_) * voxelUm_[0], static_cast<double>(vy_) * voxelUm_[1],
+                   static_cast<double>(vz_) * voxelUm_[2]};
+            nz = static_cast<int>(vz_);
         }
         const double longest = std::max({ext[0], ext[1], ext[2], 1e-9});
         const QVector3D half(static_cast<float>(ext[0] / longest / 2), static_cast<float>(ext[1] / longest / 2),
@@ -506,7 +492,7 @@ namespace sirius::app {
         QMatrix4x4 proj, view;
         const float aspect = height() > 0 ? static_cast<float>(width()) / static_cast<float>(height()) : 1.0f;
         proj.perspective(32.0f, aspect, 0.05f, 20.0f);
-        const double yaw = yaw_ * M_PI / 180.0, pitch = pitch_ * M_PI / 180.0;
+        const double yaw = yaw_ * sirius::kPi / 180.0, pitch = pitch_ * sirius::kPi / 180.0;
         const float dist = static_cast<float>(2.4 / zoom_);
         const QVector3D cam(static_cast<float>(dist * std::sin(yaw) * std::cos(pitch)),
                             static_cast<float>(dist * std::sin(pitch)),
@@ -514,7 +500,7 @@ namespace sirius::app {
         view.lookAt(cam, QVector3D(0, 0, 0), QVector3D(0, 1, 0));
         const QMatrix4x4 viewProj = proj * view;
 
-        if (glOk_ && !channels_.empty()) {
+        if (glOk_ && !textures_.empty()) {
             if (uploadedKey_ != key_) uploadTextures();
             if (uploadedLabelsKey_ != labelsKey_) uploadLabels();
             if (gl_->textureCount > 0) {
@@ -531,14 +517,14 @@ namespace sirius::app {
                 gl_->ray->setUniformValue("uMip", mip_ ? 1 : 0);
                 const char* texNames[kMaxChannels] = {"uTex0", "uTex1", "uTex2", "uTex3"};
                 int k = 0;
-                for (std::size_t i = 0; i < channels_.size() && k < gl_->textureCount; ++i) {
-                    const Channel& c = channels_[i];
-                    if (!c.data) continue;
+                for (std::size_t i = 0; i < textures_.size() && k < gl_->textureCount; ++i) {
+                    const ReducedVolume& brick = textures_[i];
+                    if (brick.texels.empty()) continue;
                     glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(k));
                     glBindTexture(GL_TEXTURE_3D, gl_->textures[k]);
                     gl_->ray->setUniformValue(texNames[k], k);
                     gl_->ray->setUniformValue(QByteArrayLiteral("uColor[") + QByteArray::number(k) + "]",
-                                              QVector3D(c.color[0], c.color[1], c.color[2]));
+                                              QVector3D(brick.color[0], brick.color[1], brick.color[2]));
                     ++k;
                 }
                 const bool labelsOn = gl_->labelsUploaded && labels_ != nullptr;
@@ -555,7 +541,7 @@ namespace sirius::app {
             }
         }
 
-        if (glOk_ && box_ && !channels_.empty()) {
+        if (glOk_ && box_ && !textures_.empty()) {
             // 12 edges; the three from the voxel origin (-x, +y, +z corner) in accent
             const float hx = half.x(), hy = half.y(), hz = half.z();
             const QVector3D o(-hx, hy, hz);
@@ -598,10 +584,7 @@ namespace sirius::app {
 
         // overlays on top of the GL surface
         painter.setRenderHint(QPainter::Antialiasing, true);
-        QFont bold(theme::kFontFamily);
-        bold.setPixelSize(11);
-        bold.setWeight(QFont::ExtraBold);
-        const QFontMetrics fm(bold);
+        const QFontMetrics fm(theme::font(11, QFont::ExtraBold));
         drawOverlayText(painter, QPointF(10, 8), QStringLiteral("VOLUME"), true);
         double x = 10 + fm.horizontalAdvance(QStringLiteral("VOLUME")) + 12;
         drawOverlayText(painter, QPointF(x, 8), method_, false, 0.7);
@@ -613,10 +596,13 @@ namespace sirius::app {
             painter.setPen(QColor(243, 242, 242, 180));
             painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap,
                              QStringLiteral("Volume rendering unavailable: ") + glError_);
-        } else if (channels_.empty()) {
+        } else if (textures_.empty()) {
             painter.setFont(theme::font(12));
-            painter.setPen(QColor(243, 242, 242, 140));
-            painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("No volume to render"));
+            painter.setPen(QColor(243, 242, 242, preparing_.isEmpty() ? 140 : 200));
+            painter.drawText(rect(), Qt::AlignCenter,
+                             preparing_.isEmpty() ? QStringLiteral("No volume to render") : preparing_);
+        } else if (!preparing_.isEmpty()) {
+            drawOverlayText(painter, QPointF(viewer::kOverlayInset, viewer::kOverlayTop + 18), preparing_, false, 0.75);
         }
     }
 
@@ -633,7 +619,11 @@ namespace sirius::app {
         if (!dragging_) return;
         const QPointF d = e->position() - dragLast_;
         dragLast_ = e->position();
-        applyOrientation(yaw_ + d.x() * 0.5, pitch_ - d.y() * 0.5, true);
+        // Drag the volume, not the camera: dragging right turns the volume to
+        // the right and dragging down tips its top towards the viewer. The
+        // camera orbits at (sin yaw, sin pitch, cos yaw), so both angles move
+        // against the drag to make the volume follow the pointer.
+        applyOrientation(yaw_ - d.x() * 0.5, pitch_ + d.y() * 0.5, true);
     }
 
     void VolumeView::mouseReleaseEvent(QMouseEvent*) { dragging_ = false; }
@@ -641,7 +631,7 @@ namespace sirius::app {
     void VolumeView::wheelEvent(QWheelEvent* e) {
         const double steps = e->angleDelta().y() / 120.0;
         if (steps == 0.0) return;
-        setZoom(zoom_ * std::pow(1.15, steps));
+        setZoom(zoom_ * std::pow(viewer::kWheelZoomBase, steps));
         emit zoomChanged(zoom_);
         e->accept();
     }

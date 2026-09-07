@@ -74,7 +74,9 @@ namespace sirius::app {
                             for (Index i = 0; i < n; ++i)
                                 if (vol[i] && drop.count(vol[i])) vol[i] = 0;
                     }
+                    ctx.throwIfCancelled();
                     if (minVoxels > 0 || relabel) removeSmall(vol, n, minVoxels);
+                    ctx.throwIfCancelled();
                     labels->recomputeStats(t);
                     labels->applyFlags(rules);
                 }

@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -25,7 +26,11 @@
 #include "core/help_pages.hpp"
 #include "core/tool_api.hpp"
 #include "qt/panels/llm_client.hpp"
+#include "qt/qt_strings.hpp"
+#include "qt/shortcuts.hpp"
+#include "qt/secret_store.hpp"
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
@@ -38,7 +43,7 @@ namespace sirius::app {
         a.provider = s.value(QStringLiteral("provider"), a.provider).toString();
         a.baseUrl = s.value(QStringLiteral("baseUrl"), a.baseUrl).toString();
         a.model = s.value(QStringLiteral("model"), a.model).toString();
-        a.apiKey = s.value(QStringLiteral("apiKey"), a.apiKey).toString();
+        a.apiKey = secrets::read(QStringLiteral("assistant/apiKey"));
         a.askBeforeActing = s.value(QStringLiteral("askBeforeActing"), a.askBeforeActing).toBool();
         if (a.apiKey.isEmpty()) {
             if (a.provider == QLatin1String("openrouter")) a.apiKey = qEnvironmentVariable("OPENROUTER_API_KEY");
@@ -53,16 +58,17 @@ namespace sirius::app {
         s.setValue(QStringLiteral("provider"), provider);
         s.setValue(QStringLiteral("baseUrl"), baseUrl);
         s.setValue(QStringLiteral("model"), model);
-        s.setValue(QStringLiteral("apiKey"), apiKey);
+        secrets::write(QStringLiteral("assistant/apiKey"), apiKey);
         s.setValue(QStringLiteral("askBeforeActing"), askBeforeActing);
     }
 
     namespace {
 
-        QString nlohmannToQ(const nlohmann::json& j) { return QString::fromStdString(j.dump()); }
+        QString nlohmannToQ(const nlohmann::json& j) { return fromStd(j.dump()); }
 
         QJsonValue toQJson(const nlohmann::json& j) {
-            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(j.dump()));
+            const std::string dumped = j.dump();
+            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray(dumped.data(), static_cast<qsizetype>(dumped.size())));
             if (doc.isArray()) return doc.array();
             if (doc.isObject()) return doc.object();
             return QJsonValue();
@@ -90,38 +96,43 @@ namespace sirius::app {
             ActionCard(const ActionRecord& rec, std::function<void(const QString&)> onLink, QWidget* parent)
                 : QFrame(parent) {
                 setFrameShape(QFrame::NoFrame);
-                setStyleSheet(QStringLiteral("QFrame { border: 1.5px solid %1; }").arg(theme::hex(theme::kDivider)));
+                widgets::setWidgetClass(this, "card");
                 auto* g = new QGridLayout(this);
                 g->setContentsMargins(10, 7, 10, 7);
                 g->setHorizontalSpacing(8);
                 g->setColumnMinimumWidth(0, 18);
                 g->setColumnStretch(1, 1);
-                QString glyph = QStringLiteral("ℹ");
+                widgets::Icon icon = widgets::Icon::Info;
                 bool accent = false;
                 switch (rec.kind) {
-                    case ActionRecord::Kind::Param: glyph = QStringLiteral("✎"); break;
-                    case ActionRecord::Kind::Run: glyph = QStringLiteral("▶"); break;
-                    case ActionRecord::Kind::View: glyph = QStringLiteral("◉"); accent = true; break;
-                    case ActionRecord::Kind::Edit: glyph = QStringLiteral("✎"); break;
+                    case ActionRecord::Kind::Param: icon = widgets::Icon::Pencil; break;
+                    case ActionRecord::Kind::Run: icon = widgets::Icon::Play; break;
+                    case ActionRecord::Kind::View:
+                        icon = widgets::Icon::Eye;
+                        accent = true;
+                        break;
+                    case ActionRecord::Kind::Edit: icon = widgets::Icon::Pencil; break;
                     case ActionRecord::Kind::Info: break;
                 }
-                auto* gl = new QLabel(glyph, this);
-                gl->setFont(theme::heading(12));
-                gl->setStyleSheet(QStringLiteral("border: none; color: %1;").arg(theme::hex(accent ? theme::kAccent : theme::kText)));
+                auto* gl = new QLabel(this);
+                gl->setFixedSize(14, 14);
+                gl->setPixmap(widgets::iconPixmap(icon, 14, accent ? theme::kAccent : theme::kText));
                 g->addWidget(gl, 0, 0);
-                auto* text = new QLabel(QString::fromStdString(rec.text), this);
+                auto* text = new QLabel(fromStd(rec.text), this);
                 text->setFont(theme::font(12));
-                text->setStyleSheet(QStringLiteral("border: none;"));
-                text->setToolTip(QString::fromStdString(rec.text));
+                text->setToolTip(fromStd(rec.text));
                 text->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                 g->addWidget(text, 0, 1);
                 if (!rec.link.empty()) {
                     auto* link = new QLabel(QStringLiteral("<a href=\"%1\" style=\"color:%2; text-decoration:none\">%1</a>")
-                                                .arg(QString::fromStdString(rec.link), theme::hex(theme::kAccent)),
+                                                .arg(fromStd(rec.link), theme::hex(theme::kAccent)),
                                             this);
                     link->setFont(theme::font(12));
-                    link->setStyleSheet(QStringLiteral("border: none;"));
                     link->setCursor(Qt::PointingHandCursor);
+                    // Tab reaches the link and Enter follows it.
+                    link->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+                    link->setFocusPolicy(Qt::StrongFocus);
+                    link->setAccessibleName(fromStd(rec.link));
                     QObject::connect(link, &QLabel::linkActivated, this, [onLink](const QString& href) { onLink(href); });
                     g->addWidget(link, 0, 2);
                 }
@@ -132,11 +143,13 @@ namespace sirius::app {
         public:
             Chip(const QString& text, QWidget* parent) : QPushButton(text, parent) {
                 setCursor(Qt::PointingHandCursor);
-                setFocusPolicy(Qt::NoFocus);
+                // Reachable with Tab; the style sheet draws the focus ring.
+                setFocusPolicy(Qt::StrongFocus);
+                setAccessibleName(text);
+                // The face also has to be on the widget: the size hint is
+                // measured from it, not from the style sheet's font-size.
                 setFont(theme::font(theme::kSmallPx));
-                setStyleSheet(QStringLiteral("QPushButton { border: 1.5px solid %1; border-radius: 0; padding: 3px 8px; background: transparent; color: %2; }"
-                                             "QPushButton:hover { border-color: %3; color: %3; }")
-                                  .arg(theme::hex(theme::kDivider), theme::hex(theme::kText), theme::hex(theme::kAccent)));
+                widgets::setButtonClass(this, "chip");
             }
         };
 
@@ -163,7 +176,7 @@ namespace sirius::app {
         QLabel* streamingLabel = nullptr;      // the assistant text being streamed
         QString streamingSource;               // its Markdown so far (the label holds HTML)
         static QString renderMarkdown(const QString& markdown) {
-            return QString::fromStdString(helpMarkdownToHtml(markdown.toStdString(), std::string()));
+            return fromStd(helpMarkdownToHtml(toStd(markdown), std::string()));
         }
         QWidget* streamingBlock = nullptr;
 
@@ -189,10 +202,8 @@ namespace sirius::app {
             bubble->setWordWrap(true);
             bubble->setFont(theme::font(theme::kBodyPx));
             bubble->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            bubble->setStyleSheet(QStringLiteral("QLabel { background: %1; color: %2; padding: 8px 12px; }")
-                                      .arg(theme::hex(theme::kText), theme::hex(theme::kBg)));
+            widgets::setWidgetClass(bubble, "bubble");
             bubble->setMaximumWidth(static_cast<int>(scroll->viewport()->width() * 0.88));
-            bubble->setProperty("bubble", true);
             h->addStretch(1);
             h->addWidget(bubble, 0, Qt::AlignRight);
             messages->insertWidget(messages->count() - 1, row);
@@ -251,7 +262,7 @@ namespace sirius::app {
                 const auto& log = wb.log();
                 QString tail;
                 const std::size_t start = log.size() > 12 ? log.size() - 12 : 0;
-                for (std::size_t i = start; i < log.size(); ++i) tail += QString::fromStdString(log[i]) + "\n";
+                for (std::size_t i = start; i < log.size(); ++i) tail += fromStd(log[i]) + "\n";
                 QToolTip::showText(QCursor::pos(), tail.trimmed().isEmpty() ? QStringLiteral("(log is empty)") : tail.trimmed(), self);
             }
         }
@@ -274,7 +285,7 @@ namespace sirius::app {
         QJsonArray systemMessages() {
             QJsonObject sys;
             sys[QStringLiteral("role")] = QStringLiteral("system");
-            QString prompt = QString::fromStdString(api.systemPrompt());
+            QString prompt = fromStd(api.systemPrompt());
             prompt += QStringLiteral("\n\nCurrent workbench state (JSON):\n") + nlohmannToQ(api.contextSnapshot());
             sys[QStringLiteral("content")] = prompt;
             return {sys};
@@ -380,14 +391,14 @@ namespace sirius::app {
         void askConfirmation(const PendingCall& call) {
             setBusy(true, QStringLiteral("Waiting for your confirmation…"));
             auto* row = new QFrame(transcript);
-            row->setStyleSheet(QStringLiteral("QFrame { border: 1.5px solid %1; }").arg(theme::hex(theme::kAccent)));
+            row->setFrameShape(QFrame::NoFrame);
+            widgets::setWidgetClass(row, "card-accent");
             auto* h = new QHBoxLayout(row);
             h->setContentsMargins(10, 7, 10, 7);
             h->setSpacing(8);
             auto* text = new QLabel(QStringLiteral("Apply %1 %2?").arg(call.name, call.arguments.left(80)), row);
             text->setFont(theme::font(12));
             text->setWordWrap(true);
-            text->setStyleSheet(QStringLiteral("border: none;"));
             h->addWidget(text, 1);
             auto* apply = new Chip(QStringLiteral("Apply"), row);
             auto* skip = new Chip(QStringLiteral("Skip"), row);
@@ -416,11 +427,11 @@ namespace sirius::app {
 
         void executeCall(const PendingCall& call) {
             setBusy(true, QStringLiteral("Running %1…").arg(call.name));
-            nlohmann::json args = nlohmann::json::parse(call.arguments.toStdString(), nullptr, false);
+            nlohmann::json args = nlohmann::json::parse(toStd(call.arguments), nullptr, false);
             if (args.is_discarded() || !args.is_object()) args = nlohmann::json::object();
             nlohmann::json result;
             try {
-                result = api.call(call.name.toStdString(), args);
+                result = api.call(toStd(call.name), args);
             } catch (const std::exception& e) {
                 result = {{"error", e.what()}};
             }
@@ -439,7 +450,13 @@ namespace sirius::app {
         void updateContextLine() {
             const Workbench& wb = bridge.wb();
             const int sel = wb.selectedIndex();
-            context->setText(QStringLiteral("sees step %1, diagnostics, ops stack").arg(QString::fromStdString(Step::number(std::max(sel, 0)))));
+            // With no step there is nothing to see: the line said "sees step
+            // 01" over an empty pipeline.
+            const int steps = wb.pipeline().size();
+            if (sel < 0 || sel >= steps)
+                context->setText(steps == 0 ? QStringLiteral("no steps yet") : QStringLiteral("sees the ops stack"));
+            else
+                context->setText(QStringLiteral("sees step %1, diagnostics, ops stack").arg(fromStd(Step::number(sel))));
         }
 
         void updateAskToggle() {
@@ -469,11 +486,9 @@ namespace sirius::app {
         auto* h = new QHBoxLayout(header);
         h->setContentsMargins(14, 0, 14, 0);
         h->setSpacing(10);
-        auto* star = new QLabel(QStringLiteral("✦"), header);
-        star->setFont(theme::font(13));
-        QPalette sp = star->palette();
-        sp.setColor(QPalette::WindowText, theme::kAccent);
-        star->setPalette(sp);
+        auto* star = new QLabel(header);
+        star->setFixedSize(14, 14);
+        star->setPixmap(widgets::iconPixmap(widgets::Icon::Sparkle, 14, theme::kAccent));
         h->addWidget(star);
         auto* title = new QLabel(QStringLiteral("Assistant"), header);
         title->setFont(theme::heading(13));
@@ -481,10 +496,11 @@ namespace sirius::app {
         d.context = mutedLabel({}, header);
         d.context->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         h->addWidget(d.context, 1);
-        auto* close = new QLabel(QStringLiteral("<a href=\"close\" style=\"color:%1; text-decoration:none\">✕</a>").arg(theme::hex(theme::kText)), header);
-        close->setFont(theme::font(13));
-        close->setCursor(Qt::PointingHandCursor);
-        connect(close, &QLabel::linkActivated, this, [this](const QString&) { emit closeRequested(); });
+        auto* close = new widgets::GlyphButton(widgets::Icon::Close, 18, header);
+        close->setBorderless(true);
+        close->setIconPx(11);
+        close->setToolTip(QStringLiteral("Close the assistant"));
+        connect(close, &QAbstractButton::clicked, this, [this] { emit closeRequested(); });
         h->addWidget(close);
         v->addWidget(header);
         auto* rule = new QFrame(this);
@@ -561,20 +577,15 @@ namespace sirius::app {
         d.input->setPlaceholderText(QStringLiteral("Ask, or tell it what to do…"));
         d.input->setMinimumHeight(34);
         d.input->setFont(theme::font(theme::kBodyPx));
-        d.input->setStyleSheet(QStringLiteral("QLineEdit { border: 1.5px solid %1; border-radius: 0; padding: 0 8px; background: %2; }"
-                                              "QLineEdit:focus { border-color: %3; }")
-                                   .arg(theme::hex(theme::kDivider), theme::hex(theme::kBg), theme::hex(theme::kAccent)));
         connect(d.input, &QLineEdit::returnPressed, this, [this] { impl_->submit(impl_->input->text()); });
         inputRow->addWidget(d.input, 1);
-        d.send = new QPushButton(QStringLiteral("↵"), footer);
+        d.send = new QPushButton(footer);
+        d.send->setIcon(QIcon(widgets::iconPixmap(widgets::Icon::Enter, 14, theme::kBg)));
+        d.send->setToolTip(withShortcut(QStringLiteral("Send"), keys::send()));
+        d.send->setAccessibleName(QStringLiteral("Send"));
         d.send->setFixedSize(34, 34);
         d.send->setCursor(Qt::PointingHandCursor);
-        d.send->setFocusPolicy(Qt::NoFocus);
-        d.send->setStyleSheet(QStringLiteral("QPushButton { background: %1; color: %2; border: 1.5px solid %1; border-radius: 0; }"
-                                             "QPushButton:hover { background: %3; border-color: %3; }"
-                                             "QPushButton:disabled { background: %4; border-color: %4; }")
-                                  .arg(theme::hex(theme::kAccent), theme::hex(theme::kBg), theme::hex(theme::kAccent600),
-                                       theme::hex(theme::kNeutral400)));
+        widgets::setButtonClass(d.send, "primary icon");
         connect(d.send, &QPushButton::clicked, this, [this] { impl_->submit(impl_->input->text()); });
         inputRow->addWidget(d.send);
         f->addLayout(inputRow);
@@ -618,7 +629,7 @@ namespace sirius::app {
             loop.exec();
             disconnect(c);
             nlohmann::json out = {{"ok", ok}};
-            if (!error.isEmpty()) out["error"] = error.toStdString();
+            if (!error.isEmpty()) out["error"] = toStd(error);
             if (auto job = b.wb().activeRun(); job) out["seconds"] = job->seconds();
             return out;
         });

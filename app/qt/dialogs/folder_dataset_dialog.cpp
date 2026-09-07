@@ -81,8 +81,8 @@ namespace sirius::app {
         // "488" < "561" < "640" numerically, everything else by name.
         bool tokenLess(const std::string& a, const std::string& b) {
             bool na = false, nb = false;
-            const double da = QString::fromStdString(a).toDouble(&na);
-            const double db = QString::fromStdString(b).toDouble(&nb);
+            const double da = fromStd(a).toDouble(&na);
+            const double db = fromStd(b).toDouble(&nb);
             if (na && nb) return da < db;
             if (na != nb) return na;
             return a < b;
@@ -626,7 +626,7 @@ namespace sirius::app {
                 Chan ch;
                 ch.info.label = token;
                 bool num = false;
-                const double nm = QString::fromStdString(token).toDouble(&num);
+                const double nm = fromStd(token).toDouble(&num);
                 if (num && nm > 100.0) ch.info.wavelengthNm = nm;
                 bool seeded = false;
                 if (existing) {

@@ -9,7 +9,9 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "sirius"
-version = "0.0.1"
+# Version: CMakeLists.txt project(... VERSION x.y.z) is canonical; tools/check_versions.py
+# (run by the CI lint job) asserts this and sirius_worker.__version__ agree with it.
+version = "0.1.0"
 description = "SIRIUS - Structured Illumination Reconstruction and Image Utility Suite"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -71,3 +73,38 @@ test-command = "python -m unittest discover -s {project}/bindings/tests"
 # Needed for full C++17 support
 [tool.cibuildwheel.macos.environment]
 MACOSX_DEPLOYMENT_TARGET = "10.14"
+
+# --- ruff: lint for the Python worker, bindings, benchmarks and plugins
+# (`ruff check .`; the pre-commit hook and the CI lint job run the same).
+# `ruff format` is NOT part of the checks: it cannot be configured to keep the
+# continuation style this tree uses and would rewrite about a third of
+# models.py, server.py and workbench.py. E501 and I001 below are what actually
+# holds the layout together. line-length matches the longest lines in the tree; the
+# typing-module generics rewrites (UP006/UP007/UP035/UP045) stay off because the
+# package still supports Python 3.9 and several aliases are evaluated at run
+# time, where `X | None` would fail there.
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+# gitignored scratch trees (proto/, prototypes/) and the build directories only
+extend-exclude = ["build", "proto", "prototypes", ".bench_tmp"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N"]
+ignore = [
+    "UP006", "UP007", "UP035", "UP045",  # typing.List / Optional[...]: 3.9 support, run-time aliases
+    "UP038",                             # isinstance(x, (a, b)): deprecated by ruff itself, and faster
+    "N818",                              # NotAvailable / Cancelled: the names the C++ side and the worker protocol use
+    "E741",                              # short names (l, I) in numeric code
+    "B905",                              # zip(strict=...) is 3.10+
+]
+
+[tool.ruff.lint.per-file-ignores]
+# unittest naming (setUp, assertX helpers) and long assertion lines
+"app/python/tests/*" = ["N802", "E501"]
+"bindings/tests/*" = ["N802", "E501"]
+# `import sirius` after sys.path setup in the worker's step library shim
+"app/python/sirius_worker/steps.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sirius", "sirius_worker"]

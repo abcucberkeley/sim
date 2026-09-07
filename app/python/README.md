@@ -16,13 +16,20 @@ package SIM reconstruction, `huggingface_hub` the model hub methods,
 families (see *Segmentation models* below).
 
 ```
-python -m sirius_worker [--host 127.0.0.1] [--port 0] [--token T] [--device auto|cuda|cpu] [--log-level INFO]
+python -m sirius_worker [--host 127.0.0.1] [--port 0] [--token T] [--device auto|cuda|cpu]
+                        [--allow-install] [--log-level INFO]
 ```
 
 Once listening it prints exactly one JSON line to stdout,
 `{"port": 41237, "pid": 12345, "host": "127.0.0.1", "device": "cuda"}`, and
 logs to stderr. `--token` (or `$SIRIUS_TOKEN`) is a shared secret the client
-must present in `hello`; always set one on a shared machine.
+must present in `hello`; always set one on a shared machine. **Binding
+anything but a loopback address without a token is refused at startup** (the
+worker says so and exits 2): reaching the port is the whole of the
+authorisation model, and whoever completes the handshake can run code as the
+user who started the worker. Loopback without a token still works, with a
+warning. `--allow-install` opts into the `install` method. See `SECURITY.md`
+next to this file.
 
 ## Where the step code lives
 
@@ -53,9 +60,22 @@ little-endian C-order arrays concatenated in the payload), `message`,
 `fraction`. dtypes: `float32 float64 uint8 int8 uint16 int16 uint32 int32
 uint64 int64`.
 
+Every length in a frame comes from the peer, so both ends bound them before
+using them: a header is at most 64 MiB, a payload at most 32 GiB, and a peer
+that has not completed `hello` is held to 16 KiB per frame — checked against
+the length prefix, before the bytes it announces are read. A tensor's
+`offset`/`nbytes` must fit the payload and match the product of its shape,
+which is itself bounded as it is computed.
+
+`hello` also agrees the protocol version: `PROTOCOL_VERSION` in
+`sirius_worker/protocol.py` and `kProtocolVersion` in `app/core/rpc.hpp`,
+currently `1`. Both ends must send the same number — a peer that sends none
+counts as version 0 — and a mismatch is refused with a message naming both
+versions and which end to update.
+
 | method | params | reply |
 | --- | --- | --- |
-| `hello` | `{token}` | `result`: `{version, methods, cuda, device, hostname, python, torch, sirius, workbench}` |
+| `hello` | `{token, protocol_version}` | `result`: `{version, protocol_version, methods, cuda, device, hostname, python, torch, sirius, workbench}`; `error` on a bad token or another protocol version, and the connection is closed |
 | `ping` | | `result`: `{time}` |
 | `model_info` | `{spec}` (or `path`) | `result`: `{format, input_shape, output_shape, dtype, size_bytes, channels_out}` for a file; `{format: "cellpose" \| "micro-sam", available, install_hint, returns: "labels"}` for a model family; `{format: "hf", cached: false, repo, file}` for an `hf:` file not downloaded yet |
 | `hub_search` | `{query, limit?, filter?, token?}` | `result`: `{models: [{id, downloads, likes, tags, last_modified, pipeline_tag, library, gated, private}]}` (Hugging Face, sorted by downloads; `gated` is `"manual"` / `"auto"` for repositories whose terms must be accepted, else `false`) |
@@ -71,7 +91,9 @@ uint64 int64`.
 `methods` lists `run:<kind>` for every kind the worker can run, so the
 application knows what to route. One run executes at a time (a second
 `run` gets `error "busy"`); the reader keeps running so `cancel` is
-honoured between tiles / volumes. Every `result` carries `seconds`.
+honoured between tiles / volumes. Every `result` carries `seconds`. No method
+but `hello` is served before a successful `hello`, and `install` and
+`shutdown` are logged with the peer's address as privileged requests.
 
 ### Run kinds and tensors
 
@@ -86,44 +108,80 @@ honoured between tiles / volumes. Every `result` carries `seconds`.
 
 ### Step parameters
 
-`params` are the step's parameters as saved by the application; the keys
-below are canonical (the library accepts a few aliases, see the docstrings
-in `workbench.py`).
+`params` are the step's parameters exactly as the application saves them:
+every key below is the `key` of a `ParamSpec` in the matching
+`app/core/ops/*.cpp`, and the defaults are the C++ defaults. A few older
+Python-only spellings are still accepted as aliases (see the docstrings in
+`workbench.py`), but the canonical key always wins; **any key that is
+neither is reported through an `UnknownParameterWarning` naming the step**
+instead of being ignored. `bindings/python/sirius/op_schema.json` is a
+snapshot of the C++ parameter tables and
+`bindings/tests/test_workbench_schema.py` fails if the two drift apart.
 
-* `torch_segment`: `model` (a model spec, below), `tile` [z, y, x],
-  `overlap` (int, or [z, y, x]), `normalize` (percentile 1..99.9 → 0..1,
-  default true), `activation` (`auto` | `sigmoid` | `softmax` | `none`),
-  `pad_to` (multiple the tile is padded to). TorchScript models take
-  (1, 1, z, y, x) float32 and return (1, C, z, y, x); ONNX via `onnxruntime`.
-  Cellpose accepts `diameter`, `do_3d` (default: 3D for stacks, else
-  per-plane with `stitch_threshold` 0.5), `anisotropy`, `flow_threshold`,
-  `cellprob_threshold`; micro-SAM `mode` (`3D` | `2D`, per plane), `amg`
-  (the automatic-mask-generator instead of the decoder), `checkpoint`.
-* `seg` (= `torch_segment` + post-processing, labels out): the above plus
-  `channel`, `threshold`, `post` (`Watershed on boundary channel` |
-  `Connected components` | `None`), `fg_channel`, `boundary_channel`,
-  `min_voxels`.
-* `sim`: any `SIMParameters` field (`ndirs`, `nphases`, `wiener`, `na`,
-  `nimm`, `wavelength_nm`, `linespacing_um`, `k0_start_angle`, `k0_angles`,
-  `dx`/`dy`/`dz`, `zoomfact`, `z_zoom`, `background`, `dampen_order0`,
-  `do_rescale`, ...) with the aliases `angles`, `phases`, `wavelength`,
-  `linespacing`, `apodization` (`Cosine` | `Triangle` | `None` → output
-  apodization), `suppress_zero`, `bleach`; `params_file` (TOML or legacy
-  cudasirecon config, loaded first); `otf` (radially averaged OTF TIFF,
-  required -- the theoretical OTF exists only in the application).
-* `einsum`: `axes` (kept axes, e.g. `czyx`) and `reduction`
-  (`sum` | `mean` | `max` | `min`); `maxproj`: `axis`; `meant`: none.
-* `contrast`: `low`, `high` (percentiles), `gamma`, `per_channel`.
-* `merge`: `blend` (`Additive` | `Screen` | `Max`), `colors` (`#rrggbb` per channel).
-* `croppad`: `origin` [z, y, x] (negative pads), `size` [z, y, x] (0 = to the end), `fill`.
-* `resample`: `voxel` [z, y, x] µm (or one isotropic value) or `factor`
-  [z, y, x]; `interpolation` (`linear` | `nearest` | `cubic`).
-* `bleach`: `to_mean`; `flatfield`: `flat`, `dark` (paths);
-  `threshold`: `channel`, `threshold` or `percentile`, `min_voxels`.
+* `einsum`: `keep` (the axes that survive, e.g. `czyx`), `reduction`
+  (`sum` | `mean` | `max` | `min`). `maxproj`: `axis` (`z` | `t` | `c`).
+  `meant`: no parameters.
+* `contrast`: `min`, `max` (the manual window; `max <= min` means automatic,
+  from `lo_percentile` / `hi_percentile`), `gamma`, `lo_percentile` (0.2),
+  `hi_percentile` (99.8), `bake`. The window is taken once over the whole
+  input, not per channel.
+* `flatfield`: `flat`, `dark` (TIFF paths; one page, or one page per channel).
+* `bleach`: `mode` (`Match first frame` | `Match mean`), `over` (`t` | `z`).
+* `croppad`: `z0`, `y0`, `x0` (origin, may be negative = pad), `z`, `y`, `x`
+  (size, 0 = to the edge), `fill`. Labels are cropped with the intensities.
+* `resample`: `voxel_x`, `voxel_y`, `voxel_z` (µm, 0 = keep that axis),
+  `interpolation` (`linear` | `cubic` | `nearest`).
+* `merge`: `blend` (`Additive` | `Screen` | `Max`), `colors` (`#rrggbb` per
+  channel, empty = the channels' own colours), `weights` (per-channel gain),
+  `normalize_percentile` (99.9).
+* `threshold`: `channel`, `method` (`Manual` | `Otsu` | `Percentile`),
+  `value` (the manual cut), `percentile` (90), `post`
+  (`Connected components` | `Watershed (distance)`), `min_voxels` (20),
+  `seed_distance` (5), `class_name`.
+* `classic` (classical segmentation): `channel`, `tophat` (white top-hat
+  radius, 0 = off), `sigma`, `method` (`Otsu` | `Manual` | `Percentile` |
+  `Local mean`), `value`, `percentile`, `window`, `local_ratio`,
+  `local_offset`, `opening`, `fill_holes`, `post`, `seed_distance` (8),
+  `min_voxels`, `class_name`.
+* `cleanup` (label cleanup, needs the labels of a segmentation step
+  upstream): `min_voxels` (50), `remove_border`, `relabel`, `low_conf`,
+  `size_outlier_factor` -- the last two only set review flags, reported in
+  `info["flags"]`.
+* `seg` (the application's Torch segmentation, labels out): `model` (a model
+  spec, below), `input_channel`, `tile` [z, y, x], `overlap`, `threshold`,
+  `post` (`Watershed on boundary channel` | `Connected components` |
+  `None (raw probabilities)`), `min_voxels`, `label_opacity`, `class_name`,
+  `seed_distance`, plus the inference-only keys `normalize` (percentile
+  1..99.9 → 0..1, default true), `activation` (`auto` | `sigmoid` |
+  `softmax` | `none`), `pad_to`, `fg_channel`, `boundary_channel`, and the
+  model-family keys `diameter`, `do_3d`, `anisotropy`, `flow_threshold`,
+  `cellprob_threshold`, `stitch_threshold` (Cellpose), `mode`, `amg`,
+  `checkpoint` (micro-SAM).
+* `torch_segment` (probabilities out, no labels): `model`, `tile`,
+  `overlap`, `normalize`, `activation`, `pad_to` and the model-family keys
+  above. TorchScript models take (1, 1, z, y, x) float32 and return
+  (1, C, z, y, x); ONNX runs through `onnxruntime`.
+* `sim`: `mode` (`Estimate` | `Manual` | `From file`), `params_file` (TOML
+  or a legacy cudasirecon config, loaded first), `angles`, `phases`,
+  `wiener`, `apodization` (`Cosine` | `Triangle` | `None`), `otf`, `na`,
+  `nimm`, `wavelength_nm`, `linespacing_um`, `k0_angles`, `k0_start_angle`,
+  `band_specific_wiener`, `suppress_zero_order`, `bleach_correction`,
+  `zoomfact`, `z_zoom`, `orders`, `dz_psf`, `otfcutoff`, `background`,
+  `apodize_input`, `napodize`, `suppression_radius`,
+  `suppress_singularities`, `no_kz0`, `filter_overlaps`, `explodefact`,
+  `equalizez`; `dx`, `dy`, `dz` override the voxel size of `meta`. `otf` is
+  required here -- the theoretical OTF exists only in the application.
+* `load`: `path`, `read_as`, `tile`, `page_order`, `c`, `t`, `z`,
+  `voxel_x`, `voxel_y`, `voxel_z`, `sim_ndirs`, `sim_nphases`, `sim_fast`,
+  `sheet_angle`. `run_pipeline` reads the dataset itself, so a `load` step
+  in a pipeline only overrides the metadata.
 
 Kinds the Python side does not implement (`decon`, `deskew`, `volrec`,
-`stitch`, `register`, `label_cleanup`) are reported as unsupported; the
-application runs those natively.
+`stitch`, `register`) are reported as unsupported; the application runs
+those natively. A step whose parameters ask for something numpy/scipy
+cannot do (a watershed without `scikit-image`, SIM without the `sirius`
+extension) raises `NotAvailable` naming the missing package rather than
+silently computing something else.
 
 ## Segmentation models
 
@@ -158,5 +216,19 @@ specs.
 ```
 python -m unittest discover -s app/python/tests -v      # protocol, socket, torch (skipped without torch)
 python -m unittest app/python/tests/test_models.py -v   # model specs, cache, hub methods (Hub calls skipped offline)
-python -m unittest bindings/tests/test_workbench.py -v  # run_pipeline / steps
+python -m unittest discover -s bindings/tests -p "test_workbench*.py" -v   # run_pipeline / steps / key drift
 ```
+
+`bindings/tests/test_workbench_schema.py` compares the steps' declared keys,
+defaults and choices with `bindings/python/sirius/op_schema.json`, the
+snapshot of the C++ parameter tables. Regenerate the snapshot whenever a
+parameter is added or renamed in `app/core/ops`:
+
+```
+cmake --build build/<preset> --config Debug --target sirius_tests
+SIRIUS_OP_SCHEMA_OUT=bindings/python/sirius/op_schema.json     build/<preset>/tests/Debug/sirius_tests.exe "[schema]"
+```
+
+Without the environment variable the same case (`tests/test_app_schema.cpp`)
+only checks that the export is well formed; the test is skipped on the Python
+side when the snapshot is missing.

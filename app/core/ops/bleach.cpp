@@ -64,7 +64,10 @@ namespace sirius::app {
                         // channel c is a contiguous (t, z, y, x) block: frames = t, "plane" = a volume
                         equalizeFrames(result->plane(c, 0, 0), d.t, d.z * d.planeSize(), toMean);
                     } else {
-                        for (Index t = 0; t < d.t; ++t) equalizeFrames(result->plane(c, t, 0), d.z, d.planeSize(), toMean);
+                        for (Index t = 0; t < d.t; ++t) {
+                            ctx.throwIfCancelled();
+                            equalizeFrames(result->plane(c, t, 0), d.z, d.planeSize(), toMean);
+                        }
                     }
                 }
                 out.array = result;

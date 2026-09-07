@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <tiffio.h>
 
+#include "sirius/errors.hpp"
 #include "sirius/tiff_io.hpp"
 
 #include "temp_path.hpp"
@@ -588,6 +589,11 @@ TEST_CASE("readTiffStackAny preserves dimensions", "[tiff][io][stack][any]") {
 
 TEST_CASE("readTiffStackAny error handling", "[tiff][io][stack][any][error_handling]") {
     SECTION("throws on nonexistent file") {
+        // IoError so a caller can report a file problem differently from a
+        // programming error; still a runtime_error for everyone who was
+        // already catching one.
+        REQUIRE_THROWS_AS(readTiffStackAny("does_not_exist_12345.tiff"), IoError);
+        REQUIRE_THROWS_AS(readTiffStackAny("does_not_exist_12345.tiff"), SiriusError);
         REQUIRE_THROWS_AS(readTiffStackAny("does_not_exist_12345.tiff"), std::runtime_error);
     }
 

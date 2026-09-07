@@ -4,6 +4,8 @@
 
 #include <QMetaObject>
 
+#include "qt/qt_strings.hpp"
+
 namespace sirius::app {
 
     struct WorkbenchBridge::Relay final : Workbench::Observer {
@@ -17,11 +19,11 @@ namespace sirius::app {
         void viewStateChanged() override { emit b.viewStateChanged(); }
         void outputsChanged() override { emit b.outputsChanged(); }
         void labelsChanged(StepId id) override { emit b.labelsChanged(static_cast<quint64>(id)); }
-        void runStateChanged() override { b.runStateChanged(); }
+        void runStateChanged() override { b.onRunStateChanged(); }
         void historyChanged() override { emit b.historyChanged(); }
         void backendChanged() override { emit b.backendChanged(); }
         void operationsChanged() override { emit b.operationsChanged(); }
-        void logged(const std::string& line) override { emit b.logged(QString::fromStdString(line)); }
+        void logged(const std::string& line) override { emit b.logged(fromStd(line)); }
     };
 
     WorkbenchBridge::WorkbenchBridge(Workbench& wb, QObject* parent)
@@ -73,14 +75,17 @@ namespace sirius::app {
         wb_.cancelRun();
     }
 
-    void WorkbenchBridge::runStateChanged() {
+    void WorkbenchBridge::onRunStateChanged() {
         if (wb_.running()) emit runStarted();
+        // Both edges: the menus and panels grey out every edit the workbench
+        // will refuse while the run is active, and come back afterwards.
+        emit runStateChanged();
     }
 
     void WorkbenchBridge::pollProgress() {
         if (job_) {
             RunProgress& p = job_->progress();
-            emit runProgress(p.fraction.load(), p.stepIndex.load(), QString::fromStdString(p.messageCopy()));
+            emit runProgress(p.fraction.load(), p.stepIndex.load(), fromStd(p.messageCopy()));
         }
         if (taskActive_.load()) {
             std::string msg;
@@ -88,7 +93,7 @@ namespace sirius::app {
                 std::lock_guard<std::mutex> g(taskMutex_);
                 msg = taskMessage_;
             }
-            emit taskProgress(taskFraction_.load(), QString::fromStdString(msg));
+            emit taskProgress(taskFraction_.load(), fromStd(msg));
         }
         if (!job_ && !taskActive_.load()) progressTimer_.stop();
     }
@@ -98,8 +103,16 @@ namespace sirius::app {
         job_.reset();
         if (!taskActive_.load()) progressTimer_.stop();
         if (!job) return;
-        const bool ok = job->succeeded();
-        const QString error = QString::fromStdString(job->error());
+        // queued from the worker thread after execute() returned: the job's
+        // results are published (RunJob::finished) before this runs
+        const bool ok = job->finished() && job->succeeded();
+        // A cancelled run finished the way the user asked it to: it carries no
+        // error for the window to show. RunJob knows it was cancelled from the
+        // CancelledError it caught, so nobody has to read the message.
+        const bool cancelled = job->finished() && job->wasCancelled();
+        const QString error = cancelled            ? QString()
+                              : job->finished()    ? fromStd(job->error())
+                                                   : QStringLiteral("the run did not finish");
         wb_.finishRun(job);
         emit runFinished(ok, error);
     }
@@ -108,7 +121,7 @@ namespace sirius::app {
 
     bool WorkbenchBridge::startTask(const QString& label, Task task) {
         if (taskActive_.load()) {
-            wb_.logLine("Another task is still running: " + taskLabel_.toStdString());
+            wb_.logLine("Another task is still running: " + toStd(taskLabel_));
             return false;
         }
         taskActive_.store(true);
@@ -156,11 +169,13 @@ namespace sirius::app {
         }
         taskActive_.store(false);
         if (!job_) progressTimer_.stop();
+        // taskLabel_ is kept: the window titles its "task failed" box with
+        // taskLabel(), and clearing it here left that title empty. The next
+        // startTask() overwrites it.
         const QString label = taskLabel_;
-        taskLabel_.clear();
-        if (error.empty()) wb_.logLine(label.toStdString() + ": done");
-        else wb_.logLine(label.toStdString() + ": " + error);
-        emit taskFinished(error.empty(), QString::fromStdString(error));
+        if (error.empty()) wb_.logLine(toStd(label) + ": done");
+        else wb_.logLine(toStd(label) + ": " + error);
+        emit taskFinished(error.empty(), fromStd(error));
     }
 
 } // namespace sirius::app

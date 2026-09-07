@@ -1,0 +1,1823 @@
+{
+  "operations": [
+    {
+      "group": "Input",
+      "kind": "load",
+      "name": "Load",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Multi-page TIFF / OME-TIFF, a zarr / N5 store, or a folder with a sirius-dataset.toml manifest.",
+          "key": "path",
+          "label": "Source",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Lazy (chunk on demand)",
+            "Full load to RAM"
+          ],
+          "default": "Lazy (chunk on demand)",
+          "help": "Lazy reads planes on demand; full load reads everything once.",
+          "key": "read_as",
+          "label": "Read as",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Multi-file datasets: the tile to view; Stitch fuses all of them",
+          "key": "tile",
+          "label": "Tile",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": "czt",
+          "help": "Axis order of the pages of a plain TIFF, fastest first (ImageJ: czt).",
+          "key": "page_order",
+          "label": "Page order",
+          "read_only": false,
+          "type": "string"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "0 = from the file's metadata",
+          "key": "c",
+          "label": "Channels",
+          "max": 1024.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "0 = from the file's metadata",
+          "key": "t",
+          "label": "Time points",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "0 = from the file's metadata",
+          "key": "z",
+          "label": "Planes",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = from the file",
+          "key": "voxel_x",
+          "label": "Voxel x",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = from the file",
+          "key": "voxel_y",
+          "label": "Voxel y",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = from the file",
+          "key": "voxel_z",
+          "label": "Voxel z",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Raw SIM: pattern directions per plane (0 = not SIM)",
+          "key": "sim_ndirs",
+          "label": "SIM angles",
+          "max": 16.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Raw SIM: phase steps per direction",
+          "key": "sim_nphases",
+          "label": "SIM phases",
+          "max": 32.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": false,
+          "help": "Sections ordered z → direction → phase instead of direction → z → phase",
+          "key": "sim_fast",
+          "label": "Fast SI order",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "Angle between the light sheet and the coverslip (0 = not light-sheet)",
+          "key": "sheet_angle",
+          "label": "Light-sheet angle",
+          "max": 90.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "°"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reconstruct",
+      "kind": "sim",
+      "name": "SIM reconstruction",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Estimate",
+            "Manual",
+            "From file"
+          ],
+          "default": "Estimate",
+          "help": "Estimate fits the pattern vectors from a start angle; Manual starts from the given angles; From file takes every parameter from a TOML / cudasirecon file.",
+          "key": "mode",
+          "label": "Pattern",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Used by the From file mode",
+          "key": "params_file",
+          "label": "Parameter file",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "default": 3,
+          "key": "angles",
+          "label": "Angles",
+          "max": 16.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 5,
+          "key": "phases",
+          "label": "Phases",
+          "max": 32.0,
+          "min": 2.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 0.001,
+          "help": "Regularisation constant of the generalised Wiener filter",
+          "key": "wiener",
+          "label": "Wiener",
+          "max": 1.0,
+          "min": 1e-05,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Cosine",
+            "Triangle",
+            "None"
+          ],
+          "default": "Cosine",
+          "help": "Window applied to the extended support",
+          "key": "apodization",
+          "label": "Apodization",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Radially averaged OTF TIFF; empty = theoretical OTF from NA / wavelength",
+          "key": "otf",
+          "label": "OTF",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "default": 1.4,
+          "key": "na",
+          "label": "NA",
+          "max": 2.0,
+          "min": 0.1,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 1.515,
+          "key": "nimm",
+          "label": "Immersion index",
+          "max": 2.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 510.0,
+          "key": "wavelength_nm",
+          "label": "Emission λ",
+          "max": 1000.0,
+          "min": 300.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "nm"
+        },
+        {
+          "advanced": false,
+          "default": 0.2,
+          "key": "linespacing_um",
+          "label": "Line spacing",
+          "max": 5.0,
+          "min": 0.01,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": [],
+          "help": "One angle per direction (Manual mode)",
+          "key": "k0_angles",
+          "label": "Pattern angles",
+          "read_only": false,
+          "type": "double_list",
+          "unit": "rad"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "help": "Angle of direction 0 (Estimate mode); the others follow at π / angles",
+          "key": "k0_start_angle",
+          "label": "Start angle",
+          "max": 3.141592653589793,
+          "min": -3.141592653589793,
+          "read_only": false,
+          "type": "double",
+          "unit": "rad"
+        },
+        {
+          "advanced": false,
+          "default": false,
+          "help": "Not available in this build: the global constant applies to every band",
+          "key": "band_specific_wiener",
+          "label": "Band-specific Wiener",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "help": "Dampen the order-0 band where the side bands overlap it",
+          "key": "suppress_zero_order",
+          "label": "Suppress zero-order",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "key": "bleach_correction",
+          "label": "Bleach correction across phases",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": 2.0,
+          "help": "Output grid enlargement in x and y",
+          "key": "zoomfact",
+          "label": "Lateral zoom",
+          "max": 4.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 1,
+          "key": "z_zoom",
+          "label": "Axial zoom",
+          "max": 4.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "0 = phases / 2 + 1",
+          "key": "orders",
+          "label": "Orders",
+          "max": 8.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "help": "Axial step of the OTF file (0 = the stack's dz)",
+          "key": "dz_psf",
+          "label": "OTF axial step",
+          "max": 10.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": true,
+          "default": 0.006,
+          "key": "otfcutoff",
+          "label": "OTF cutoff",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "key": "background",
+          "label": "Camera background",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "choices": [
+            "Triangle",
+            "Cosine",
+            "None"
+          ],
+          "default": "Triangle",
+          "key": "apodize_input",
+          "label": "Input apodization",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": true,
+          "default": 10,
+          "key": "napodize",
+          "label": "Input border",
+          "max": 512.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": 10,
+          "key": "suppression_radius",
+          "label": "Suppression radius",
+          "max": 512.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": true,
+          "key": "suppress_singularities",
+          "label": "Suppress singularities",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": true,
+          "key": "no_kz0",
+          "label": "Skip kz = 0 plane",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": true,
+          "key": "filter_overlaps",
+          "label": "Filter overlaps",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": 1.0,
+          "key": "explodefact",
+          "label": "Explode factor",
+          "max": 4.0,
+          "min": 0.5,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": false,
+          "key": "equalizez",
+          "label": "Equalize z",
+          "read_only": false,
+          "type": "bool"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reconstruct",
+      "kind": "decon",
+      "name": "Deconvolve",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Richardson–Lucy"
+          ],
+          "default": "Richardson–Lucy",
+          "key": "algorithm",
+          "label": "Algorithm",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 20,
+          "key": "iterations",
+          "label": "Iterations",
+          "max": 500.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Measured bead PSF (z, y, x) at the data's voxel size; empty = theoretical Gaussian",
+          "key": "psf",
+          "label": "PSF",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "default": 0.002,
+          "help": "Total-variation weight; 0 = plain Richardson–Lucy",
+          "key": "tv_lambda",
+          "label": "TV regularisation",
+          "max": 0.1,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 0.0001,
+          "help": "Stop when the relative change per iteration drops below this (0 = never)",
+          "key": "stop_rel_change",
+          "label": "Stop below Δ",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 1.4,
+          "help": "Theoretical PSF only",
+          "key": "na",
+          "label": "NA",
+          "max": 2.0,
+          "min": 0.1,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 510.0,
+          "key": "wavelength_nm",
+          "label": "Emission λ",
+          "max": 1000.0,
+          "min": 300.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "nm"
+        },
+        {
+          "advanced": false,
+          "default": 1.515,
+          "key": "nimm",
+          "label": "Immersion index",
+          "max": 2.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 33,
+          "help": "Lateral extent of the theoretical PSF (odd)",
+          "key": "psf_size",
+          "label": "Theoretical PSF size",
+          "max": 257.0,
+          "min": 5.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reconstruct",
+      "kind": "volrec",
+      "name": "Volume reconstruction",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Ray casting",
+            "Maximum intensity",
+            "Isosurface"
+          ],
+          "default": "Ray casting",
+          "key": "method",
+          "label": "Method",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Isotropic (smallest voxel)",
+            "Isotropic (target voxel)",
+            "Keep"
+          ],
+          "default": "Isotropic (smallest voxel)",
+          "key": "resample",
+          "label": "Resample to",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0.104,
+          "key": "target_voxel_um",
+          "label": "Target voxel",
+          "max": 100.0,
+          "min": 0.001,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "Ray sampling distance; smaller is smoother and slower",
+          "key": "step_size",
+          "label": "Step size",
+          "max": 4.0,
+          "min": 0.1,
+          "read_only": false,
+          "type": "double",
+          "unit": "voxel"
+        },
+        {
+          "advanced": false,
+          "default": 0.2,
+          "help": "Intensity (0..1 of the range) where the transfer function starts to become opaque",
+          "key": "opacity_lo",
+          "label": "Opacity ramp start",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 0.7,
+          "key": "opacity_hi",
+          "label": "Opacity ramp end",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "key": "iso_level",
+          "label": "Isosurface level",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "choices": [
+            "linear",
+            "nearest"
+          ],
+          "default": "linear",
+          "key": "interpolation",
+          "label": "Interpolation",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reduce",
+      "kind": "einsum",
+      "name": "Einsum reduce",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": "czyx",
+          "help": "Axes that survive; the others are reduced",
+          "key": "keep",
+          "label": "Axes kept",
+          "read_only": false,
+          "type": "axes"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "sum",
+            "mean",
+            "max",
+            "min"
+          ],
+          "default": "mean",
+          "key": "reduction",
+          "label": "Reduction",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reduce",
+      "kind": "maxproj",
+      "name": "Max projection",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "z",
+            "t",
+            "c"
+          ],
+          "default": "z",
+          "key": "axis",
+          "label": "Axis",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Reduce",
+      "kind": "meant",
+      "name": "Mean over time",
+      "needs_labels": false,
+      "params": [],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Intensity",
+      "kind": "contrast",
+      "name": "Contrast",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "Values at or below map to 0",
+          "key": "min",
+          "label": "Min",
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "Values at or above map to 1; max <= min means automatic (the percentiles)",
+          "key": "max",
+          "label": "Max",
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 1.0,
+          "key": "gamma",
+          "label": "Gamma",
+          "max": 5.0,
+          "min": 0.1,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 0.2,
+          "help": "Auto sets Min to this percentile of the input",
+          "key": "lo_percentile",
+          "label": "Auto low percentile",
+          "max": 50.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "%"
+        },
+        {
+          "advanced": true,
+          "default": 99.8,
+          "help": "Auto sets Max to this percentile of the input",
+          "key": "hi_percentile",
+          "label": "Auto high percentile",
+          "max": 100.0,
+          "min": 50.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "%"
+        },
+        {
+          "advanced": true,
+          "default": true,
+          "help": "The step rewrites intensities into 0..1; kept for future display-only use",
+          "key": "bake",
+          "label": "Bake into data",
+          "read_only": false,
+          "type": "bool"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Intensity",
+      "kind": "flatfield",
+      "name": "Flat-field",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Illumination profile; one page, or one page per channel",
+          "key": "flat",
+          "label": "Flat image",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "default": "",
+          "help": "Camera offset (optional)",
+          "key": "dark",
+          "label": "Dark image",
+          "read_only": false,
+          "type": "path"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Intensity",
+      "kind": "bleach",
+      "name": "Bleach correction",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Match first frame",
+            "Match mean"
+          ],
+          "default": "Match first frame",
+          "key": "mode",
+          "label": "Reference",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "t",
+            "z"
+          ],
+          "default": "t",
+          "help": "t equalizes the time series, z the planes of every stack",
+          "key": "over",
+          "label": "Frames along",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Geometry",
+      "kind": "deskew",
+      "name": "Deskew + rotate",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 31.8,
+          "help": "Angle between the light sheet and the coverslip (0 = the dataset's)",
+          "key": "sheet_angle",
+          "label": "Sheet angle",
+          "max": 89.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "°"
+        },
+        {
+          "advanced": false,
+          "default": 0.4,
+          "help": "Stage travel between planes",
+          "key": "stage_step_um",
+          "label": "Stage step",
+          "max": 100.0,
+          "min": 0.001,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "key": "rotate_to_coverslip",
+          "label": "Rotate to coverslip",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "linear",
+            "cubic",
+            "nearest"
+          ],
+          "default": "linear",
+          "key": "interpolation",
+          "label": "Interpolation",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Geometry",
+      "kind": "croppad",
+      "name": "Crop / pad",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "May be negative (padding)",
+          "key": "z0",
+          "label": "Origin z",
+          "max": 100000.0,
+          "min": -100000.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "y0",
+          "label": "Origin y",
+          "max": 100000.0,
+          "min": -100000.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "x0",
+          "label": "Origin x",
+          "max": 100000.0,
+          "min": -100000.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "0 = to the edge",
+          "key": "z",
+          "label": "Size z",
+          "max": 100000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "0 = to the edge",
+          "key": "y",
+          "label": "Size y",
+          "max": 100000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "0 = to the edge",
+          "key": "x",
+          "label": "Size x",
+          "max": 100000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "key": "fill",
+          "label": "Fill value",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Geometry",
+      "kind": "resample",
+      "name": "Resample",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = keep",
+          "key": "voxel_x",
+          "label": "Voxel x",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = keep",
+          "key": "voxel_y",
+          "label": "Voxel y",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "0 = keep",
+          "key": "voxel_z",
+          "label": "Voxel z",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "linear",
+            "cubic",
+            "nearest"
+          ],
+          "default": "linear",
+          "key": "interpolation",
+          "label": "Interpolation",
+          "read_only": false,
+          "type": "choice"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Combine",
+      "kind": "merge",
+      "name": "Merge channels",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Additive",
+            "Screen",
+            "Max"
+          ],
+          "default": "Additive",
+          "help": "Additive is physically faithful; screen avoids clipping; max keeps the brightest channel",
+          "key": "blend",
+          "label": "Blend",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": [],
+          "help": "One #rrggbb per channel; empty = the channels' own colours",
+          "key": "colors",
+          "label": "Colours",
+          "read_only": false,
+          "type": "string_list"
+        },
+        {
+          "advanced": false,
+          "default": [],
+          "help": "Per-channel gain; empty = 1",
+          "key": "weights",
+          "label": "Weights",
+          "read_only": false,
+          "type": "double_list"
+        },
+        {
+          "advanced": true,
+          "default": 99.9,
+          "help": "Each channel is scaled so this percentile maps to 1 (data already in 0..1 is left alone)",
+          "key": "normalize_percentile",
+          "label": "Normalize at percentile",
+          "max": 100.0,
+          "min": 50.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "%"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Combine",
+      "kind": "stitch",
+      "name": "Stitch tiles",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": [],
+          "help": "One multi-page TIFF per tile; empty = the tiles of the input dataset (multi-file folder)",
+          "key": "tiles",
+          "label": "Tiles",
+          "read_only": false,
+          "type": "string_list"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Dataset tiles: the channel the tiles are registered on; the layout applies to every channel",
+          "key": "channel",
+          "label": "Registration channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Dataset tiles: the time point the tiles are registered at",
+          "key": "reference_t",
+          "label": "Registration t",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": [],
+          "help": "Tile files: nominal origins, z y x per tile (flattened); empty = a grid from the overlap",
+          "key": "positions",
+          "label": "Positions",
+          "read_only": false,
+          "type": "double_list",
+          "unit": "voxels"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Tile files: 0 = square grid (positions empty)",
+          "key": "grid_cols",
+          "label": "Grid columns",
+          "max": 1000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 0.1,
+          "help": "Tile files: nominal overlap between neighbours (positions empty)",
+          "key": "overlap_fraction",
+          "label": "Overlap",
+          "max": 0.9,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": [
+            4.0,
+            32.0,
+            32.0
+          ],
+          "help": "How far a tile may move from its nominal origin (z, y, x)",
+          "key": "search_radius",
+          "label": "Search radius",
+          "read_only": false,
+          "type": "double_list",
+          "unit": "voxels"
+        },
+        {
+          "advanced": false,
+          "default": 0.3,
+          "key": "min_correlation",
+          "label": "Min. correlation",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Feather",
+            "Average",
+            "Maximum",
+            "Overwrite"
+          ],
+          "default": "Feather",
+          "key": "blend",
+          "label": "Blend",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "help": "Ignore voxels at or below the background level when correlating",
+          "key": "mask_background",
+          "label": "Mask background",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "key": "background_level",
+          "label": "Background level",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Combine",
+      "kind": "register",
+      "name": "Register",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "choices": [
+            "Align channels",
+            "Align time points to reference"
+          ],
+          "default": "Align channels",
+          "key": "mode",
+          "label": "Mode",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "fixed_channel",
+          "label": "Fixed channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "default": 1,
+          "key": "moving_channel",
+          "label": "Moving channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "reference_t",
+          "label": "Reference time point",
+          "max": 1000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": [
+            4.0,
+            32.0,
+            32.0
+          ],
+          "help": "Search bound per axis (z, y, x)",
+          "key": "max_shift",
+          "label": "Max shift",
+          "read_only": false,
+          "type": "double_list",
+          "unit": "voxels"
+        },
+        {
+          "advanced": false,
+          "default": false,
+          "key": "mask_background",
+          "label": "Mask background",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "key": "background_level",
+          "label": "Background level",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": false,
+      "remote_capable": false
+    },
+    {
+      "group": "Segment",
+      "kind": "seg",
+      "name": "Segmentation",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": "",
+          "help": "A TorchScript / ONNX file taking (1, 1, Z, Y, X) float32, or a spec the worker resolves: hf:<repo>[:<file>] (Hugging Face, cached in $SIRIUS_MODEL_CACHE or ~/.sirius/models), cellpose:<model> (default = the installed Cellpose's built-in model, one of its model names, or a custom model file) or microsam:<model_type> (vit_b_lm, vit_l_lm, vit_t_lm, vit_b_em_organelles, ...). Cellpose and micro-SAM return instance labels directly; threshold and post-processing then do not apply",
+          "key": "model",
+          "label": "Model",
+          "read_only": false,
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "input_channel",
+          "label": "Input channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "default": [
+            32.0,
+            256.0,
+            256.0
+          ],
+          "help": "Tile extent (z, y, x); must fit GPU memory",
+          "key": "tile",
+          "label": "Tile",
+          "read_only": false,
+          "type": "double_list",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 32,
+          "help": "Tile halo; should exceed the model's receptive-field radius",
+          "key": "overlap",
+          "label": "Overlap",
+          "max": 512.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "Foreground probability cut",
+          "key": "threshold",
+          "label": "Threshold",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Watershed on boundary channel",
+            "Connected components",
+            "None (raw probabilities)"
+          ],
+          "default": "Watershed on boundary channel",
+          "key": "post",
+          "label": "Post-processing",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "Drop smaller objects (0 = keep all)",
+          "key": "min_voxels",
+          "label": "Min. voxels",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": 0.45,
+          "key": "label_opacity",
+          "label": "Label opacity",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": "nucleus",
+          "key": "class_name",
+          "label": "Class",
+          "read_only": false,
+          "type": "string"
+        },
+        {
+          "advanced": true,
+          "default": 5.0,
+          "help": "Minimum distance between watershed seeds",
+          "key": "seed_distance",
+          "label": "Seed distance",
+          "max": 200.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": true,
+      "remote_capable": true
+    },
+    {
+      "group": "Segment",
+      "kind": "threshold",
+      "name": "Threshold",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "channel",
+          "label": "Channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Manual",
+            "Otsu",
+            "Percentile"
+          ],
+          "default": "Otsu",
+          "key": "method",
+          "label": "Method",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "Manual threshold",
+          "key": "value",
+          "label": "Value",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 90.0,
+          "key": "percentile",
+          "label": "Percentile",
+          "max": 100.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "%"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Connected components",
+            "Watershed (distance)"
+          ],
+          "default": "Connected components",
+          "key": "post",
+          "label": "Instances",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 20,
+          "key": "min_voxels",
+          "label": "Min. voxels",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 5.0,
+          "key": "seed_distance",
+          "label": "Seed distance",
+          "max": 200.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": "object",
+          "key": "class_name",
+          "label": "Class",
+          "read_only": false,
+          "type": "string"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": true,
+      "remote_capable": false
+    },
+    {
+      "group": "Segment",
+      "kind": "classic",
+      "name": "Classical segmentation",
+      "needs_labels": false,
+      "params": [
+        {
+          "advanced": false,
+          "default": 0,
+          "key": "channel",
+          "label": "Channel",
+          "read_only": false,
+          "type": "channel"
+        },
+        {
+          "advanced": false,
+          "default": 0,
+          "help": "White top-hat: removes background structures larger than this radius (0 = off)",
+          "key": "tophat",
+          "label": "Background radius",
+          "max": 2000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 1.0,
+          "help": "Gaussian blur before the threshold (0 = none)",
+          "key": "sigma",
+          "label": "Smoothing σ",
+          "max": 50.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Otsu",
+            "Manual",
+            "Percentile",
+            "Local mean"
+          ],
+          "default": "Otsu",
+          "key": "method",
+          "label": "Threshold",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "Manual threshold",
+          "key": "value",
+          "label": "Value",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 90.0,
+          "key": "percentile",
+          "label": "Percentile",
+          "max": 100.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "%"
+        },
+        {
+          "advanced": false,
+          "default": 51,
+          "help": "Local mean: side of the neighbourhood the mean is taken over",
+          "key": "window",
+          "label": "Local window",
+          "max": 4001.0,
+          "min": 3.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 1.1,
+          "help": "Local mean: foreground where value > ratio × local mean + offset",
+          "key": "local_ratio",
+          "label": "Local ratio",
+          "max": 10.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "key": "local_offset",
+          "label": "Local offset",
+          "max": 1000000000.0,
+          "min": -1000000000.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 1,
+          "help": "Binary opening drops specks and necks thinner than this (0 = off)",
+          "key": "opening",
+          "label": "Opening radius",
+          "max": 100.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "help": "Enclosed background inside an object becomes object, per plane",
+          "key": "fill_holes",
+          "label": "Fill holes",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "Watershed (distance)",
+            "Connected components"
+          ],
+          "default": "Watershed (distance)",
+          "key": "post",
+          "label": "Instances",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": true,
+          "default": 8.0,
+          "help": "Watershed: minimum distance between the seeds that split touching objects",
+          "key": "seed_distance",
+          "label": "Seed distance",
+          "max": 200.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 20,
+          "key": "min_voxels",
+          "label": "Min. voxels",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": "object",
+          "key": "class_name",
+          "label": "Class",
+          "read_only": false,
+          "type": "string"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": true,
+      "remote_capable": false
+    },
+    {
+      "group": "Segment",
+      "kind": "cleanup",
+      "name": "Label cleanup",
+      "needs_labels": true,
+      "params": [
+        {
+          "advanced": false,
+          "default": 50,
+          "key": "min_voxels",
+          "label": "Min. voxels",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
+          "default": false,
+          "key": "remove_border",
+          "label": "Remove border-touching",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "key": "relabel",
+          "label": "Relabel densely",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": 0.6,
+          "key": "low_conf",
+          "label": "Low-confidence flag",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 4.0,
+          "help": "Objects larger than this × the median volume are flagged as possible merges",
+          "key": "size_outlier_factor",
+          "label": "Size outlier factor",
+          "max": 100.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "double"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": true,
+      "remote_capable": false
+    }
+  ],
+  "version": 1
+}

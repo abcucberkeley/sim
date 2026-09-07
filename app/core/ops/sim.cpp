@@ -343,12 +343,19 @@ namespace sirius::app {
                     convert(raw, rawD);
                     session.setRaw(std::move(rawD), input.meta.name);
                     session.setCaptureDiagnostics(first && capture);
-                    ReconResult r = session.reconstruct(device, PlanRigor::Measure);
+                    // The reconstruction of one volume is the long pole: minutes
+                    // on real data. Hand the library the cancel predicate so it
+                    // aborts at its next stage boundary instead of running to
+                    // completion; forEachVolume already checks between volumes.
+                    ReconResult r = session.reconstruct(device, PlanRigor::Measure,
+                                                        [&ctx] { return ctx.isCancelled(); });
+                    ctx.throwIfCancelled();
                     seconds += r.seconds;
                     plansReused = plansReused || r.plansReused;
                     if (r.volume.shape() != Shape{out.meta.dims.z, out.meta.dims.y, out.meta.dims.x})
                         throw std::runtime_error("SIM: unexpected output shape " + r.volume.shape().toString());
                     convert(r.volume, result->volume(c, t));
+                    ctx.throwIfCancelled();
                     if (first) {
                         out.diagnostics = diagnostics(input, raw, r, p, nz, *result, params);
                         first = false;

@@ -1,4 +1,6 @@
 #include "sirius/tiff_io.hpp"
+#include "sirius/errors.hpp"
+#include "downsample.hpp"
 #include "tiff_internal.hpp"
 
 #include <algorithm>
@@ -71,7 +73,7 @@ namespace sirius {
             std::unique_ptr<TIFFOpenOptions, OpenOptionsDeleter> opts(TIFFOpenOptionsAlloc());
             if (opts) TIFFOpenOptionsSetWarningHandlerExtR(opts.get(), warningFilter, nullptr);
             TiffPtr tif(TIFFOpenExt(path.c_str(), mode, opts.get()));
-            if (!tif) throw std::runtime_error("Failed to open TIFF: " + path);
+            if (!tif) throw IoError("Failed to open TIFF: " + path);
             return tif;
         }
 
@@ -80,17 +82,17 @@ namespace sirius {
                 case SAMPLEFORMAT_IEEEFP:
                     if (bps == 32) return PixelType::Float32;
                     if (bps == 64) return PixelType::Float64;
-                    throw std::runtime_error("Unsupported float bit depth: " + std::to_string(bps));
+                    throw IoError("Unsupported float bit depth: " + std::to_string(bps));
                 case SAMPLEFORMAT_INT:
                     if (bps == 8)  return PixelType::Int8;
                     if (bps == 16) return PixelType::Int16;
                     if (bps == 32) return PixelType::Int32;
-                    throw std::runtime_error("Unsupported integer bit depth: " + std::to_string(bps));
+                    throw IoError("Unsupported integer bit depth: " + std::to_string(bps));
                 default: // SAMPLEFORMAT_UINT and the (common) unspecified case
                     if (bps == 8)  return PixelType::UInt8;
                     if (bps == 16) return PixelType::UInt16;
                     if (bps == 32) return PixelType::UInt32;
-                    throw std::runtime_error("Unsupported integer bit depth: " + std::to_string(bps));
+                    throw IoError("Unsupported integer bit depth: " + std::to_string(bps));
             }
         }
 
@@ -102,11 +104,11 @@ namespace sirius {
             uint16_t bps = 0, fmt = SAMPLEFORMAT_UINT, planar = PLANARCONFIG_CONTIG;
             uint32_t subfileType = 0;
             if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH,    &info.width))
-                throw std::runtime_error("TIFF missing required tag: IMAGEWIDTH");
+                throw IoError("TIFF missing required tag: IMAGEWIDTH");
             if (!TIFFGetField(tif, TIFFTAG_IMAGELENGTH,   &info.height))
-                throw std::runtime_error("TIFF missing required tag: IMAGELENGTH");
+                throw IoError("TIFF missing required tag: IMAGELENGTH");
             if (!TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bps))
-                throw std::runtime_error("TIFF missing required tag: BITSPERSAMPLE");
+                throw IoError("TIFF missing required tag: BITSPERSAMPLE");
             TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &info.samplesPerPixel);
             TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT,    &fmt);
             TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION,     &info.compression);
@@ -118,17 +120,17 @@ namespace sirius {
             TIFFGetFieldDefaulted(tif, TIFFTAG_SUBFILETYPE,     &subfileType);
 
             if (info.samplesPerPixel != 1)
-                throw std::runtime_error("Only single-channel (grayscale) TIFFs are supported.");
+                throw IoError("Only single-channel (grayscale) TIFFs are supported.");
             if (planar != PLANARCONFIG_CONTIG)
-                throw std::runtime_error("Only contiguous (chunky) planar configuration is supported.");
+                throw IoError("Only contiguous (chunky) planar configuration is supported.");
             info.pixelType = pixelTypeFrom(bps, fmt);
 
             if (TIFFIsTiled(tif)) {
                 info.layout = TiffLayout::Tiles;
                 if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &info.tileWidth)  || info.tileWidth == 0)
-                    throw std::runtime_error("TIFF missing or invalid TILEWIDTH");
+                    throw IoError("TIFF missing or invalid TILEWIDTH");
                 if (!TIFFGetField(tif, TIFFTAG_TILELENGTH, &info.tileHeight) || info.tileHeight == 0)
-                    throw std::runtime_error("TIFF missing or invalid TILELENGTH");
+                    throw IoError("TIFF missing or invalid TILELENGTH");
             } else {
                 info.layout = TiffLayout::Strips;
                 TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &info.rowsPerStrip);
@@ -180,8 +182,8 @@ namespace sirius {
         // ------------------------------------------------------------------
 
         [[noreturn]] void throwReadError(const char* what, uint32_t x, uint32_t y) {
-            throw std::runtime_error(std::string("Failed to read TIFF ") + what + " at (" +
-                                     std::to_string(x) + "," + std::to_string(y) + ")");
+            throw IoError(std::string("Failed to read TIFF ") + what + " at (" +
+                         std::to_string(x) + "," + std::to_string(y) + ")");
         }
 
         // Strips are full-width, so a strip whose wanted rows begin at its own
@@ -198,7 +200,7 @@ namespace sirius {
             TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rowsPerStrip);
             if (rowsPerStrip == 0 || rowsPerStrip > g.height) rowsPerStrip = g.height;
             const tmsize_t stripSize = TIFFStripSize(tif);
-            if (stripSize <= 0) throw std::runtime_error("TIFF reports invalid strip size");
+            if (stripSize <= 0) throw IoError("TIFF reports invalid strip size");
 
             const uint32_t yEnd = r.y + r.height;
             const bool fullWidth = (r.x == 0 && r.width == g.width);
@@ -232,11 +234,11 @@ namespace sirius {
                              std::vector<uint8_t>& scratch) {
             uint32_t tileW = 0, tileH = 0;
             if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH,  &tileW) || tileW == 0)
-                throw std::runtime_error("TIFF missing or invalid TILEWIDTH");
+                throw IoError("TIFF missing or invalid TILEWIDTH");
             if (!TIFFGetField(tif, TIFFTAG_TILELENGTH, &tileH) || tileH == 0)
-                throw std::runtime_error("TIFF missing or invalid TILELENGTH");
+                throw IoError("TIFF missing or invalid TILELENGTH");
             const tmsize_t tileSize = TIFFTileSize(tif);
-            if (tileSize <= 0) throw std::runtime_error("TIFF reports invalid tile size");
+            if (tileSize <= 0) throw IoError("TIFF reports invalid tile size");
             scratch.resize(static_cast<std::size_t>(tileSize));
 
             const std::size_t bpp = bytesPerPixel(g.pixelType);
@@ -349,8 +351,8 @@ namespace sirius {
                             std::memcpy(scratch.data() + static_cast<std::size_t>(r) * tw,
                                         src + static_cast<std::size_t>(ty + r) * width + tx, cols * sizeof(T));
                         if (TIFFWriteTile(tif, scratch.data(), tx, ty, 0, 0) < 0)
-                            throw std::runtime_error("Failed to write TIFF tile at (" + std::to_string(tx) + "," +
-                                                     std::to_string(ty) + ")");
+                            throw IoError("Failed to write TIFF tile at (" + std::to_string(tx) + "," +
+                                         std::to_string(ty) + ")");
                     }
             } else {
                 uint32_t rps = 0;
@@ -363,7 +365,7 @@ namespace sirius {
                     std::memcpy(scratch.data(), src + static_cast<std::size_t>(y) * width, bytes);
                     const tstrip_t strip = TIFFComputeStrip(tif, y, 0);
                     if (TIFFWriteEncodedStrip(tif, strip, scratch.data(), static_cast<tmsize_t>(bytes)) < 0)
-                        throw std::runtime_error("Failed to write TIFF strip at row " + std::to_string(y));
+                        throw IoError("Failed to write TIFF strip at row " + std::to_string(y));
                 }
             }
         }
@@ -373,22 +375,10 @@ namespace sirius {
         template <typename T>
         void downsamplePlane(const T* src, uint32_t rows, uint32_t cols, int f, std::vector<T>& dst,
                              uint32_t& outRows, uint32_t& outCols) {
-            outRows = (rows + f - 1) / f;
-            outCols = (cols + f - 1) / f;
+            outRows = static_cast<uint32_t>(downsampledExtent(rows, f));
+            outCols = static_cast<uint32_t>(downsampledExtent(cols, f));
             dst.resize(static_cast<std::size_t>(outRows) * outCols);
-            for (uint32_t oy = 0; oy < outRows; ++oy)
-                for (uint32_t ox = 0; ox < outCols; ++ox) {
-                    double acc = 0.0;
-                    int n = 0;
-                    for (uint32_t y = oy * f; y < std::min<uint32_t>((oy + 1) * f, rows); ++y)
-                        for (uint32_t x = ox * f; x < std::min<uint32_t>((ox + 1) * f, cols); ++x, ++n)
-                            acc += static_cast<double>(src[static_cast<std::size_t>(y) * cols + x]);
-                    const double v = n ? acc / n : 0.0;
-                    if constexpr (std::is_integral_v<T>)
-                        dst[static_cast<std::size_t>(oy) * outCols + ox] = static_cast<T>(std::llround(v));
-                    else
-                        dst[static_cast<std::size_t>(oy) * outCols + ox] = static_cast<T>(v);
-                }
+            detail::downsampleBoxMean<T>(src, {Index{rows}, Index{cols}}, {f, f}, dst.data());
         }
 
         template <typename T>
@@ -414,7 +404,7 @@ namespace sirius {
                 setPageTags<T>(tif.get(), static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), o, tags);
                 writePixels<T>(tif.get(), data + z * stride, static_cast<uint32_t>(rows), static_cast<uint32_t>(cols), scratch);
                 if (!TIFFWriteDirectory(tif.get()))
-                    throw std::runtime_error("Failed to finalize TIFF directory for page " + std::to_string(z));
+                    throw IoError("Failed to finalize TIFF directory for page " + std::to_string(z));
 
                 // reduced-resolution levels, each from the previous one
                 const T* srcLevel = data + z * stride;
@@ -431,8 +421,8 @@ namespace sirius {
                     setPageTags<T>(tif.get(), lr, lc, o, ltags);
                     writePixels<T>(tif.get(), srcLevel, lr, lc, scratch);
                     if (!TIFFWriteDirectory(tif.get()))
-                        throw std::runtime_error("Failed to finalize TIFF pyramid level " + std::to_string(k) +
-                                                 " of page " + std::to_string(z));
+                        throw IoError("Failed to finalize TIFF pyramid level " + std::to_string(k) +
+                                     " of page " + std::to_string(z));
                 }
                 if (o.progress) o.progress(static_cast<double>(z + 1) / static_cast<double>(pages));
             }
@@ -512,7 +502,7 @@ namespace sirius {
         for (std::size_t i = 0; i < chainCount; ++i) {
             for (std::uint64_t off : info.images[i].subIfds) {
                 if (!TIFFSetSubDirectory(tif.get(), off))
-                    throw std::runtime_error("Failed to read SubIFD at offset " + std::to_string(off) + " in " + path);
+                    throw IoError("Failed to read SubIFD at offset " + std::to_string(off) + " in " + path);
                 info.images.push_back(readImageInfo(tif.get()));
             }
         }
@@ -649,8 +639,8 @@ namespace sirius {
                     if (failed.load(std::memory_order_relaxed) || !openOk) continue;
                     try {
                         if (!TIFFSetSubDirectory(localTif.get(), ifds[static_cast<std::size_t>(z)]))
-                            throw std::runtime_error("Failed to seek to TIFF directory at offset " +
-                                                     std::to_string(ifds[static_cast<std::size_t>(z)]));
+                            throw IoError("Failed to seek to TIFF directory at offset " +
+                                         std::to_string(ifds[static_cast<std::size_t>(z)]));
                         std::uint8_t* out = dst + static_cast<std::size_t>(z) * dstPageBytes;
                         if (needConvert) {
                             nativePage.resize(nativePageBytes);
@@ -781,11 +771,11 @@ namespace sirius {
         for (std::uint64_t off : ifds) {
             const auto& i = info.image(off);
             if (i.width != g.width || i.height != g.height || i.pixelType != g.pixelType)
-                throw std::runtime_error("TIFF image at offset " + std::to_string(off) + " (" +
-                                         std::to_string(i.width) + "x" + std::to_string(i.height) + " " +
-                                         toString(i.pixelType) + ") does not match the first one (" +
-                                         std::to_string(g.width) + "x" + std::to_string(g.height) + " " +
-                                         toString(g.pixelType) + ")");
+                throw IoError("TIFF image at offset " + std::to_string(off) + " (" +
+                             std::to_string(i.width) + "x" + std::to_string(i.height) + " " +
+                             toString(i.pixelType) + ") does not match the first one (" +
+                             std::to_string(g.width) + "x" + std::to_string(g.height) + " " +
+                             toString(g.pixelType) + ")");
         }
         const Region r = region.resolve(g.width, g.height);
         const Shape expected{static_cast<Index>(ifds.size()), static_cast<Index>(r.height), static_cast<Index>(r.width)};
@@ -802,7 +792,7 @@ namespace sirius {
     template <typename T>
     Buffer<T> TiffFile::readStack(const TiffReadOptions& opts, const Stream& stream) const {
         if (!impl_->info.uniformPages())
-            throw std::runtime_error("TIFF pages differ in size or pixel type; read them individually: " + impl_->path);
+            throw IoError("TIFF pages differ in size or pixel type; read them individually: " + impl_->path);
         Buffer<T> out(stackShape(impl_->info), opts.device, opts.hostMemory, stream);
         decode<T>(impl_->info.pages, Region{}, out.view(), opts, stream);
         return out;
@@ -855,7 +845,7 @@ namespace sirius {
             case PixelType::Float32: return file.readStack<float        >(opts, stream);
             case PixelType::Float64: return file.readStack<double       >(opts, stream);
         }
-        throw std::runtime_error("Unsupported TIFF format");
+        throw IoError("Unsupported TIFF format");
     }
 
     // --- Eigen convenience API -------------------------------------------------
@@ -874,7 +864,7 @@ namespace sirius {
         TiffFile file(path);
         const TiffInfo& info = file.info();
         if (!info.uniformPages())
-            throw std::runtime_error("TIFF pages differ in size or pixel type: " + path);
+            throw IoError("TIFF pages differ in size or pixel type: " + path);
         ImageStack<T> stack(static_cast<Eigen::Index>(info.pageCount()), info.height(), info.width());
         file.decode<T>(info.pages, Region{}, toView(stack));
         return stack;
@@ -884,7 +874,7 @@ namespace sirius {
         TiffFile file(path);
         const TiffInfo& info = file.info();
         if (!info.uniformPages())
-            throw std::runtime_error("TIFF pages differ in size or pixel type: " + path);
+            throw IoError("TIFF pages differ in size or pixel type: " + path);
         auto read = [&](auto tag) -> AnyImageStack {
             using T = decltype(tag);
             ImageStack<T> stack(static_cast<Eigen::Index>(info.pageCount()), info.height(), info.width());
@@ -901,7 +891,7 @@ namespace sirius {
             case PixelType::Float32: return read(float{});
             case PixelType::Float64: return read(double{});
         }
-        throw std::runtime_error("Unsupported TIFF format");
+        throw IoError("Unsupported TIFF format");
     }
 
     template <typename T>

@@ -23,7 +23,6 @@
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QSettings>
 #include <QStyle>
 #include <QTabWidget>
 #include <QScrollBar>
@@ -32,6 +31,7 @@
 
 #include "core/ops/builtin.hpp"
 #include "qt/qt_strings.hpp"
+#include "qt/secret_store.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 #include "qt/worker_launcher.hpp"
@@ -76,7 +76,9 @@ namespace sirius::app {
             return QString::number(n);
         }
 
-        QString bytesText(long long n) { return n < 0 ? QStringLiteral("?") : fromStd(formatBytes(static_cast<std::uint64_t>(n))); }
+        QString bytesText(long long n) {
+            return n < 0 ? QStringLiteral("?") : widgets::bytesText(static_cast<quint64>(n));
+        }
 
         QTableWidget* makeTable(const QStringList& headers, int stretchColumn, QWidget* parent) {
             auto* t = new QTableWidget(0, headers.size(), parent);
@@ -119,7 +121,7 @@ namespace sirius::app {
             QString spec() const { return family + QLatin1Char(':') + model->currentData().toString(); }
         };
 
-        QString hubToken() { return QSettings().value(QStringLiteral("hub/token")).toString().trimmed(); }
+        QString hubToken() { return secrets::read(QStringLiteral("hub/token")).trimmed(); }
 
     } // namespace
 
@@ -319,7 +321,7 @@ namespace sirius::app {
                                "Stored in the application settings and passed to the local worker as HF_TOKEN."),
                 QLineEdit::Password, hubToken(), &ok);
             if (!ok) return;
-            QSettings().setValue(QStringLiteral("hub/token"), token.trimmed());
+            secrets::write(QStringLiteral("hub/token"), token.trimmed());
             tokenButton->setText(token.trimmed().isEmpty() ? QStringLiteral("Token…") : QStringLiteral("Token ✓"));
             setStatus(token.trimmed().isEmpty() ? QStringLiteral("Token cleared.") : QStringLiteral("Token stored."), false);
         }
@@ -648,9 +650,7 @@ namespace sirius::app {
         impl_->log->setReadOnly(true);
         impl_->log->setMaximumHeight(140);
         impl_->log->setLineWrapMode(QPlainTextEdit::NoWrap);
-        impl_->log->setStyleSheet(QStringLiteral("QPlainTextEdit { font-family: monospace; font-size: 12px; color: %1; "
-                                                 "background: %2; border: 1px solid %3; }")
-                                      .arg(theme::kNeutral700.name(), theme::kSurface.name(), theme::kNeutral300.name()));
+        widgets::setWidgetClass(impl_->log, "log");
         impl_->log->hide();
         fl->addWidget(impl_->log);
         fl->addStretch(1);

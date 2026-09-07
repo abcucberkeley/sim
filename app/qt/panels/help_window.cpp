@@ -20,7 +20,9 @@
 #include <QVBoxLayout>
 
 #include "core/help_pages.hpp"
+#include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
@@ -28,7 +30,7 @@ namespace sirius::app {
 
     namespace {
 
-        QString esc(const std::string& s) { return QString::fromStdString(s).toHtmlEscaped(); }
+        QString esc(const std::string& s) { return fromStd(s).toHtmlEscaped(); }
 
         // Markdown of the page after the parts the structured layout renders
         // itself (front matter, intro, first display formula), split into the
@@ -105,16 +107,17 @@ namespace sirius::app {
             html += QStringLiteral("<h3 style=\"font-size:24px; font-weight:800; margin:0 0 10px 0\">%1</h3>").arg(esc(page.title));
             if (!page.intro.empty())
                 html += QStringLiteral("<p style=\"margin:0 0 14px 0\">%1</p>")
-                            .arg(QString::fromStdString(helpMarkdownToHtml(page.intro, baseDir)));
+                            .arg(fromStd(helpMarkdownToHtml(page.intro, baseDir)));
             if (!page.tex.empty())
                 html += QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"12\" style=\"background:%1; border:1px solid %2; margin-bottom:14px\">"
                                        "<tr><td>%3</td></tr></table>")
-                            .arg(surface, divider, QString::fromStdString(latexToHtml(page.tex, true)));
+                            .arg(surface, divider, fromStd(latexToHtml(page.tex, true)));
             // figure slot
             if (hasFigure) {
                 html += QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"6\" style=\"margin-bottom:14px\"><tr><td align=\"center\">"
                                        "<img src=\"%1\"><br><span style=\"color:%2; font-size:11px\">%3</span></td></tr></table>")
-                            .arg(QString::fromStdString(page.figurePath).toHtmlEscaped(), n600, esc(page.figure));
+                            .arg(QUrl::fromLocalFile(fromStd(page.figurePath)).toString(QUrl::FullyEncoded),
+                                 n600, esc(page.figure));
             } else {
                 html += QStringLiteral("<table width=\"100%\" border=\"1\" cellspacing=\"0\" cellpadding=\"10\" bordercolor=\"%1\" style=\"border-style:dashed; border-color:%1; border-collapse:collapse; margin-bottom:14px\">"
                                        "<tr><td align=\"center\" height=\"150\" style=\"color:%2; font-size:12px\">"
@@ -126,7 +129,7 @@ namespace sirius::app {
                 const Remainder rest = remainderMarkdown(page);
                 if (rest.before.find_first_not_of(" \t\r\n") != std::string::npos)
                     html += QStringLiteral("<div style=\"margin-bottom:12px\">%1</div>")
-                                .arg(QString::fromStdString(helpMarkdownToHtml(rest.before, baseDir)));
+                                .arg(fromStd(helpMarkdownToHtml(rest.before, baseDir)));
             }
             // parameters
             if (!page.params.empty()) {
@@ -138,10 +141,10 @@ namespace sirius::app {
                                            "<b style=\"font-size:12px; font-weight:800\">%2</b><br><span style=\"color:%3; font-size:11px\">%4</span></td>"
                                            "<td valign=\"top\" style=\"padding:10px 0; border-bottom:1px solid %1\">%5%6</td></tr>")
                                 .arg(divider, esc(p.name), n600, esc(p.range),
-                                     QString::fromStdString(helpMarkdownToHtml(p.body, baseDir)),
+                                     fromStd(helpMarkdownToHtml(p.body, baseDir)),
                                      p.tex.empty() ? QString()
                                                    : QStringLiteral("<p style=\"margin:4px 0 0 0; color:%1\">%2</p>")
-                                                         .arg(n800, QString::fromStdString(latexToHtml(p.tex, p.tex.find("\\frac") != std::string::npos))));
+                                                         .arg(n800, fromStd(latexToHtml(p.tex, p.tex.find("\\frac") != std::string::npos))));
                 }
                 html += QStringLiteral("</table>");
             }
@@ -150,11 +153,11 @@ namespace sirius::app {
                 const Remainder rest = remainderMarkdown(page);
                 if (rest.after.find_first_not_of(" \t\r\n") != std::string::npos)
                     html += QStringLiteral("<div style=\"margin-top:12px\">%1</div>")
-                                .arg(QString::fromStdString(helpMarkdownToHtml(rest.after, baseDir)));
+                                .arg(fromStd(helpMarkdownToHtml(rest.after, baseDir)));
             }
             if (!page.note.empty())
                 html += QStringLiteral("<p style=\"font-size:11px; color:%1; margin-top:14px\">%2</p>")
-                            .arg(n600, QString::fromStdString(helpMarkdownToHtml(page.note, baseDir)));
+                            .arg(n600, fromStd(helpMarkdownToHtml(page.note, baseDir)));
             html += QStringLiteral("</body>");
             return html;
         }
@@ -172,13 +175,12 @@ namespace sirius::app {
         pal.setColor(QPalette::Base, theme::kBg);
         pal.setColor(QPalette::Text, theme::kText);
         setPalette(pal);
-        setStyleSheet(QStringLiteral("QTextBrowser { background: %1; border: none; }").arg(theme::hex(theme::kBg)));
     }
 
     void HelpView::setPage(const HelpPage& page) {
         page_ = page;
         const bool hasFigure = !page.figurePath.empty() && fs::exists(page.figurePath);
-        if (!page.path.empty()) setSearchPaths({QString::fromStdString(fs::path(page.path).parent_path().string())});
+        if (!page.path.empty()) setSearchPaths({fromStd(fs::path(page.path).parent_path().string())});
         setHtml(pageHtml(page, hasFigure));
     }
 
@@ -191,7 +193,7 @@ namespace sirius::app {
         QWidget* header = nullptr;
         QLabel* caption = nullptr;
         QLabel* edit = nullptr;
-        QLabel* close = nullptr;
+        widgets::GlyphButton* close = nullptr;
         HelpView* view = nullptr;
         QFileSystemWatcher watcher;
         QTimer reloadTimer;
@@ -204,11 +206,11 @@ namespace sirius::app {
         void load(const std::string& k) {
             kind = k;
             page = loadHelpPage(k);
-            caption->setText(QStringLiteral("HELP · %1").arg(QString::fromStdString(page.title).toUpper()));
+            caption->setText(QStringLiteral("HELP · %1").arg(fromStd(page.title).toUpper()));
             view->setPage(page);
             const QStringList watched = watcher.files();
             if (!watched.isEmpty()) watcher.removePaths(watched);
-            if (!page.path.empty() && fs::exists(page.path)) watcher.addPath(QString::fromStdString(page.path));
+            if (!page.path.empty() && fs::exists(page.path)) watcher.addPath(fromStd(page.path));
         }
 
         std::string selectedKind() const {
@@ -258,15 +260,16 @@ namespace sirius::app {
             if (!fs::exists(d.page.path)) {
                 fs::create_directories(fs::path(d.page.path).parent_path());
                 std::ofstream(d.page.path) << d.page.markdown;
-                d.watcher.addPath(QString::fromStdString(d.page.path));
+                d.watcher.addPath(fromStd(d.page.path));
             }
-            QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(d.page.path)));
+            QDesktopServices::openUrl(QUrl::fromLocalFile(fromStd(d.page.path)));
         });
         h->addWidget(d.edit);
-        d.close = new QLabel(QStringLiteral("<a href=\"close\" style=\"color:%1; text-decoration:none\">✕</a>").arg(theme::hex(theme::kText)), d.header);
-        d.close->setFont(theme::font(13));
-        d.close->setCursor(Qt::PointingHandCursor);
-        connect(d.close, &QLabel::linkActivated, this, [this](const QString&) { hide(); });
+        d.close = new widgets::GlyphButton(widgets::Icon::Close, 18, d.header);
+        d.close->setBorderless(true);
+        d.close->setIconPx(11);
+        d.close->setToolTip(QStringLiteral("Close"));
+        connect(d.close, &QAbstractButton::clicked, this, [this] { hide(); });
         h->addWidget(d.close);
         v->addWidget(d.header, 0);
         auto* rule = new QWidget(this);
@@ -376,10 +379,10 @@ namespace sirius::app {
                 continue;
             // copy next to the page as <kind>-figure.<ext> and reference it from the front matter
             const fs::path pagePath(d.page.path);
-            const fs::path target = pagePath.parent_path() / (d.kind + "-figure." + ext.toStdString());
+            const fs::path target = pagePath.parent_path() / (d.kind + "-figure." + toStd(ext));
             std::error_code ec;
             fs::create_directories(pagePath.parent_path(), ec);
-            fs::copy_file(local.toStdString(), target, fs::copy_options::overwrite_existing, ec);
+            fs::copy_file(toStd(local), target, fs::copy_options::overwrite_existing, ec);
             if (ec) {
                 d.bridge.wb().logLine("Help: could not copy the figure: " + ec.message());
                 return;

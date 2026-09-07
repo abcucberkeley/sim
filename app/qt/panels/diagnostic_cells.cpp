@@ -14,7 +14,9 @@
 #include <QPen>
 #include <QVBoxLayout>
 
+#include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
@@ -182,7 +184,7 @@ namespace sirius::app {
                     p.drawEllipse(at, r, r);
                     break;
             }
-            if (!m.text.empty()) p.drawText(at + QPointF(7, -4), QString::fromStdString(m.text));
+            if (!m.text.empty()) p.drawText(at + QPointF(7, -4), fromStd(m.text));
         }
     }
 
@@ -258,9 +260,9 @@ namespace sirius::app {
         p.setPen(theme::kNeutral600);
         p.setFont(theme::font(theme::kSmallPx));
         const QRect labels(plot.left(), plot.bottom() + 4, plot.width(), labelH);
-        if (!c.leftLabel.empty()) p.drawText(labels, Qt::AlignLeft | Qt::AlignVCenter, QString::fromStdString(c.leftLabel));
-        if (!c.midLabel.empty()) p.drawText(labels, Qt::AlignHCenter | Qt::AlignVCenter, QString::fromStdString(c.midLabel));
-        if (!c.rightLabel.empty()) p.drawText(labels, Qt::AlignRight | Qt::AlignVCenter, QString::fromStdString(c.rightLabel));
+        if (!c.leftLabel.empty()) p.drawText(labels, Qt::AlignLeft | Qt::AlignVCenter, fromStd(c.leftLabel));
+        if (!c.midLabel.empty()) p.drawText(labels, Qt::AlignHCenter | Qt::AlignVCenter, fromStd(c.midLabel));
+        if (!c.rightLabel.empty()) p.drawText(labels, Qt::AlignRight | Qt::AlignVCenter, fromStd(c.rightLabel));
     }
 
     // --- HistogramView -----------------------------------------------------------
@@ -297,7 +299,7 @@ namespace sirius::app {
         p.fillRect(QRect(inner.left(), inner.top() + 4, 10, 10), chip);
         p.setFont(theme::heading(theme::kSmallPx));
         p.setPen(theme::kText);
-        const QString label = QString::fromStdString(h.channel);
+        const QString label = fromStd(h.channel);
         p.drawText(QRect(inner.left() + 18, inner.top(), inner.width() - 18, headerH), Qt::AlignLeft | Qt::AlignVCenter, label);
         const int labelW = QFontMetrics(theme::heading(theme::kSmallPx)).horizontalAdvance(label);
         p.setFont(theme::font(theme::kSmallPx));
@@ -363,8 +365,8 @@ namespace sirius::app {
         for (const DiagnosticFact& f : facts_) {
             const QRect row(left, y, right - left, 24);
             p.setPen(theme::kText);
-            p.drawText(row, Qt::AlignLeft | Qt::AlignVCenter, QString::fromStdString(f.key));
-            p.drawText(row, Qt::AlignRight | Qt::AlignVCenter, QString::fromStdString(f.value));
+            p.drawText(row, Qt::AlignLeft | Qt::AlignVCenter, fromStd(f.key));
+            p.drawText(row, Qt::AlignRight | Qt::AlignVCenter, fromStd(f.value));
             p.setPen(QPen(theme::kDivider, 1));
             p.drawLine(left, y + 23, right, y + 23);
             y += 24;
@@ -407,7 +409,7 @@ namespace sirius::app {
                 p.drawRect(tile.adjusted(0.75, 0.75, -0.75, -0.75));
                 p.setPen(hi ? theme::kBg : theme::kText);
                 const QString name = i < static_cast<int>(info_.tileNames.size())
-                                         ? QString::fromStdString(info_.tileNames[static_cast<std::size_t>(i)])
+                                         ? fromStd(info_.tileNames[static_cast<std::size_t>(i)])
                                          : QStringLiteral("t%1").arg(i + 1);
                 p.drawText(tile, Qt::AlignCenter, name);
             }
@@ -427,32 +429,26 @@ namespace sirius::app {
         horizontalHeader()->setHighlightSections(false);
         horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         verticalHeader()->setDefaultSectionSize(22);
-        setFont(theme::font(theme::kSmallPx));
-        setStyleSheet(QStringLiteral(
-            "QTableWidget { background: %1; border: none; selection-background-color: %2; }"
-            "QTableWidget::item { padding: 2px 6px; border-bottom: 1px solid %3; }"
-            "QHeaderView::section { background: %1; border: none; border-bottom: 2px solid %3; color: %4;"
-            " font-size: 10px; padding: 4px 6px; }")
-                          .arg(theme::hex(theme::kBg), theme::hex(theme::kSurface), theme::hex(theme::kDivider),
-                               theme::hex(theme::kNeutral600)));
+        setFont(theme::tabular(theme::font(theme::kSmallPx)));
+        widgets::setWidgetClass(this, "dense");
     }
 
     void DiagnosticTableView::setTable(const DiagnosticTable& table) {
         clear();
         setColumnCount(static_cast<int>(table.header.size()));
         QStringList header;
-        for (const std::string& h : table.header) header << QString::fromStdString(h).toUpper();
+        for (const std::string& h : table.header) header << fromStd(h).toUpper();
         setHorizontalHeaderLabels(header);
         setRowCount(static_cast<int>(table.rows.size()));
         QFont bold = theme::heading(theme::kSmallPx);
         for (int r = 0; r < rowCount(); ++r) {
             const auto& row = table.rows[static_cast<std::size_t>(r)];
             for (int c = 0; c < columnCount() && c < static_cast<int>(row.size()); ++c) {
-                auto* item = new QTableWidgetItem(QString::fromStdString(row[static_cast<std::size_t>(c)]));
+                auto* item = new QTableWidgetItem(fromStd(row[static_cast<std::size_t>(c)]));
                 const bool accent = std::find(table.accentCells.begin(), table.accentCells.end(), std::make_pair(r, c)) !=
                                     table.accentCells.end();
                 if (accent) {
-                    item->setForeground(theme::kAccent);
+                    item->setForeground(theme::kAccentText);
                     item->setFont(bold);
                 }
                 setItem(r, c, item);
@@ -491,7 +487,7 @@ namespace sirius::app {
 
     QStringList DiagnosticsBody::tabNames(const Diagnostics& d, DiagnosticsKind kind) {
         QStringList names;
-        for (const DiagnosticTab& t : d.tabs) names << QString::fromStdString(t.name);
+        for (const DiagnosticTab& t : d.tabs) names << fromStd(t.name);
         if (!names.isEmpty()) return names;
         switch (kind) {
             case DiagnosticsKind::Sim:
@@ -516,10 +512,10 @@ namespace sirius::app {
             return view;
         };
         auto imageTitle = [&](std::size_t index, const QString& fallback) {
-            return index < d.images.size() ? QString::fromStdString(d.images[index].title) : fallback;
+            return index < d.images.size() ? fromStd(d.images[index].title) : fallback;
         };
         auto imageMeta = [&](std::size_t index) {
-            return index < d.images.size() ? QString::fromStdString(d.images[index].meta) : QString();
+            return index < d.images.size() ? fromStd(d.images[index].meta) : QString();
         };
         // images of the active tab (all images without tabs)
         std::vector<std::size_t> tabImages;
@@ -546,8 +542,8 @@ namespace sirius::app {
                     if (static_cast<std::size_t>(i) < tabImages.size()) {
                         const DiagnosticImage& img = d.images[tabImages[static_cast<std::size_t>(i)]];
                         view->setImage(img);
-                        title = QString::fromStdString(img.title);
-                        meta = QString::fromStdString(img.meta);
+                        title = fromStd(img.title);
+                        meta = fromStd(img.meta);
                     } else {
                         view->clear(QStringLiteral("Run the step to see the spectrum"));
                     }
@@ -569,7 +565,7 @@ namespace sirius::app {
                     v->addWidget(empty, 1, Qt::AlignTop);
                 }
                 if (!d.footer.empty()) {
-                    auto* footer = new QLabel(QString::fromStdString(d.footer));
+                    auto* footer = new QLabel(fromStd(d.footer));
                     footer->setWordWrap(true);
                     footer->setFont(theme::font(theme::kSmallPx));
                     QPalette fp = footer->palette();
@@ -578,7 +574,7 @@ namespace sirius::app {
                     footer->setContentsMargins(12, 0, 12, 8);
                     v->addWidget(footer, 0);
                 }
-                addCell(d.table ? QString::fromStdString(d.table->caption) : QStringLiteral("Estimated parameters"), {}, column,
+                addCell(d.table ? fromStd(d.table->caption) : QStringLiteral("Estimated parameters"), {}, column,
                         col++, 0, 300);
                 break;
             }
@@ -587,7 +583,7 @@ namespace sirius::app {
                 QString title = QStringLiteral("Convergence · relative change per iteration");
                 if (!d.curves.empty()) {
                     curve->setCurve(d.curves.front());
-                    if (!d.curves.front().title.empty()) title = QString::fromStdString(d.curves.front().title);
+                    if (!d.curves.front().title.empty()) title = fromStd(d.curves.front().title);
                 }
                 addCell(title, {}, curve, col++, 1);
                 addCell(imageTitle(0, QStringLiteral("PSF · XZ")), imageMeta(0), imageOr(0, QStringLiteral("PSF")), col++, 0, 260);
@@ -604,7 +600,7 @@ namespace sirius::app {
                     for (const DiagnosticHistogram& h : d.histograms) {
                         auto* view = new HistogramView;
                         view->setHistogram(h);
-                        addCell(QString::fromStdString(h.channel), {}, view, col++, 1);
+                        addCell(fromStd(h.channel), {}, view, col++, 1);
                     }
                 }
                 break;
@@ -650,7 +646,7 @@ namespace sirius::app {
                 addCell(imageTitle(out, QStringLiteral("Output · live")), out < d.images.size() ? imageMeta(out) : ctx.outputShape,
                         imageOr(out, QStringLiteral("Output preview after the run")), col++, 1);
                 auto* facts = new FactsView;
-                facts->setFacts(d.facts, d.summary.empty() ? ctx.stepSummary : QString::fromStdString(d.summary), ctx.estimate);
+                facts->setFacts(d.facts, d.summary.empty() ? ctx.stepSummary : fromStd(d.summary), ctx.estimate);
                 addCell(QStringLiteral("Step summary"), {}, facts, col++, 1);
                 break;
             }
@@ -660,12 +656,12 @@ namespace sirius::app {
             for (std::size_t i = 0; i < d.curves.size(); ++i) {
                 auto* curve = new CurveView;
                 curve->setCurve(d.curves[i]);
-                addCell(QString::fromStdString(d.curves[i].title), {}, curve, col++, 1);
+                addCell(fromStd(d.curves[i].title), {}, curve, col++, 1);
             }
             for (const DiagnosticHistogram& h : d.histograms) {
                 auto* view = new HistogramView;
                 view->setHistogram(h);
-                addCell(QString::fromStdString(h.channel), {}, view, col++, 1);
+                addCell(fromStd(h.channel), {}, view, col++, 1);
             }
         }
     }

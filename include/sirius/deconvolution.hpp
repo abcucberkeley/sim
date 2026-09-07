@@ -22,8 +22,21 @@ namespace sirius {
         // below this (0 = never).
         double stopRelativeChange = 0.0;
         Device device = Device::cpu();         // CUDA runs the FFTs on the device (falls back to CPU when unavailable)
-        // Called after every iteration; return false to stop.
+        // Called after every iteration; return false to stop. A stop this
+        // way is a normal, successful finish: the estimate is written back
+        // and DeconvolutionResult::stoppedEarly is set.
         std::function<bool(int iteration, double relativeChange)> onIteration;
+        // Cooperative cancellation, the same contract as
+        // TiffWriteOptions::cancelled: polled once per iteration and again
+        // between the three transform stages within one, and a true return
+        // aborts the call by throwing std::runtime_error("cancelled") --
+        // unlike onIteration, nothing is written back to `image`. The
+        // predicate runs between stages and never inside a transform or a
+        // parallel loop, so it cannot change a single output value: a run
+        // that is never cancelled is bit-identical to one with no callback.
+        // Worst-case latency is one padded-grid transform. Empty (the
+        // default) disables the checks.
+        std::function<bool()> cancelled;
     };
 
     struct DeconvolutionResult {

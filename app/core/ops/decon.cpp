@@ -93,14 +93,21 @@ namespace sirius::app {
                     DeconvolutionOptions o = options;
                     const Index total = meta.dims.c * meta.dims.t;
                     const Index done = t * meta.dims.c + c;
+                    // onIteration reports progress only: a false return there is
+                    // a successful early stop (stoppedEarly, "converged"), which
+                    // is not what a cancel means. Cancellation goes through
+                    // `cancelled`, which the library polls once per iteration and
+                    // between the transform stages within one, and which aborts
+                    // by throwing without writing a partial volume back.
                     o.onIteration = [&, done, total](int iter, double rel) {
                         char msg[64];
                         std::snprintf(msg, sizeof msg, "iteration %d · Δ %.2e", iter, rel);
                         ctx.report((static_cast<double>(done) + static_cast<double>(iter) / options.iterations) /
                                        static_cast<double>(total),
                                    msg);
-                        return !ctx.isCancelled();
+                        return true;
                     };
+                    o.cancelled = [&ctx] { return ctx.isCancelled(); };
                     const auto t0 = std::chrono::steady_clock::now();
                     DeconvolutionResult r = richardsonLucy(vol.view(), psf.view(), o);
                     seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

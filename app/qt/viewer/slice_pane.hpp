@@ -7,6 +7,9 @@
 // -- corner label, scale bar, tool hint, crosshair, brush outline, measure
 // and ROI marks. The pane knows nothing about tools: it reports mouse
 // events in voxel coordinates and the ViewerWidget decides what they mean.
+// The pane takes keyboard focus: the arrow keys walk the crosshair over its
+// own two axes, page up / down step the third, and a focused pane draws the
+// design's accent focus ring.
 
 #include <QImage>
 #include <QPoint>
@@ -75,6 +78,9 @@ namespace sirius::app {
         };
         void setAnnotations(const QVector<Annotation>& annotations);
         void setMessage(const QString& text);             // centred notice ("volume too large")
+        // What this pane's axes are called, for the accessible description
+        // and the key navigation ("XY", "z" ...).
+        void setAxisNames(const QString& horizontal, const QString& vertical, const QString& depth);
         void setSmooth(bool smooth) { smooth_ = smooth; update(); }
         QPointF lastMouse() const noexcept { return mouse_; }
 
@@ -85,7 +91,9 @@ namespace sirius::app {
         void dragged(QPointF voxel, QPointF screenDelta, Qt::MouseButton button, Qt::KeyboardModifiers mods);
         void released(QPointF voxel, Qt::MouseButton button, Qt::KeyboardModifiers mods, bool moved);
         void doubleClicked(QPointF voxel, Qt::KeyboardModifiers mods);
-        void wheeled(QPointF screen, double steps);
+        void wheeled(QPointF screen, double steps, Qt::KeyboardModifiers mods);
+        // Arrow / page keys, in this pane's own axes: columns, rows, depth.
+        void keyNavigated(int dCols, int dRows, int dDepth);
         void resized();
         void contextMenuRequested(QPoint screen, QPointF voxel);   // right click
 
@@ -98,6 +106,9 @@ namespace sirius::app {
         void wheelEvent(QWheelEvent*) override;
         void leaveEvent(QEvent*) override;
         void resizeEvent(QResizeEvent*) override;
+        void keyPressEvent(QKeyEvent*) override;
+        void focusInEvent(QFocusEvent*) override;
+        void focusOutEvent(QFocusEvent*) override;
 
     private:
         Kind kind_;
@@ -119,6 +130,7 @@ namespace sirius::app {
         Qt::MouseButton button_ = Qt::NoButton;
         QPointF pressPos_, lastDrag_;
         bool moved_ = false;
+        QString axisH_, axisV_, axisD_;
     };
 
 } // namespace sirius::app

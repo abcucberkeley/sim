@@ -8,6 +8,7 @@
 #include <QTextBlock>
 
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app::widgets {
 
@@ -132,11 +133,9 @@ namespace sirius::app::widgets {
     CodeEditor::CodeEditor(QWidget* parent) : QPlainTextEdit(parent) {
         gutter_ = new Gutter(this);
         setFont(theme::mono(13));
-        // The application style sheet gives every widget the body face; a
-        // rule on the widget itself is what outranks it.
-        setStyleSheet(QStringLiteral("QPlainTextEdit { font-family: monospace; font-size: 13px; background: %1; color: %2;"
-                                     " border: none; padding: 0; selection-background-color: %3; selection-color: %1; }")
-                          .arg(theme::hex(theme::kBg), theme::hex(theme::kText), theme::hex(theme::kAccent)));
+        // The application style sheet gives every widget the body face; the
+        // "code" class in theme.cpp is what puts the monospace face back.
+        widgets::setWidgetClass(this, "code");
         setLineWrapMode(QPlainTextEdit::NoWrap);
         setTabStopDistance(4 * fontMetrics().horizontalAdvance(QLatin1Char(' ')));
         document()->setDocumentMargin(6);

@@ -8,6 +8,12 @@
 // read plane by plane for XY and as one (c, t) volume, cached, for the
 // re-slices; everything else reads straight out of the in-memory array.
 //
+// Nothing here ever reads a whole volume: volumeState() says whether one is
+// in memory, has to be produced (by ViewerLoader, off the GUI thread) or is
+// too large to hold at all, and installVolume() takes the loader's result.
+// The re-slices and the MIP draw what they have and the viewer shows a
+// loading state for the rest.
+//
 // All buffers persist between calls so scrubbing through a stack allocates
 // nothing; a change of output, t or channel invalidates only what depends
 // on it.
@@ -59,12 +65,27 @@ namespace sirius::app {
         void resetWindows();
 
         // --- data (cached) ---------------------------------------------------
-        // The (y, x) plane; null when it cannot be read.
+        // The (y, x) plane; null when it cannot be read. One plane of a lazy
+        // source is a small read the GUI thread can afford.
         const float* plane(Index c, Index t, Index z);
-        // The (z, y, x) volume; null when the source is lazy and the volume
-        // exceeds kVolumeCacheLimit (see volumeTooLarge()).
-        const float* volume(Index c, Index t);
-        const float* mip(Index c, Index t);
+        // The (z, y, x) volume and its z maximum projection, or null when
+        // they are not in memory yet. Neither ever touches the disk.
+        const float* volumeIfReady(Index c, Index t) const;
+        const float* mipIfReady(Index c, Index t) const;
+        // Keeps a volume alive while another thread reads it (the 3D
+        // reduction); null for an in-memory output, whose StepOutput owns it.
+        std::shared_ptr<const Buffer<float>> volumeHold(Index c, Index t) const;
+
+        // What the re-slices, the MIP corner and the 3D view can do with
+        // (c, t) right now. Wanted asks the caller to have a ViewerLoader
+        // produce it; a cheap projection of an in-memory volume is done here
+        // and reports Ready.
+        enum class VolumeState { Ready, Wanted, TooLarge };
+        VolumeState volumeState(Index c, Index t);
+        // The loader's result: the volume (null for an in-memory output), its
+        // projection and its exact range.
+        void installVolume(Index c, Index t, std::shared_ptr<Buffer<float>> volume,
+                           std::shared_ptr<Buffer<float>> mip, float lo, float hi);
         bool volumeTooLarge() const noexcept;
         std::optional<float> valueAt(Index c, Index t, Index z, Index y, Index x);
         void dropVolumeCaches();
@@ -111,12 +132,20 @@ namespace sirius::app {
                      float opacity, std::uint32_t selected, std::uint32_t only, QImage& img);
         static std::array<int, 3> tintOf(const DatasetMeta& m, Index c, bool rgb);
 
+        // A projection of an in-memory volume up to this many voxels is
+        // computed inline: a few milliseconds, not worth a thread hop.
+        static constexpr Index kInlineProjectVoxels = Index{8} << 20;
+        void evictOtherTimePoints(Index t);
+
         std::shared_ptr<const StepOutput> out_;
         DatasetMeta meta_;
         std::map<Index, DisplayWindow> windows_;          // per channel
         WindowMode windowMode_ = WindowMode::Auto;
-        std::map<Key, Buffer<float>> volumes_;            // lazy sources only
-        std::map<Key, Buffer<float>> mips_;
+        // Shared so a loader thread can hold a volume the model has evicted.
+        std::map<Key, std::shared_ptr<Buffer<float>>> volumes_;   // lazy sources only
+        std::map<Key, std::shared_ptr<Buffer<float>>> mips_;
+        struct Range { float lo = 0.0f, hi = 1.0f; };
+        std::map<Key, Range> ranges_;                     // exact, from the loader
         bool tooLarge_ = false;
         // one cached plane per channel for lazy sources without a cached volume
         std::map<Index, std::pair<PlaneKey, Buffer<float>>> planes_;

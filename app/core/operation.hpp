@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include <sirius/device.hpp>
 
 #include "core/array.hpp"
@@ -149,6 +151,14 @@ namespace sirius::app {
     std::vector<std::pair<std::string, std::vector<const Operation*>>> operationGroups();
     // Registers every built-in operation (idempotent).
     void registerBuiltinOperations();
+    // Every registered operation (built-ins first) with its parameter specs
+    // as JSON: {"version", "operations": [{kind, name, group, plugin,
+    // produces_labels, needs_labels, params: [{key, label, type, default,
+    // choices, min, max, unit, advanced}]}]}. The Python mirror
+    // (bindings/python/sirius/workbench.py) is checked against a committed
+    // snapshot of it (bindings/python/sirius/op_schema.json), so a parameter
+    // renamed here fails that test instead of silently changing a pipeline.
+    nlohmann::json operationSchemas();
 
 } // namespace sirius::app
 

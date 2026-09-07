@@ -11,12 +11,33 @@ STEP = {
     "name": "Difference of Gaussians",
     "group": "Intensity",
     "params": [
-        {"key": "sigma_lo", "label": "σ low", "type": "double", "default": 1.0, "min": 0.1, "max": 50.0,
-         "unit": "px", "help": "Width of the narrow Gaussian; structures smaller than this are smoothed away"},
-        {"key": "sigma_hi", "label": "σ high", "type": "double", "default": 4.0, "min": 0.1, "max": 100.0,
-         "unit": "px", "help": "Width of the wide Gaussian; the local background it estimates is subtracted"},
-        {"key": "in_3d", "label": "Filter in 3D", "type": "bool", "default": False,
-         "help": "Also smooth along z (with σ scaled by the voxel aspect)"},
+        {
+            "key": "sigma_lo",
+            "label": "σ low",
+            "type": "double",
+            "default": 1.0,
+            "min": 0.1,
+            "max": 50.0,
+            "unit": "px",
+            "help": "Width of the narrow Gaussian; structures smaller than this are smoothed away",
+        },
+        {
+            "key": "sigma_hi",
+            "label": "σ high",
+            "type": "double",
+            "default": 4.0,
+            "min": 0.1,
+            "max": 100.0,
+            "unit": "px",
+            "help": "Width of the wide Gaussian; the local background it estimates is subtracted",
+        },
+        {
+            "key": "in_3d",
+            "label": "Filter in 3D",
+            "type": "bool",
+            "default": False,
+            "help": "Also smooth along z (with σ scaled by the voxel aspect)",
+        },
         {"key": "clip", "label": "Clip negatives", "type": "bool", "default": True},
     ],
     "separable_over_t": True,
@@ -27,6 +48,7 @@ def _gaussian(volume, sigma, in_3d, meta):
     """scipy when available, a separable numpy kernel otherwise."""
     try:
         from scipy.ndimage import gaussian_filter
+
         if in_3d:
             voxel = meta.get("voxel_um") or [1.0, 1.0, 1.0]
             sz = sigma * voxel[0] / max(voxel[2], 1e-9)

@@ -35,3 +35,9 @@ endif()
 if(SIRIUS_ENABLE_PYTHON_BINDINGS)
     add_subdirectory(bindings)
 endif()
+
+# Last: the export set describes targets defined above (and the vendored
+# dependencies they link).
+if(SIRIUS_ENABLE_INSTALL)
+    include(Install)
+endif()

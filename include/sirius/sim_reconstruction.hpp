@@ -3,6 +3,7 @@
 
 #include <array>
 #include <complex>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -79,6 +80,27 @@ namespace sirius {
         Buffer<double> reconstruct(const Src& src) {
             return reconstruct(BufferView<const double>(toConstView(src)));
         }
+
+        // Cooperative cancellation. `cancelled` is polled at the stage
+        // boundaries of reconstruct() -- once per direction during band
+        // separation and the pattern fit, once per bracket-search trial, and
+        // once per (direction, order) during filtering and assembly -- and a
+        // true return aborts the call by throwing
+        // std::runtime_error("cancelled"), the same contract as
+        // TiffWriteOptions::cancelled. The predicate runs on the calling
+        // thread between stages, never inside a kernel or an FFT, so it costs
+        // nothing measurable and cannot change a single output bit: a run
+        // that is never cancelled is bit-identical to one with no callback.
+        //
+        // Worst-case latency is one stage: the largest is the assembly grid's
+        // (z_zoom*nz, zoomfact*ny, zoomfact*nx) inverse FFT, run once per
+        // (direction, order). After a cancelled call the reconstructor stays
+        // usable -- plans and buffers are intact and the next reconstruct()
+        // overwrites everything -- but lastFit() and lastDiagnostics() then
+        // describe a partial run and must not be read.
+        //
+        // An empty callback (the default) disables the checks entirely.
+        void setCancelCallback(std::function<bool()> cancelled);
 
         // Fit diagnostics of the last reconstruct() call.
         const SimFit& lastFit() const noexcept;

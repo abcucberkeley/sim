@@ -45,6 +45,11 @@ namespace sirius::app {
         void cursorChanged(const QString& text);
         void zoomChanged(const QString& text);
 
+    protected:
+        // The ortho splitters take their saved (or design) balance once the
+        // panes have real geometry.
+        void showEvent(QShowEvent* event) override;
+
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;

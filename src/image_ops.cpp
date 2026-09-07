@@ -1,4 +1,6 @@
 #include "sirius/image_ops.hpp"
+#include "sirius/constants.hpp"
+#include "downsample.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -240,7 +242,7 @@ namespace sirius {
         if (dxUm <= 0.0) throw std::invalid_argument("deskewGeometry: dx must be positive");
         const double step = stageStepUm > 0.0 ? stageStepUm : dzUm;
         if (step <= 0.0) throw std::invalid_argument("deskewGeometry: stage step (or dz) must be positive");
-        const double theta = angleDeg * 3.14159265358979323846 / 180.0;
+        const double theta = angleDeg * kPi / 180.0;
         const double ct = std::cos(theta), st = std::sin(theta);
         const double shear = step * ct / dxUm;              // pixels of x per plane
         // axial spacing of the sheared stack; a sheet parallel to the image
@@ -388,24 +390,7 @@ namespace sirius {
     void downsampleBox(const float* in, Index iz, Index iy, Index ix, int fz, int fy, int fx, float* out) {
         requirePositive(iz, iy, ix, "downsampleBox");
         if (fz < 1 || fy < 1 || fx < 1) throw std::invalid_argument("downsampleBox: factors must be >= 1");
-        const Index oz = downsampledExtent(iz, fz), oy = downsampledExtent(iy, fy), ox = downsampledExtent(ix, fx);
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (Index z = 0; z < oz; ++z)
-            for (Index y = 0; y < oy; ++y) {
-                float* row = out + (z * oy + y) * ox;
-                const Index z1 = std::min<Index>((z + 1) * fz, iz), y1 = std::min<Index>((y + 1) * fy, iy);
-                for (Index x = 0; x < ox; ++x) {
-                    const Index x1 = std::min<Index>((x + 1) * fx, ix);
-                    double acc = 0.0;
-                    Index count = 0;
-                    for (Index sz = z * fz; sz < z1; ++sz)
-                        for (Index sy = y * fy; sy < y1; ++sy) {
-                            const float* line = in + (sz * iy + sy) * ix;
-                            for (Index sx = x * fx; sx < x1; ++sx, ++count) acc += line[sx];
-                        }
-                    row[x] = count ? static_cast<float>(acc / static_cast<double>(count)) : 0.0f;
-                }
-            }
+        detail::downsampleBoxMean<float>(in, {iz, iy, ix}, {fz, fy, fx}, out);
     }
 
     std::vector<double> histogram(const float* values, Index n, int bins, float lo, float hi) {

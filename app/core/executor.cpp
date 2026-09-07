@@ -11,8 +11,20 @@
 #include <nlohmann/json.hpp>
 
 #include "core/array_source.hpp"
+#include "core/cancel.hpp"
 
 namespace sirius::app {
+
+    const char* toString(StepReport::State s) noexcept {
+        switch (s) {
+            case StepReport::State::Running: return "running";
+            case StepReport::State::Ran: return "ran";
+            case StepReport::State::Cached: return "cached";
+            case StepReport::State::Skipped: return "skipped";
+            case StepReport::State::Failed: return "failed";
+        }
+        return "?";
+    }
 
     namespace {
         // FNV-1a over the bytes: stable across runs (std::hash is not), cheap,
@@ -106,6 +118,13 @@ namespace sirius::app {
         return load(*it->second);
     }
 
+    std::shared_ptr<LabelVolume> Executor::lastLabels(StepId id) const {
+        std::lock_guard<std::mutex> g(mutex_);
+        auto it = entries_.find(id);
+        if (it == entries_.end() || !it->second || !it->second->output) return nullptr;
+        return it->second->output->labels;
+    }
+
     void Executor::refreshPolicies(const Pipeline& p) {
         // Policies live in the pipeline and may change after an entry was
         // stored; the eviction pass below must see the current ones.
@@ -115,34 +134,53 @@ namespace sirius::app {
     }
 
     void Executor::store(const Step& step, const std::string& fp, std::shared_ptr<const StepOutput> out) {
-        std::lock_guard<std::mutex> g(mutex_);
-        auto& slot = entries_[step.id];
-        if (!slot) slot = std::make_unique<Entry>();
-        Entry& e = *slot;
-        if (!e.diskPath.empty()) {
-            std::error_code ec;
-            std::filesystem::remove(e.diskPath, ec);
-            e.diskPath.clear();
-        }
-        e.id = step.id;
-        e.fingerprint = fp;
-        e.policy = step.cache;
-        e.arrayOnDisk = false;
-        e.bytes = out && out->array ? out->array->bytes() : 0;
+        // A disk spill is written before the lock is taken (the file can be
+        // gigabytes, and queries must not wait for it); the name is unique
+        // per store so it never races an earlier file of the same step.
+        std::filesystem::path diskPath;
+        const std::size_t bytes = out && out->array ? out->array->bytes() : 0;
         if (step.cache == CachePolicy::Disk && out && out->array && !out->array->empty()) {
-            e.diskPath = scratch_ / ("step-" + std::to_string(step.id) + "-" + fp + ".sir5");
-            writeArrayFile(e.diskPath, *out->array);
+            diskPath = scratch_ / ("step-" + std::to_string(step.id) + "-" + fp + "-" + std::to_string(++spillCounter_) + ".sir5");
+            try {
+                writeArrayFile(diskPath, *out->array);
+            } catch (...) {
+                std::error_code ec;
+                std::filesystem::remove(diskPath, ec);
+                throw;
+            }
+            if (spillObserver_) spillObserver_(diskPath);
             auto shell = std::make_shared<StepOutput>(*out);
             shell->array = nullptr;
-            e.output = shell;
-            e.arrayOnDisk = true;
-        } else {
-            e.output = std::move(out);
+            out = shell;
         }
-        // "Recompute" keeps nothing beyond the most recent result: drop the
-        // arrays of every other recompute entry now that a newer one exists.
+        std::filesystem::path stale;
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            auto& slot = entries_[step.id];
+            if (!slot) slot = std::make_unique<Entry>();
+            Entry& e = *slot;
+            stale = std::move(e.diskPath);
+            e.id = step.id;
+            e.fingerprint = fp;
+            e.policy = step.cache;
+            e.bytes = bytes;
+            e.diskPath = std::move(diskPath);
+            e.arrayOnDisk = !e.diskPath.empty();
+            e.output = std::move(out);
+            e.restored.reset();
+            // "Recompute" keeps nothing beyond the most recent result: drop the
+            // arrays of every other recompute entry now that a newer one exists.
+            evictRecomputeExcept(step.id);
+        }
+        if (!stale.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(stale, ec);
+        }
+    }
+
+    void Executor::evictRecomputeExcept(StepId keep) {
         for (auto& [id, other] : entries_) {
-            if (!other || id == step.id || other->policy != CachePolicy::Recompute || !other->output) continue;
+            if (!other || id == keep || other->policy != CachePolicy::Recompute || !other->output) continue;
             if (other->output->array) {
                 auto shell = std::make_shared<StepOutput>(*other->output);
                 shell->array = nullptr;
@@ -163,8 +201,7 @@ namespace sirius::app {
             report.id = step.id;
             report.index = i;
             if (i > 0 && !step.enabled) {
-                report.skipped = true;
-                report.note = "skipped";
+                report.state = StepReport::State::Skipped;
                 if (reports) reports->push_back(report);
                 if (onStep) onStep(report);
                 continue;
@@ -172,14 +209,14 @@ namespace sirius::app {
             const std::string fp = fingerprint(p, i);
             if (auto c = cached(p, i)) {
                 current = std::move(c);
-                report.note = "cached";
+                report.state = StepReport::State::Cached;
                 if (reports) reports->push_back(report);
                 if (onStep) onStep(report);
                 continue;
             }
-            report.note = "running";
+            report.state = StepReport::State::Running;
             if (onStep) onStep(report);
-            ctx.throwIfCancelled();
+            if (ctx.isCancelled()) throw CancelledError();
 
             const Operation& op = step.op();
             StepInput input;
@@ -192,24 +229,27 @@ namespace sirius::app {
             try {
                 out = std::make_shared<StepOutput>(op.run(input, step.params, ctx));
             } catch (const std::exception& e) {
+                if (isCancellation(e)) throw CancelledError();   // not the step's fault
+                report.state = StepReport::State::Failed;
                 report.error = e.what();
                 if (reports) reports->push_back(report);
                 if (onStep) onStep(report);
-                if (std::string(e.what()) == "cancelled") throw;   // not the step's fault
                 throw std::runtime_error("Step " + Step::number(i) + " " + step.name + ": " + e.what());
             }
             const auto t1 = std::chrono::steady_clock::now();
             out->seconds = std::chrono::duration<double>(t1 - t0).count();
             if (out->meta.dims.numel() <= 0) out->meta.dims = input.meta.dims;
-            // labels carried through unless the step produced its own
-            if (!out->labels && input.labels) out->labels = std::const_pointer_cast<LabelVolume>(input.labels);
+            // Labels carried through unless the step produced its own: a
+            // volume of this step's own over the input's voxels, copied on
+            // the first edit, so painting here never touches the upstream cache.
+            if (!out->labels && input.labels) out->labels = input.labels->share();
             {
                 std::lock_guard<std::mutex> g(mutex_);
                 refreshPolicies(p);
             }
             store(step, fp, out);
             current = out;
-            report.ran = true;
+            report.state = StepReport::State::Ran;
             report.seconds = out->seconds;
             report.note = out->note;
             if (reports) reports->push_back(report);
@@ -257,10 +297,16 @@ namespace sirius::app {
     std::size_t Executor::cachedBytes() const {
         std::lock_guard<std::mutex> g(mutex_);
         std::size_t total = 0;
+        std::vector<const std::uint32_t*> counted;   // label voxels shared by several steps count once
         for (const auto& [id, e] : entries_)
             if (e && e->output) {
                 if (e->output->array) total += e->output->array->bytes();
-                if (e->output->labels) total += static_cast<std::size_t>(e->output->labels->t() * e->output->labels->volumeSize()) * sizeof(std::uint32_t);
+                const LabelVolume* labels = e->output->labels.get();
+                if (!labels || labels->empty()) continue;
+                const std::uint32_t* voxels = labels->view().data();
+                if (std::find(counted.begin(), counted.end(), voxels) != counted.end()) continue;
+                counted.push_back(voxels);
+                total += static_cast<std::size_t>(labels->t() * labels->volumeSize()) * sizeof(std::uint32_t);
             }
         return total;
     }

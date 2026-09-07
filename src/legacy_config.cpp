@@ -1,4 +1,5 @@
 #include "sirius/legacy_config.hpp"
+#include "sirius/errors.hpp"
 
 #include <cctype>
 #include <fstream>
@@ -29,7 +30,7 @@ namespace sirius {
                 if (pos != v.size()) throw std::invalid_argument(v);
                 return out;
             } catch (const std::exception&) {
-                throw std::runtime_error("config key '" + key + "' expects an integer, got: " + v);
+                throw IoError("config key '" + key + "' expects an integer, got: " + v);
             }
         }
 
@@ -40,14 +41,14 @@ namespace sirius {
                 if (pos != v.size()) throw std::invalid_argument(v);
                 return out;
             } catch (const std::exception&) {
-                throw std::runtime_error("config key '" + key + "' expects a number, got: " + v);
+                throw IoError("config key '" + key + "' expects a number, got: " + v);
             }
         }
 
         bool parseBool(const std::string& key, const std::string& v) {
             if (v == "1" || v == "true"  || v == "True")  return true;
             if (v == "0" || v == "false" || v == "False") return false;
-            throw std::runtime_error("config key '" + key + "' expects 0/1, got: " + v);
+            throw IoError("config key '" + key + "' expects 0/1, got: " + v);
         }
 
         std::vector<float> parseFloatList(const std::string& key, const std::string& v) {
@@ -161,7 +162,7 @@ namespace sirius {
     LegacyReconConfig loadLegacyConfig(const std::string& path) {
         std::ifstream file(path);
         if (!file)
-            throw std::runtime_error("Failed to open legacy config: " + path);
+            throw IoError("Failed to open legacy config: " + path);
 
         LegacyReconConfig c;
         const auto& table = aliasTable();
@@ -176,16 +177,16 @@ namespace sirius {
 
             const auto eq = s.find('=');
             if (eq == std::string::npos)
-                throw std::runtime_error("Malformed line " + std::to_string(lineNo) +
-                                         " in " + path + " (expected key=value): " + s);
+                throw IoError("Malformed line " + std::to_string(lineNo) +
+                              " in " + path + " (expected key=value): " + s);
 
             const std::string key = trim(s.substr(0, eq));
             const std::string val = trim(s.substr(eq + 1));
 
             const auto it = table.find(key);
             if (it == table.end())
-                throw std::runtime_error("Unknown legacy config key '" + key +
-                                         "' on line " + std::to_string(lineNo) + " of " + path);
+                throw IoError("Unknown legacy config key '" + key +
+                              "' on line " + std::to_string(lineNo) + " of " + path);
             it->second(c, key, val);
         }
         return c;
@@ -244,8 +245,8 @@ namespace sirius {
             case 1: p.apodize_output = ApodizationType::Cosine;   break;
             case 2: p.apodize_output = ApodizationType::Triangle; break;
             default:
-                throw std::runtime_error("apodizeoutput must be 0, 1, or 2, got: " +
-                                         std::to_string(c.apodizeoutput));
+                throw IoError("apodizeoutput must be 0, 1, or 2, got: " +
+                              std::to_string(c.apodizeoutput));
         }
 
         p.validate();

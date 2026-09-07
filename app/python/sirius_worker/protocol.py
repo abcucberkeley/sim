@@ -17,6 +17,17 @@ Both integers are little endian. The header is an object with
 Tensors are raw little-endian C-order arrays concatenated in the payload at
 the given byte offsets. Nothing is pickled: every value crossing the wire is
 JSON or a plain array.
+
+Both lengths and every tensor descriptor come from the peer, so both ends cap
+them before they size an allocation or index a buffer: ``MAX_HEADER`` /
+``MAX_PAYLOAD`` here are the same numbers as ``kMaxHeaderBytes`` /
+``kMaxPayloadBytes`` in ``app/core/rpc.cpp``, and a connection that has not
+completed its ``hello`` is held to ``MAX_PREAUTH_FRAME`` (see server.py).
+
+``PROTOCOL_VERSION`` is exchanged in ``hello`` (request params and reply
+result) and must match on both ends; it is ``kProtocolVersion`` in
+``app/core/rpc.hpp``. Bump it whenever the framing or the method set changes
+in a way an older peer cannot understand.
 """
 
 from __future__ import annotations
@@ -31,6 +42,10 @@ import numpy as np
 
 __all__ = [
     "DTYPES",
+    "MAX_HEADER",
+    "MAX_PAYLOAD",
+    "MAX_PREAUTH_FRAME",
+    "PROTOCOL_VERSION",
     "FrameReader",
     "ProtocolError",
     "decode_frame",
@@ -40,10 +55,18 @@ __all__ = [
     "write_frame",
 ]
 
+# Wire protocol version, exchanged in `hello`; the peer must answer with the
+# same number (app/core/rpc.hpp: kProtocolVersion).
+PROTOCOL_VERSION = 1
+
 HEADER_LEN = struct.Struct("<I")
 PAYLOAD_LEN = struct.Struct("<Q")
 MAX_HEADER = 64 << 20          # a header larger than this is a corrupt stream
-MAX_PAYLOAD = 1 << 40
+MAX_PAYLOAD = 32 << 30         # 32 GiB of tensors, the cap app/core/rpc.cpp enforces
+# Nothing legitimate is large before `hello`: a hello frame is a few hundred
+# bytes. Holding an unauthenticated peer to this keeps it from making the
+# worker allocate, or wait for, anything worth the trouble.
+MAX_PREAUTH_FRAME = 16 << 10
 
 # protocol dtype name -> numpy little-endian dtype
 DTYPES: Dict[str, np.dtype] = {
@@ -113,9 +136,27 @@ def encode_frame(header: Dict[str, Any], tensors: Tensors = None) -> bytes:
     return b"".join(parts)
 
 
+def _numel(shape: Tuple[int, ...], name: str) -> int:
+    """Element count of a shape that came off the wire. Python integers do not
+    wrap, but an absurd product must still be refused before it is multiplied
+    by an item size and used to size an allocation, so the running product is
+    bounded as it goes (`checkedProduct` on the C++ side)."""
+    n = 1
+    for s in shape:
+        if s < 0:
+            raise ProtocolError(f"tensor '{name}': negative extent in shape {shape}")
+        n *= s
+        if n > MAX_PAYLOAD:
+            raise ProtocolError(f"tensor '{name}': shape {shape} exceeds {MAX_PAYLOAD} elements")
+    return n
+
+
 def _decode_tensors(header: Dict[str, Any], payload: memoryview) -> Dict[str, np.ndarray]:
+    descriptors = header.get("tensors") or []
+    if not isinstance(descriptors, list):
+        raise ProtocolError("header 'tensors' is not an array")
     out: Dict[str, np.ndarray] = {}
-    for d in header.get("tensors") or []:
+    for d in descriptors:
         try:
             name = str(d["name"])
             dtype = DTYPES[str(d["dtype"])]
@@ -124,28 +165,34 @@ def _decode_tensors(header: Dict[str, Any], payload: memoryview) -> Dict[str, np
             nbytes = int(d["nbytes"])
         except (KeyError, TypeError, ValueError) as e:
             raise ProtocolError(f"malformed tensor descriptor {d!r}: {e}") from e
-        expected = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize if shape else dtype.itemsize
-        if nbytes != expected or offset < 0 or offset + nbytes > len(payload):
-            raise ProtocolError(f"tensor '{name}': {nbytes} bytes at {offset} do not fit shape {shape} / payload {len(payload)}")
+        expected = _numel(shape, name) * dtype.itemsize if shape else dtype.itemsize
+        # Written the way rpc.cpp writes it, so no sum of peer-supplied
+        # numbers is formed before it is known to fit the payload.
+        if offset < 0 or nbytes < 0 or nbytes > len(payload) or offset > len(payload) - nbytes:
+            raise ProtocolError(f"tensor '{name}': {nbytes} bytes at {offset} do not fit the payload ({len(payload)} bytes)")
+        if nbytes != expected:
+            raise ProtocolError(f"tensor '{name}': {nbytes} bytes do not match shape {shape} of {dtype.name}")
         arr = np.frombuffer(payload[offset:offset + nbytes], dtype=dtype).reshape(shape)
         out[name] = arr.copy()  # own the memory: the buffer is reused by the reader
     return out
 
 
-def decode_frame(buffer: bytearray) -> Optional[Tuple[Dict[str, Any], Dict[str, np.ndarray]]]:
+def decode_frame(buffer: bytearray, max_header: int = MAX_HEADER,
+                 max_payload: int = MAX_PAYLOAD) -> Optional[Tuple[Dict[str, Any], Dict[str, np.ndarray]]]:
     """Consume one complete frame from the front of `buffer`; None when it holds
-    less than a frame. Raises ProtocolError on a malformed frame."""
+    less than a frame. Raises ProtocolError on a malformed frame or on one
+    larger than the caps (which a caller lowers before authentication)."""
     if len(buffer) < HEADER_LEN.size:
         return None
     (hlen,) = HEADER_LEN.unpack_from(buffer, 0)
-    if hlen > MAX_HEADER:
-        raise ProtocolError(f"header length {hlen} exceeds {MAX_HEADER}")
+    if hlen > max_header:
+        raise ProtocolError(f"header length {hlen} exceeds {max_header}")
     pos = HEADER_LEN.size + hlen
     if len(buffer) < pos + PAYLOAD_LEN.size:
         return None
     (plen,) = PAYLOAD_LEN.unpack_from(buffer, pos)
-    if plen > MAX_PAYLOAD:
-        raise ProtocolError(f"payload length {plen} exceeds {MAX_PAYLOAD}")
+    if plen > max_payload:
+        raise ProtocolError(f"payload length {plen} exceeds {max_payload}")
     end = pos + PAYLOAD_LEN.size + plen
     if len(buffer) < end:
         return None
@@ -165,14 +212,16 @@ def decode_frame(buffer: bytearray) -> Optional[Tuple[Dict[str, Any], Dict[str, 
 class FrameReader:
     """Incremental decoder: feed() bytes as they arrive, take complete frames."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_header: int = MAX_HEADER, max_payload: int = MAX_PAYLOAD) -> None:
         self._buf = bytearray()
+        self.max_header = max_header
+        self.max_payload = max_payload
 
     def feed(self, data: bytes) -> List[Tuple[Dict[str, Any], Dict[str, np.ndarray]]]:
         self._buf.extend(data)
         frames = []
         while True:
-            frame = decode_frame(self._buf)
+            frame = decode_frame(self._buf, self.max_header, self.max_payload)
             if frame is None:
                 break
             frames.append(frame)
@@ -196,15 +245,20 @@ def recv_exactly(sock: socket.socket, n: int) -> bytes:
     return b"".join(chunks)
 
 
-def read_frame(sock: socket.socket) -> Tuple[Dict[str, Any], Dict[str, np.ndarray]]:
-    """Blocking read of one frame from a socket."""
+def read_frame(sock: socket.socket, max_header: int = MAX_HEADER,
+               max_payload: int = MAX_PAYLOAD) -> Tuple[Dict[str, Any], Dict[str, np.ndarray]]:
+    """Blocking read of one frame from a socket.
+
+    Each length is checked against its cap *before* the bytes it announces are
+    read, so an oversize frame costs the peer one refused read and this side no
+    allocation at all; `recv_exactly` then accumulates in 1 MiB pieces."""
     (hlen,) = HEADER_LEN.unpack(recv_exactly(sock, HEADER_LEN.size))
-    if hlen > MAX_HEADER:
-        raise ProtocolError(f"header length {hlen} exceeds {MAX_HEADER}")
+    if hlen > max_header:
+        raise ProtocolError(f"header length {hlen} exceeds {max_header}")
     hb = recv_exactly(sock, hlen)
     (plen,) = PAYLOAD_LEN.unpack(recv_exactly(sock, PAYLOAD_LEN.size))
-    if plen > MAX_PAYLOAD:
-        raise ProtocolError(f"payload length {plen} exceeds {MAX_PAYLOAD}")
+    if plen > max_payload:
+        raise ProtocolError(f"payload length {plen} exceeds {max_payload}")
     payload = recv_exactly(sock, plen) if plen else b""
     try:
         header = json.loads(hb.decode("utf-8"))

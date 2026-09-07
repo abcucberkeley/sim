@@ -13,6 +13,7 @@
 
 #include <unsupported/Eigen/CXX11/Tensor>
 
+#include "sirius/checked_math.hpp"
 #include "sirius/device.hpp"
 
 // Buffer<T>: owning, contiguous, row-major, typed storage on a Device.
@@ -58,8 +59,15 @@ namespace sirius {
         Index operator[](int i) const noexcept { return dims_[static_cast<std::size_t>(i)]; }
         Index& operator[](int i) noexcept { return dims_[static_cast<std::size_t>(i)]; }
         const Index* data() const noexcept { return dims_.data(); }
-        Index numel() const noexcept;
-        bool empty() const noexcept { return numel() == 0; }
+        // Element count; throws std::overflow_error when the extents do not
+        // multiply within Index.
+        Index numel() const;
+        bool empty() const noexcept {   // numel() == 0, without the product
+            if (rank_ == 0) return true;
+            for (int i = 0; i < rank_; ++i)
+                if (dims_[static_cast<std::size_t>(i)] == 0) return true;
+            return false;
+        }
         void push(Index dim);   // append a dimension (throws past kMaxRank)
 
         // Rank-3 shape {d0..d(rank-1) with leading dims collapsed}. Buffers that
@@ -106,9 +114,9 @@ namespace sirius {
         Device device() const noexcept { return device_; }
         int rank() const noexcept { return shape_.rank(); }
         Index dim(int i) const noexcept { return shape_[i]; }
-        Index size() const noexcept { return shape_.numel(); }
-        std::size_t bytes() const noexcept { return static_cast<std::size_t>(size()) * sizeof(T); }
-        bool empty() const noexcept { return size() == 0; }
+        Index size() const { return shape_.numel(); }   // throws std::overflow_error, see Shape::numel
+        std::size_t bytes() const { return detail::checkedBytes(size(), sizeof(T), "BufferView::bytes"); }
+        bool empty() const noexcept { return shape_.empty(); }
 
         // Contiguous sub-block along dimension 0: elements [first, first+count).
         BufferView slice(Index first, Index count) const;
@@ -160,8 +168,8 @@ namespace sirius {
         const Shape& shape() const noexcept { return shape_; }
         int rank() const noexcept { return shape_.rank(); }
         Index dim(int i) const noexcept { return shape_[i]; }
-        Index size() const noexcept { return shape_.numel(); }
-        std::size_t bytes() const noexcept { return static_cast<std::size_t>(size()) * sizeof(T); }
+        Index size() const { return shape_.numel(); }   // throws std::overflow_error, see Shape::numel
+        std::size_t bytes() const { return detail::checkedBytes(size(), sizeof(T), "Buffer::bytes"); }
         bool empty() const noexcept { return data_ == nullptr; }
         Device device() const noexcept { return device_; }
         HostMemory hostMemory() const noexcept { return host_; }
@@ -206,6 +214,8 @@ namespace sirius {
         void  copyBytes(const void* src, Device srcDevice, void* dst, Device dstDevice,
                         std::size_t bytes, const Stream& stream);
         void  memsetBytes(void* dst, Device device, int value, std::size_t bytes, const Stream& stream);
+        // Every rank / extent mismatch in the library funnels through here
+        // and arrives as a sirius::ShapeError (sirius/errors.hpp).
         [[noreturn]] void throwShapeMismatch(const char* what, const Shape& a, const Shape& b);
         void checkSameDevice(Device a, Device b, const char* what);
     } // namespace detail

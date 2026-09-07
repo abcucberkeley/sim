@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -154,6 +155,47 @@ TEST_CASE("Richardson-Lucy sharpens a blurred volume", "[deconvolution]") {
         const DeconvolutionResult ra = richardsonLucy(a.view(), psf.view(), o);
         CHECK(ra.iterations == 0);
         for (Index i = 0; i < a.size(); ++i) CHECK_THAT(a.data()[i], WithinAbs(blurred.data()[i], 1e-4));
+    }
+}
+
+TEST_CASE("Richardson-Lucy honours a cancel callback without disturbing the result",
+          "[deconvolution][cancel]") {
+    const Buffer<float> truth = beads(9, 24, 24);
+    const Buffer<float> psf = gaussianPsf(5, 7, 7, 0.2, 0.1, 1.2, 520.0, 1.33);
+    const Buffer<float> blurred = blurDirect(truth, psf);
+
+    DeconvolutionOptions opt;
+    opt.iterations = 12;
+    Buffer<float> reference = blurred.clone();
+    richardsonLucy(reference.view(), psf.view(), opt);
+
+    SECTION("a predicate that never fires leaves every value identical") {
+        int polls = 0;
+        DeconvolutionOptions o = opt;
+        o.cancelled = [&polls] { ++polls; return false; };
+        Buffer<float> estimate = blurred.clone();
+        const DeconvolutionResult r = richardsonLucy(estimate.view(), psf.view(), o);
+        CHECK(r.iterations == 12);
+        CHECK(polls >= 12);
+        Index differing = 0;
+        for (Index i = 0; i < estimate.size(); ++i)
+            if (estimate.data()[i] != reference.data()[i]) ++differing;
+        INFO(differing << " of " << estimate.size() << " values differ");
+        CHECK(differing == 0);
+    }
+
+    SECTION("a predicate that fires throws and leaves the caller's view untouched") {
+        DeconvolutionOptions o = opt;
+        int polls = 0;
+        o.cancelled = [&polls] { return ++polls > 4; };
+        Buffer<float> estimate = blurred.clone();
+        CHECK_THROWS_WITH(richardsonLucy(estimate.view(), psf.view(), o), Catch::Matchers::Equals("cancelled"));
+        // it stopped inside the second iteration, far short of 12
+        CHECK(polls == 5);
+        Index changed = 0;
+        for (Index i = 0; i < estimate.size(); ++i)
+            if (estimate.data()[i] != blurred.data()[i]) ++changed;
+        CHECK(changed == 0);
     }
 }
 

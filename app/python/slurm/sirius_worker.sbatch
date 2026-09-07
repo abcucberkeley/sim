@@ -45,5 +45,8 @@ export PYTHONPATH="${WORKER_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 echo "sirius worker on $(hostname) port ${SIRIUS_PORT} (device ${SIRIUS_DEVICE}), job ${SLURM_JOB_ID:-?}"
 echo "tunnel:  ssh -N -L ${SIRIUS_PORT}:$(hostname):${SIRIUS_PORT} <login-node>"
 
+# No --allow-install: on a shared node the worker must not run pip or conda
+# on a client's request (see ../SECURITY.md). Install the model packages into
+# the environment above when you submit the job, not from the application.
 exec python -m sirius_worker --host 0.0.0.0 --port "${SIRIUS_PORT}" --token "${SIRIUS_TOKEN}" \
     --device "${SIRIUS_DEVICE}"

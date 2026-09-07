@@ -1,0 +1,30 @@
+# EditorConfig (editorconfig.org): the whitespace conventions the tree uses,
+# so editors agree before clang-format / ruff ever run. Formatting proper is
+# .clang-format (C++/CUDA) and pyproject.toml [tool.ruff] (Python).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# C++/CUDA, CMake and Python: 4 spaces (see above)
+[*.{c,cc,cpp,cxx,h,hh,hpp,hxx,cu,cuh,py,cmake,txt}]
+indent_size = 4
+
+# Data / config files: 2 spaces
+[*.{json,yml,yaml,toml}]
+indent_size = 2
+
+# Markdown: two trailing spaces are a hard line break
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf

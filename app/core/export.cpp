@@ -1,5 +1,7 @@
 #include "core/export.hpp"
 
+#include "core/cancel.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -218,7 +220,7 @@ namespace sirius::app {
             Buffer<T> out(Shape{planes, d.y, d.x});
             const Index n = d.planeSize();
             for (Index k = 0; k < planes; ++k) {
-                if (cancelled && cancelled()) throw std::runtime_error("cancelled");
+                if (cancelled && cancelled()) throw CancelledError{};
                 Index c, t, z;
                 order.at(k, c, t, z);
                 const float* src = a.plane(c, t, z);
@@ -418,7 +420,7 @@ namespace sirius::app {
         const std::string base = stemOf(o.path);
         const std::string fileName = fs::path(o.path).filename().string();
         auto report = [&](double f, const std::string& m) { if (progress) progress(f, m); };
-        auto checkCancel = [&] { if (cancelled && cancelled()) throw std::runtime_error("cancelled"); };
+        auto checkCancel = [&] { if (cancelled && cancelled()) throw CancelledError{}; };
 
         if (o.format == ExportFormat::Tiff || o.format == ExportFormat::Raw) {
             // pages: z fastest, then t, then c (the array's own memory order)

@@ -661,7 +661,7 @@ namespace sirius::app {
             i = end;
             if (image) {
                 if (!baseDir.empty() && target.find("://") == std::string::npos && !fs::path(target).is_absolute())
-                    target = (fs::path(baseDir) / target).string();
+                    target = (fs::path(baseDir) / target).generic_string();   // '/' separators: a URL, not a native path
                 return "<img src=\"" + escapeHtml(target) + "\" alt=\"" + escapeHtml(label) + "\" style=\"max-width: 100%\">";
             }
             return "<a href=\"" + escapeHtml(target) + "\" style=\"color: " + kAccent + "\">" +

@@ -1,5 +1,7 @@
 #include "sirius/buffer.hpp"
 
+#include "sirius/errors.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -28,11 +30,9 @@ namespace sirius {
         dims_[static_cast<std::size_t>(rank_++)] = dim;
     }
 
-    Index Shape::numel() const noexcept {
+    Index Shape::numel() const {
         if (rank_ == 0) return 0;
-        Index n = 1;
-        for (int i = 0; i < rank_; ++i) n *= dims_[static_cast<std::size_t>(i)];
-        return n;
+        return detail::checkedProduct(dims_.data(), dims_.data() + rank_, "Shape::numel");
     }
 
     Shape Shape::asStack() const {
@@ -209,8 +209,8 @@ namespace sirius {
         }
 
         void throwShapeMismatch(const char* what, const Shape& a, const Shape& b) {
-            throw std::invalid_argument(std::string(what) + ": shape mismatch " + a.toString() +
-                                        " vs " + b.toString());
+            throw ShapeError(std::string(what) + ": shape mismatch " + a.toString() +
+                             " vs " + b.toString());
         }
 
         void checkSameDevice(Device a, Device b, const char* what) {

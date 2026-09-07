@@ -21,11 +21,14 @@
 #include <fstream>
 #include <numeric>
 #include <optional>
+#include <random>
 #include <thread>
 
 #include <sirius/tiff_io.hpp>
 
 #include "core/array_source.hpp"
+#include "core/cancel.hpp"
+#include "core/executor.hpp"
 #include "core/ops/builtin.hpp"
 #include "core/pipeline.hpp"
 #include "core/rpc.hpp"
@@ -270,6 +273,106 @@ TEST_CASE("SIM reconstructs the bundled stack from a parameter file and reports 
         const StepOutput ideal = sim.run(loaded.asInput(), e, prog.ctx);
         CHECK(ideal.array->dims() == predicted.dims);
         CHECK(ideal.note.find("theoretical OTF") != std::string::npos);
+    }
+}
+
+TEST_CASE("SIM reports a cancelled run as a cancellation, not as a step failure",
+          "[app][ops][sim][cancel]") {
+    // A SIM reconstruction is the longest thing the application does -- minutes
+    // on real data -- so Cancel has to reach into the library, not merely stop
+    // between volumes. The step must then surface the abort as a cancellation:
+    // the executor recognises it, leaves the step unblamed, and caches nothing.
+    const Operation& load = requireOperation("load");
+    ParamSet lp = load.defaults();
+    lp.set("path", (kData / "raw.tif").string());
+    lp.set("sim_ndirs", std::int64_t{3});
+    lp.set("sim_nphases", std::int64_t{5});
+    lp.set("voxel_x", 0.08);
+    lp.set("voxel_y", 0.08);
+    lp.set("voxel_z", 0.125);
+    Progress prog;
+    const StepOutput loaded = load.run(StepInput{}, lp, prog.ctx);
+
+    const Operation& sim = requireOperation("sim");
+    ParamSet sp = sim.defaults();
+    sp.set("mode", std::string("From file"));
+    sp.set("params_file", (kData / "config.txt").string());
+    sp.set("otf", (kData / "otf.tif").string());
+    REQUIRE(sim.validate(sp, loaded.meta).ok());
+
+    SECTION("run() throws something isCancellation() recognises, mid-reconstruction") {
+        Progress p2;
+        int polls = 0;
+        p2.ctx.cancelled = [&polls] { return ++polls > 2; };
+        const auto t0 = std::chrono::steady_clock::now();
+        try {
+            sim.run(loaded.asInput(), sp, p2.ctx);
+            FAIL("the SIM step ran to completion despite the cancel");
+        } catch (const std::exception& e) {
+            INFO("threw: " << e.what());
+            CHECK(isCancellation(e));
+        }
+        // The library aborted at a stage boundary rather than finishing the
+        // volume: the full reconstruction of this stack takes far longer than
+        // the handful of stages the predicate allowed.
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        INFO(seconds << " s to the throw, after " << polls << " polls");
+        CHECK(polls > 2);
+    }
+
+    SECTION("cancelling before any work still reads as a cancellation") {
+        Progress p2;
+        p2.ctx.cancelled = [] { return true; };
+        try {
+            sim.run(loaded.asInput(), sp, p2.ctx);
+            FAIL("the SIM step ran despite an always-true cancel");
+        } catch (const std::exception& e) {
+            CHECK(isCancellation(e));
+        }
+    }
+
+    SECTION("the executor blames nobody and caches nothing for the cancelled step") {
+        const std::filesystem::path scratch =
+            std::filesystem::temp_directory_path() / ("sirius-sim-cancel-" + std::to_string(std::random_device{}()));
+        std::filesystem::create_directories(scratch);
+        {
+            Executor ex(scratch / "cache");
+            Pipeline p;   // a fresh pipeline already holds the Load step at 0
+            const StepId simId = p.add("sim");
+            p.setParams(0, lp);
+            p.setParams(1, sp);
+            auto seeded = std::make_shared<StepOutput>(loaded);
+            ex.seed(p, 0, seeded);
+
+            StepContext ctx;
+            ctx.scratchDir = scratch;
+            // Arm only once the SIM step is running, and let a few polls
+            // through so the throw comes from inside the reconstruction
+            // rather than from the executor's own pre-run check.
+            bool inSim = false;
+            int polls = 0;
+            ctx.cancelled = [&inSim, &polls] { return inSim && ++polls > 3; };
+            std::vector<StepReport> reports;
+            CHECK_THROWS_AS(ex.runAll(p, ctx, &reports,
+                                      [&inSim](const StepReport& r) {
+                                          if (r.index == 1 && r.state == StepReport::State::Running) inSim = true;
+                                      }),
+                            CancelledError);
+            for (const StepReport& r : reports) CHECK_FALSE(r.failed());
+            // Nothing was published: no cache entry, no spill file left behind.
+            CHECK_FALSE(ex.isFresh(p, 1));
+            CHECK(ex.cachedBytesOf(simId) == 0);
+            CHECK(ex.lastOutput(simId) == nullptr);
+            CHECK(polls > 3);   // the abort came from inside the reconstruction
+            const std::string spillPrefix = "step-" + std::to_string(simId) + "-";
+            std::size_t spills = 0;
+            if (std::filesystem::exists(scratch / "cache"))
+                for (const auto& e : std::filesystem::directory_iterator(scratch / "cache"))
+                    if (e.path().filename().string().rfind(spillPrefix, 0) == 0) ++spills;
+            CHECK(spills == 0);   // no half-written cache entry survives the cancel
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(scratch, ec);
     }
 }
 
@@ -746,7 +849,8 @@ namespace {
             const std::string method = h.value("method", "");
             nlohmann::json reply = {{"id", h.value("id", 0)}, {"type", "result"}};
             if (method == "hello") {
-                reply["result"] = {{"version", "test"}, {"methods", {"run:torch_segment", "model_info"}},
+                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion},
+                                   {"methods", {"run:torch_segment", "model_info"}},
                                    {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "model_info") {
@@ -851,7 +955,8 @@ namespace {
             const std::string method = h.value("method", "");
             nlohmann::json reply = {{"id", h.value("id", 0)}, {"type", "result"}};
             if (method == "hello") {
-                reply["result"] = {{"version", "test"}, {"methods", {"run:torch_segment", "model_info", "hub_search"}},
+                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion},
+                                   {"methods", {"run:torch_segment", "model_info", "hub_search"}},
                                    {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "model_info") {

@@ -41,10 +41,20 @@ option(SIRIUS_ENABLE_AVX    "Enable AVX instruction set"     OFF)
 option(SIRIUS_ENABLE_AVX2   "Enable AVX2 + FMA instruction sets" OFF)
 option(SIRIUS_ENABLE_AVX512 "Enable AVX-512F + FMA instruction sets" OFF)
 
+# Install / export rules for `find_package(SIRIUS CONFIG)` (cmake/Install.cmake).
+# The install tree ships the fetched static dependencies alongside the library;
+# nvTIFF, nvCOMP and TensorStore are prebuilt redistributables / a Bazel build
+# that SIRIUS does not install, so those builds cannot produce a usable package.
+cmake_dependent_option(SIRIUS_ENABLE_INSTALL "Generate install and export rules for the sirius library" ON
+                       "PROJECT_IS_TOP_LEVEL;NOT SIRIUS_ENABLE_NVTIFF;NOT SIRIUS_ENABLE_NVCOMP;NOT SIRIUS_ENABLE_TENSORSTORE" OFF)
+
 # Development related options
 option(SIRIUS_ENABLE_TESTS "Enable tests" OFF)
 option(SIRIUS_ENABLE_BENCHMARKS "Build C++ benchmarks" OFF)
 option(SIRIUS_ENABLE_WARNINGS "Enable extra warnings" OFF)
+# Warnings become errors on SIRIUS's own targets (the library, the app core;
+# never the FetchContent dependencies). The Linux GCC CI job turns it on.
+option(SIRIUS_WARNINGS_AS_ERRORS "Treat warnings as errors on the sirius targets (needs SIRIUS_ENABLE_WARNINGS)" OFF)
 option(SIRIUS_ENABLE_SANITIZERS "Enable sanitizers (Debug, non-MSVC)" OFF)
 option(SIRIUS_ENABLE_CLANG_TIDY "Enable clang-tidy" OFF)
 option(SIRIUS_ENABLE_CPPCHECK "Enable cppcheck" OFF)

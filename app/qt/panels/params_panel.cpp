@@ -32,6 +32,7 @@
 #include <sirius/device.hpp>
 
 #include "qt/qt_strings.hpp"
+#include "qt/shortcuts.hpp"
 #include "core/ops/builtin.hpp"
 #include "qt/dialogs/model_hub_dialog.hpp"
 #include "qt/theme.hpp"
@@ -46,13 +47,9 @@ namespace sirius::app {
 
     namespace {
 
+        // core's formatBytes for the number, an em dash for "not known yet".
         QString bytesText(std::size_t bytes) {
-            if (bytes == 0) return QStringLiteral("—");
-            const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-            if (gb >= 1.0) return QStringLiteral("%1 GB").arg(gb, 0, 'f', 1);
-            const double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
-            if (mb >= 1.0) return QStringLiteral("%1 MB").arg(mb, 0, 'f', mb < 10 ? 1 : 0);
-            return QStringLiteral("%1 KB").arg(static_cast<double>(bytes) / 1024.0, 0, 'f', 0);
+            return bytes == 0 ? QStringLiteral("—") : widgets::bytesText(bytes);
         }
 
         QString pixelTypeName(PixelType t) { return QString::fromLatin1(toString(t)); }
@@ -159,6 +156,7 @@ namespace sirius::app {
         SegmentedControl* cache = nullptr;
         QLabel* cacheSize = nullptr;
         QLabel* cacheNote = nullptr;
+        QLabel* backendNote = nullptr;     // "no HPC implementation…" when it applies
         QPushButton* run = nullptr;
         QPushButton* view = nullptr;
         QPushButton* remove = nullptr;
@@ -226,6 +224,7 @@ namespace sirius::app {
                     spin->setToolTip(fromStd(s.help));
                     spin->setReadOnly(s.readOnly);
                     spin->setKeyboardTracking(false);
+                    widgets::useTabularNumbers(spin);
                     QObject::connect(spin, qOverload<int>(&QSpinBox::valueChanged), panel,
                                      [this, key](int v) { setParam(key, static_cast<std::int64_t>(v), true); });
                     updaters[key] = [spin, key](const ParamSet& p) {
@@ -246,6 +245,7 @@ namespace sirius::app {
                         decimals = mag >= 100 ? 1 : mag >= 1 ? 2 : mag >= 0.01 ? 4 : 6;
                     }
                     spin->setDecimals(decimals);
+                    widgets::useTabularNumbers(spin);
                     spin->setSingleStep(s.step > 0 ? s.step : std::pow(10.0, -std::max(decimals - 1, 0)));
                     if (!s.unit.empty()) spin->setSuffix(QStringLiteral(" ") + fromStd(s.unit));
                     spin->setValue(def);
@@ -405,9 +405,7 @@ namespace sirius::app {
                     adv.push_back(c);
                 }
                 // build eagerly (hidden) so updaters exist for every key
-                QVBoxLayout* saved = bodyLayout;
                 buildGenericInto(adv, params, input, hl);
-                bodyLayout = saved;
                 host->hide();
                 into->addWidget(host);
                 QObject::connect(more, &QPushButton::clicked, panel, [host, more] {
@@ -800,6 +798,7 @@ namespace sirius::app {
                 spin->setSingleStep((hi - lo) / 200.0);
                 spin->setValue(value);
                 spin->setFixedWidth(96);
+                widgets::useTabularNumbers(spin);
                 slider->setValue(static_cast<int>(std::lround((value - lo) / (hi - lo) * 1000.0)));
                 h->addWidget(slider, 1);
                 h->addWidget(spin);
@@ -937,7 +936,7 @@ namespace sirius::app {
             else if (st->kind == "merge") buildMerge(*st, info, input, bodyLayout);
             else if (st->kind == "contrast") buildContrast(*st, info, input, bodyLayout);
             else buildGeneric(info.params, st->params, input, bodyLayout, false);
-            validation = widgets::label(QString(), 11, theme::kAccent, -1, body);
+            validation = widgets::label(QString(), 11, theme::kAccentText, -1, body);
             validation->setWordWrap(true);
             validation->hide();
             bodyLayout->addWidget(validation);
@@ -960,7 +959,7 @@ namespace sirius::app {
                 validation->setText(text);
                 validation->setVisible(!text.isEmpty());
                 QPalette p = validation->palette();
-                p.setColor(QPalette::WindowText, v.ok() ? theme::kNeutral600 : theme::kAccent);
+                p.setColor(QPalette::WindowText, v.ok() ? theme::kNeutral600 : theme::kAccentText);
                 validation->setPalette(p);
             }
         }
@@ -976,27 +975,49 @@ namespace sirius::app {
                 view->setEnabled(false);
                 remove->hide();
                 cacheSize->clear();
+                backendNote->hide();
                 return;
             }
             const int i = index();
             kicker->setText(QStringLiteral("Step %1 · %2").arg(fromStd(Step::number(i)), fromStd(st->op().info().kindLabel)));
             state->setText(st->enabled ? QStringLiteral("enabled") : QStringLiteral("skipped"));
             QPalette sp = state->palette();
-            sp.setColor(QPalette::WindowText, st->enabled ? theme::kAccent : theme::kNeutral500);
+            sp.setColor(QPalette::WindowText, st->enabled ? theme::kAccentText : theme::kNeutral600);
             state->setPalette(sp);
             name->setText(fromStd(st->name));
             name->setToolTip(QStringLiteral("Double-click to rename"));
             const bool running = bridge.running();
+            // Every parameter edit is refused while a run holds the pipeline
+            // (Workbench::canEdit), so the whole form goes with it rather
+            // than accepting values that are dropped.
+            const bool editable = wb.canEdit();
+            scroll->setEnabled(editable);
+            cache->setEnabled(editable);
             run->setEnabled(!running && wb.hasDataset());
             view->setEnabled(true);
             remove->setVisible(!st->pinned);
-            remove->setEnabled(!running);
+            remove->setEnabled(editable);
+            const QString frozen = QStringLiteral("Not while a run is in progress — cancel it (Esc) or wait");
+            scroll->setToolTip(editable ? QString() : frozen);
+            cache->setToolTip(editable ? QString() : frozen);
+            remove->setToolTip(editable ? QString() : frozen);
             // backend / cache
             backend->setCurrentIndex(static_cast<int>(wb.backend()));
             backend->setOptionEnabled(0, cudaAvailable());
             backend->setOptionToolTip(0, cudaAvailable() ? QStringLiteral("Run on the selected CUDA device")
                                                          : QStringLiteral("No CUDA device is available in this build / machine"));
             backend->setOptionToolTip(2, QStringLiteral("Run on the remote worker (Preferences ▸ HPC)"));
+            // Only operations the Python worker implements (OpInfo::remoteCapable)
+            // are handed to the remote worker; the C++ ones run here whatever
+            // the backend says, so the panel says which one this is.
+            const bool remote = st->op().info().remoteCapable;
+            backendNote->setText(wb.backend() != Backend::Hpc
+                                     ? QString()
+                                     : (remote ? QStringLiteral("Runs on the HPC worker.")
+                                               : QStringLiteral("%1 has no HPC implementation: this step runs on this "
+                                                                "machine even with the HPC backend selected.")
+                                                     .arg(fromStd(st->op().info().name))));
+            backendNote->setVisible(!backendNote->text().isEmpty());
             cache->setCurrentIndex(static_cast<int>(st->cache));
             cacheSize->setText(QStringLiteral("≈ %1").arg(bytesText(wb.estimatedBytesOf(i))));
             static const char* notes[] = {"Fastest scrubbing; evicted first when GPU/RAM fills.",
@@ -1016,7 +1037,10 @@ namespace sirius::app {
     ParamsPanel::ParamsPanel(WorkbenchBridge& bridge, QWidget* parent)
         : QWidget(parent), impl_(std::make_unique<Impl>(bridge, this)) {
         setObjectName(QStringLiteral("Panel"));
-        setMinimumWidth(theme::kParamsDockW);
+        // 320 px is what it asks for; fields shrink, so the dock may be
+        // dragged narrower (see OpsPanel).
+        setMinimumWidth(200);
+        setAccessibleName(QStringLiteral("Parameters"));
         auto* root = new QVBoxLayout(this);
         root->setContentsMargins(0, 0, 0, 0);
         root->setSpacing(0);
@@ -1029,8 +1053,10 @@ namespace sirius::app {
         auto* kickRow = new QHBoxLayout();
         kickRow->setContentsMargins(0, 0, 0, 0);
         impl_->kicker = new CaptionLabel(QStringLiteral("Step"), header);
-        impl_->kicker->setAccent(true);
-        impl_->state = widgets::label(QString(), 11, theme::kAccent, -1, header);
+        // The accent at 10 / 11 px is 3.8:1 on this background; the darkened
+        // one (theme::kAccentText) is the same red at 5.2:1.
+        impl_->kicker->setColor(theme::kAccentText);
+        impl_->state = widgets::label(QString(), 11, theme::kAccentText, -1, header);
         kickRow->addWidget(impl_->kicker);
         kickRow->addStretch(1);
         kickRow->addWidget(impl_->state);
@@ -1041,9 +1067,10 @@ namespace sirius::app {
         impl_->name = widgets::heading(QStringLiteral("—"), theme::kH4Px, header);
         impl_->name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         impl_->name->installEventFilter(this);
-        impl_->help = new GlyphButton(QStringLiteral("?"), 24, header);
+        impl_->help = new GlyphButton(widgets::Icon::Help, 24, header);
         impl_->help->setGlyphPx(13);
-        impl_->help->setToolTip(QStringLiteral("Explain this step (F1)"));
+        impl_->help->setToolTip(withShortcut(QStringLiteral("Explain this step"), keys::helpForStep()));
+        impl_->help->setAccessibleName(QStringLiteral("Help for this step"));
         nameRow->addWidget(impl_->name, 1);
         nameRow->addWidget(impl_->help);
         hl->addLayout(nameRow);
@@ -1070,6 +1097,10 @@ namespace sirius::app {
         impl_->backend = new SegmentedControl({QStringLiteral("CUDA"), QStringLiteral("CPU"), QStringLiteral("HPC")}, backendBox);
         impl_->backend->setTileMode(true);
         bl->addWidget(impl_->backend);
+        impl_->backendNote = widgets::label(QString(), 12, theme::kNeutral600, -1, backendBox);
+        impl_->backendNote->setWordWrap(true);
+        impl_->backendNote->hide();
+        bl->addWidget(impl_->backendNote);
         sl->addWidget(backendBox);
         sl->addWidget(new Rule(2, Qt::Horizontal, sections));
         auto* cacheBox = new QWidget(sections);
@@ -1103,7 +1134,8 @@ namespace sirius::app {
         fl->setSpacing(8);
         impl_->run = new QPushButton(QStringLiteral("Run step"), footer);
         widgets::setButtonClass(impl_->run, "primary");
-        impl_->run->setToolTip(QStringLiteral("Run this step (and stale steps above it) — ⇧⌘R"));
+        impl_->run->setToolTip(withShortcut(QStringLiteral("Run this step; its input has to be computed already"),
+                                            keys::runSelected()));
         impl_->view = new QPushButton(QStringLiteral("View"), footer);
         widgets::setButtonClass(impl_->view, "secondary");
         impl_->view->setToolTip(QStringLiteral("Show this step's output in the viewer"));
@@ -1121,9 +1153,9 @@ namespace sirius::app {
         connect(impl_->cache, &SegmentedControl::changed, this, [this](int i) {
             impl_->bridge.wb().setStepCache(impl_->index(), static_cast<CachePolicy>(i));
         });
-        connect(impl_->run, &QPushButton::clicked, this, [this] { impl_->bridge.startRun(impl_->index()); });
+        connect(impl_->run, &QPushButton::clicked, this, [this] { emit runStepRequested(impl_->index()); });
         connect(impl_->view, &QPushButton::clicked, this, [this] { impl_->bridge.wb().view(impl_->index()); });
-        connect(impl_->remove, &QPushButton::clicked, this, [this] { impl_->bridge.wb().removeStep(impl_->index()); });
+        connect(impl_->remove, &QPushButton::clicked, this, [this] { emit removeStepRequested(impl_->index()); });
 
         connect(&bridge, &WorkbenchBridge::selectionChanged, this, [this] { impl_->refresh(); });
         connect(&bridge, &WorkbenchBridge::pipelineChanged, this, [this] { impl_->refresh(); });
@@ -1137,6 +1169,7 @@ namespace sirius::app {
         connect(&bridge, &WorkbenchBridge::backendChanged, this, [this] { impl_->refreshHeader(); });
         connect(&bridge, &WorkbenchBridge::outputsChanged, this, [this] { impl_->refreshHeader(); });
         connect(&bridge, &WorkbenchBridge::runStarted, this, [this] { impl_->refreshHeader(); });
+        connect(&bridge, &WorkbenchBridge::runStateChanged, this, [this] { impl_->refreshHeader(); });
         connect(&bridge, &WorkbenchBridge::runFinished, this, [this] {
             impl_->builtFor = -1;   // diagnostics-driven notes may have changed
             impl_->refresh();
@@ -1145,6 +1178,8 @@ namespace sirius::app {
     }
 
     ParamsPanel::~ParamsPanel() = default;
+
+    QSize ParamsPanel::sizeHint() const { return {theme::kParamsDockW, QWidget::sizeHint().height()}; }
 
     void ParamsPanel::setHelpOpen(bool open) { impl_->help->setActive(open); }
 

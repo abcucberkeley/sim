@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+
 import sirius
 
 
@@ -19,12 +20,8 @@ def main() -> None:
 
     params = sirius.load_legacy_parameters(str(args.data_dir / "config.txt"))
     device = sirius.Device(args.device)
-    raw = sirius.read_tiff(
-        str(args.data_dir / "raw.tif"), dtype=np.float64, device=device
-    )
-    recon = sirius.SimReconstructor(
-        params, str(args.data_dir / "otf.tif"), device=device
-    )
+    raw = sirius.read_tiff(str(args.data_dir / "raw.tif"), dtype=np.float64, device=device)
+    recon = sirius.SimReconstructor(params, str(args.data_dir / "otf.tif"), device=device)
 
     recon.reconstruct(raw)  # plan/allocation warmup
     samples = []
@@ -32,10 +29,7 @@ def main() -> None:
         start = time.perf_counter()
         output = recon.reconstruct(raw)
         samples.append(time.perf_counter() - start)
-    print(
-        f"sim-{args.device}: {min(samples) * 1e3:.3f} ms "
-        f"(shape={output.shape}, best of {len(samples)})"
-    )
+    print(f"sim-{args.device}: {min(samples) * 1e3:.3f} ms (shape={output.shape}, best of {len(samples)})")
 
 
 if __name__ == "__main__":

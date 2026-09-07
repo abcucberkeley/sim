@@ -32,6 +32,11 @@ target_link_libraries(sirius_tests
         sirius
         Catch2::Catch2WithMain
         TIFF::TIFF
+        # Tests that include a library-internal header directly (downsample.hpp,
+        # sim_cpu_stages.hpp) compile its OpenMP pragmas themselves, so the test
+        # binary needs the same flag the library is built with -- otherwise the
+        # pragmas are silently ignored and the tested code is not the shipped one.
+        OpenMP::OpenMP_CXX
 )
 
 # test_sim_cpu_stages exercises the library-internal OpenMP kernels shared by
@@ -55,6 +60,8 @@ if(SIRIUS_ENABLE_APP)
         test_app_rpc.cpp
         test_app_help.cpp
         test_app_manifest.cpp
+        test_app_schema.cpp
+        test_app_parity.cpp
     )
     target_link_libraries(sirius_tests PRIVATE sirius::app_core)
 endif()

@@ -4,14 +4,18 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 
 #include <complex>
 #include <cstdint>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "sirius/buffer.hpp"
 #include "sirius/device.hpp"
+#include "sirius/errors.hpp"
 #include "sirius/tiff_io.hpp"
 
 using namespace sirius;
@@ -60,6 +64,13 @@ TEST_CASE("Shape basics", "[buffer][shape]") {
     }
     SECTION("zero-length dimension") {
         REQUIRE(Shape{0, 5}.numel() == 0);
+    }
+    SECTION("a shape mismatch is a ShapeError without ceasing to be an invalid_argument") {
+        Buffer<float> a(Shape{2, 3}), b(Shape{3, 2});
+        REQUIRE_THROWS_AS(copy(a, b), ShapeError);
+        REQUIRE_THROWS_AS(copy(a, b), std::invalid_argument);
+        REQUIRE_THROWS_AS(copy(a, b), std::exception);
+        REQUIRE_THROWS_WITH(copy(a, b), "copy: shape mismatch (2, 3) vs (3, 2)");
     }
     SECTION("rank limit and negative dims are rejected") {
         REQUIRE_THROWS_AS(Shape({1, 1, 1, 1, 1}), std::invalid_argument);
@@ -431,4 +442,27 @@ TEST_CASE("Stream::null().synchronize() waits for legacy-stream work", "[buffer]
         for (Index i = 0; i < pinned.size(); i += 4097)
             REQUIRE(pinned.data()[i] == static_cast<float>(round));
     }
+}
+
+TEST_CASE("Shape and Buffer refuse element counts that overflow", "[buffer][shape][overflow]") {
+    // 2^80 elements: the product wraps a 64-bit Index, so it must throw
+    // rather than allocate a tiny buffer for a huge shape
+    const Shape huge{1 << 20, 1 << 20, 1 << 20, 1 << 20};
+    CHECK_THROWS_AS(huge.numel(), std::overflow_error);
+    CHECK_THROWS_AS(Buffer<float>(huge), std::overflow_error);
+    CHECK_FALSE(huge.empty());   // decided without the product
+    try {
+        (void)huge.numel();
+    } catch (const std::overflow_error& e) {
+        CHECK(std::string(e.what()).find("1048576 x 1048576 x 1048576 x 1048576") != std::string::npos);
+    }
+    // 2^61 elements fit an Index but 2^64 bytes do not
+    const Shape wide{1 << 20, 1 << 20, 1 << 21};
+    CHECK(wide.numel() == (Index{1} << 61));
+    CHECK_THROWS_AS(Buffer<double>(wide), std::overflow_error);
+    CHECK_THROWS_AS(BufferView<double>(nullptr, wide, Device::cpu()).bytes(), std::overflow_error);
+    // ordinary shapes are unaffected
+    CHECK(Shape{3, 4, 5}.numel() == 60);
+    CHECK(Shape{3, 0, 5}.empty());
+    CHECK(Buffer<std::uint16_t>(Shape{3, 4, 5}).bytes() == 120);
 }

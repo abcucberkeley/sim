@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -74,6 +75,7 @@ namespace sirius {
         SimFit fit;
         bool capture = false;
         SimDiagnostics diag;
+        std::function<bool()> cancelled;   // polled between stages; see the header
 
         int norders = 0;
         int nbands = 0;
@@ -142,6 +144,17 @@ namespace sirius {
             otfTable.nzotf = otf.data().dimension(2);
             otfTable.dkrotf = otf.dkrotf();
             // kzscale is bound with the shape (it depends on nz)
+        }
+
+        // Poll the caller's cancel predicate at a stage boundary. Nothing
+        // here touches the numeric path: it runs on the host between stages,
+        // so a run that is never cancelled is bit-identical to one with no
+        // callback at all. On CUDA the enqueued work is drained first so no
+        // kernel outlives the throw.
+        void checkCancelled() {
+            if (!cancelled || !cancelled()) return;
+            backend->synchronize();
+            throw std::runtime_error("cancelled");
         }
 
         Index bandElems() const { return nz * ny * nxh; }
@@ -263,6 +276,7 @@ namespace sirius {
         // Port of getmodamp: |modamp|^2 for a trial (angle, magnitude).
         Modamp getModamp(int d, double angle, double mag, int order1, int order2,
                          bool redoArrays, bool& overlapsValid) {
+            checkCancelled();
             const double k0x = mag * std::cos(angle);
             const double k0y = mag * std::sin(angle);
             if (redoArrays || !overlapsValid) {
@@ -279,6 +293,7 @@ namespace sirius {
             int fitorder2 = nz > 1 ? 2 : 1;
             if (fitorder2 >= norders) fitorder2 = norders - 1;
 
+            checkCancelled();
             computeOverlaps(d, 0, fitorder2, guess[0], guess[1]);
             backend->crossCorrelate(asCd(ov0.data()), asCd(ov1.data()), asCd(planeF.data()),
                                     nz, ny, nx);
@@ -475,6 +490,7 @@ namespace sirius {
             const double fact = p.explodefact / 0.5;
 
             for (int d = 0; d < p.ndirs; ++d) {
+                checkCancelled();
                 fc.direction = d;
                 std::vector<Cplx> conjamp(static_cast<std::size_t>(norders));
                 for (int o = 0; o < norders; ++o)
@@ -484,6 +500,7 @@ namespace sirius {
                                      asCd(conjamp.data()));
 
                 for (int order = 0; order < norders; ++order) {
+                    checkCancelled();
                     detail::memsetBytes(bigF.data(), dev, 0, bigF.bytes(), stream);
                     mc.order = order;
                     backend->moveBand(mc, asCd(bandRe(d, order)), asCd(bandIm(d, order)),
@@ -538,6 +555,8 @@ namespace sirius {
                 diag.zdistcutoff = zdistcutoff;
             }
 
+            checkCancelled();
+
             // 1. frame ordering: sections -> frames[(d*nphases + p)*nz + z]
             const Index sec = ny * nx;
             backend->reorderFrames(raw.data(), frames.data(), p.ndirs, p.nphases,
@@ -561,6 +580,8 @@ namespace sirius {
                 backend->scalePlanes(frames.data(), nplanes, sec, factors.data());
             }
 
+            checkCancelled();
+
             // 4. input apodization
             switch (p.apodize_input) {
                 case ApodizationType::None: break;
@@ -575,6 +596,7 @@ namespace sirius {
             // 5-6. band separation + 3D real FFT, per direction (batched)
             const Index volN = nz * sec;
             for (int d = 0; d < p.ndirs; ++d) {
+                checkCancelled();
                 backend->separate(frames.data() + static_cast<Index>(d) * p.nphases * volN,
                                   realBands.data(), sepMatrix.data(), p.nphases, nbands, volN);
                 bandFft->rfft(realBands.data(), dirBands(d), stream);
@@ -588,6 +610,7 @@ namespace sirius {
             double k0magGuess = 1.0 / p.linespacing_um;
             if (nz > 1) k0magGuess /= (p.nphases / 2 + 1) - 1;
             for (int d = 0; d < p.ndirs; ++d) {
+                checkCancelled();
                 const double angleGuess =
                     (p.k0_angles && p.k0_angles->size() >= static_cast<std::size_t>(p.ndirs))
                         ? (*p.k0_angles)[static_cast<std::size_t>(d)]
@@ -624,6 +647,10 @@ namespace sirius {
 
     Device SimReconstructor::device() const noexcept { return impl_->dev; }
     const SimFit& SimReconstructor::lastFit() const noexcept { return impl_->fit; }
+
+    void SimReconstructor::setCancelCallback(std::function<bool()> cancelled) {
+        impl_->cancelled = std::move(cancelled);
+    }
 
     void SimReconstructor::setCaptureDiagnostics(bool on) noexcept { impl_->capture = on; }
     bool SimReconstructor::captureDiagnostics() const noexcept { return impl_->capture; }

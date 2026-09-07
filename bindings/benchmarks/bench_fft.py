@@ -32,6 +32,7 @@ Usage
     python bindings/benchmarks/bench_fft.py --rigor Patient --repeats 7
     python bindings/benchmarks/bench_fft.py --wisdom ~/.sirius_wisdom
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,10 +45,10 @@ import numpy as np
 
 import sirius
 
-
 # --------------------------------------------------------------------------- #
 # Timing core                                                                 #
 # --------------------------------------------------------------------------- #
+
 
 def _autorange(fn: Callable[[], None], target_sec: float = 0.1) -> int:
     """Find `number` so a batch of `number` calls takes >= target_sec."""
@@ -85,6 +86,7 @@ def fmt_time(t: float) -> str:
 # Cases                                                                       #
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class Case:
     rank: int
@@ -106,7 +108,7 @@ DEFAULT_CASES: tuple[Case, ...] = (
     Case(1, (256,)),
     Case(1, (4096,)),
     Case(1, (65_536,)),
-    Case(1, (1 << 20,)),              # 1 M
+    Case(1, (1 << 20,)),  # 1 M
     Case(2, (64, 64)),
     Case(2, (256, 256)),
     Case(2, (1024, 1024)),
@@ -123,6 +125,7 @@ _NUMPY_INV = {1: np.fft.ifft, 2: np.fft.ifft2, 3: np.fft.ifftn}
 # --------------------------------------------------------------------------- #
 # Runner                                                                      #
 # --------------------------------------------------------------------------- #
+
 
 @dataclass
 class Row:
@@ -143,8 +146,7 @@ class Row:
 
 def run_case(case: Case, rigor: sirius.PlanRigor, repeats: int) -> list[Row]:
     rng = np.random.default_rng(0xC0FFEE ^ case.n_elements)
-    x = (rng.standard_normal(case.shape)
-         + 1j * rng.standard_normal(case.shape)).astype(np.complex128)
+    x = (rng.standard_normal(case.shape) + 1j * rng.standard_normal(case.shape)).astype(np.complex128)
     y = np.empty_like(x)
 
     fft = sirius.FFT(list(case.shape), rigor=rigor)
@@ -157,18 +159,18 @@ def run_case(case: Case, rigor: sirius.PlanRigor, repeats: int) -> list[Row]:
 
     return [
         Row(
-            case.label, "fft",
+            case.label,
+            "fft",
             numpy_s=bench(lambda: np_fwd(x), repeats=repeats),
             sirius_alloc_s=bench(lambda: fft.fft(x), repeats=repeats),
             sirius_inplace_s=bench(lambda: fft.fft(x, y), repeats=repeats),
         ),
         Row(
-            case.label, "ifft",
+            case.label,
+            "ifft",
             numpy_s=bench(lambda: np_inv(y_ref), repeats=repeats),
-            sirius_alloc_s=bench(lambda: fft.ifft(y_ref, normalize=True),
-                                 repeats=repeats),
-            sirius_inplace_s=bench(lambda: fft.ifft(y_ref, x_back, normalize=True),
-                                   repeats=repeats),
+            sirius_alloc_s=bench(lambda: fft.ifft(y_ref, normalize=True), repeats=repeats),
+            sirius_inplace_s=bench(lambda: fft.ifft(y_ref, x_back, normalize=True), repeats=repeats),
         ),
     ]
 
@@ -177,31 +179,34 @@ def run_case(case: Case, rigor: sirius.PlanRigor, repeats: int) -> list[Row]:
 # Presentation                                                                #
 # --------------------------------------------------------------------------- #
 
+
 def print_table(rows: list[Row]) -> None:
-    header = (f"{'shape':<20} {'dir':<5} "
-              f"{'numpy':>11} {'sirius alloc':>14} {'sirius inplace':>16} "
-              f"{'alloc x':>8} {'inplace x':>10}")
+    header = (
+        f"{'shape':<20} {'dir':<5} {'numpy':>11} {'sirius alloc':>14} {'sirius inplace':>16} {'alloc x':>8} {'inplace x':>10}"
+    )
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r.label:<20} {r.direction:<5} "
-              f"{fmt_time(r.numpy_s):>11} "
-              f"{fmt_time(r.sirius_alloc_s):>14} "
-              f"{fmt_time(r.sirius_inplace_s):>16} "
-              f"{r.speedup_alloc:>7.2f}x "
-              f"{r.speedup_inplace:>9.2f}x")
+        print(
+            f"{r.label:<20} {r.direction:<5} "
+            f"{fmt_time(r.numpy_s):>11} "
+            f"{fmt_time(r.sirius_alloc_s):>14} "
+            f"{fmt_time(r.sirius_inplace_s):>16} "
+            f"{r.speedup_alloc:>7.2f}x "
+            f"{r.speedup_inplace:>9.2f}x"
+        )
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--rigor", default="Measure",
-                   choices=["Estimate", "Measure", "Patient", "Exhaustive"],
-                   help="FFTW planning rigor (default: Measure)")
-    p.add_argument("--repeats", type=int, default=5,
-                   help="number of timing repeats; best is reported (default: 5)")
-    p.add_argument("--wisdom", type=str, default=None,
-                   help="load FFTW wisdom from this path before planning, "
-                        "save it back after")
+    p.add_argument(
+        "--rigor",
+        default="Measure",
+        choices=["Estimate", "Measure", "Patient", "Exhaustive"],
+        help="FFTW planning rigor (default: Measure)",
+    )
+    p.add_argument("--repeats", type=int, default=5, help="number of timing repeats; best is reported (default: 5)")
+    p.add_argument("--wisdom", type=str, default=None, help="load FFTW wisdom from this path before planning, save it back after")
     return p.parse_args()
 
 
@@ -213,8 +218,7 @@ def main() -> None:
         path = os.path.expanduser(args.wisdom)
         sirius.FFT.load_wisdom(path)
 
-    print(f"PlanRigor = {args.rigor}, repeats = {args.repeats}, "
-          f"numpy = {np.__version__}")
+    print(f"PlanRigor = {args.rigor}, repeats = {args.repeats}, numpy = {np.__version__}")
     print()
 
     all_rows: list[Row] = []
@@ -222,8 +226,7 @@ def main() -> None:
         print(f"{case.label:<20} ...", end=" ", flush=True)
         t0 = time.perf_counter()
         rows = run_case(case, rigor=rigor, repeats=args.repeats)
-        print(f"done in {time.perf_counter() - t0:.2f}s "
-              f"(plan + warmup + timing)")
+        print(f"done in {time.perf_counter() - t0:.2f}s (plan + warmup + timing)")
         all_rows.extend(rows)
 
     print()

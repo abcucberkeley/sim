@@ -14,7 +14,9 @@ class QSlider;
 
 namespace sirius::app {
 
-    class GlyphButton;
+    namespace widgets {
+        class GlyphButton;
+    }
 
     class DimsStrip : public QWidget {
         Q_OBJECT
@@ -42,7 +44,7 @@ namespace sirius::app {
         QLabel* tSec_ = nullptr;
         QLabel* tPos_ = nullptr;
         QWidget* tRow_[3] = {nullptr, nullptr, nullptr};
-        GlyphButton* play_ = nullptr;
+        widgets::GlyphButton* play_ = nullptr;
         Index nz_ = 1, nt_ = 1, z_ = 0, t_ = 0;
         double dz_ = 0.0, dt_ = 0.0;
         bool playing_ = false;

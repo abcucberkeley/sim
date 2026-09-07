@@ -6,6 +6,8 @@
 // throw a clear error without it.
 
 #include "sirius/zarr_io.hpp"
+#include "sirius/errors.hpp"
+#include "downsample.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -52,19 +54,19 @@ namespace sirius {
 
         json readJsonFile(const fs::path& p) {
             std::ifstream in(p);
-            if (!in) throw std::runtime_error("cannot read " + p.string());
+            if (!in) throw IoError("cannot read " + p.string());
             json j;
             try {
                 in >> j;
             } catch (const std::exception& e) {
-                throw std::runtime_error("malformed JSON in " + p.string() + ": " + e.what());
+                throw IoError("malformed JSON in " + p.string() + ": " + e.what());
             }
             return j;
         }
 
         void writeJsonFile(const fs::path& p, const json& j) {
             std::ofstream out(p);
-            if (!out) throw std::runtime_error("cannot write " + p.string());
+            if (!out) throw IoError("cannot write " + p.string());
             out << j.dump(2) << "\n";
         }
 
@@ -191,7 +193,7 @@ namespace sirius {
             Resolved r;
             r.root = fs::path(path);
             auto layout = discover(r.root);
-            if (!layout) throw std::runtime_error("not a zarr / N5 store (no zarr.json, .zarray, .zgroup or attributes.json): " + path);
+            if (!layout) throw IoError("not a zarr / N5 store (no zarr.json, .zarray, .zgroup or attributes.json): " + path);
             r.rootLayout = *layout;
             if (layout->isArray && levelPath.empty()) {
                 r.arrayDir = r.root;
@@ -208,7 +210,7 @@ namespace sirius {
             r.arrayDir = r.root / level;
             auto sub = discover(r.arrayDir);
             if (!sub || !sub->isArray)
-                throw std::runtime_error("zarr / N5 group has no array at '" + level + "': " + path);
+                throw IoError("zarr / N5 group has no array at '" + level + "': " + path);
             if (r.rootLayout.driver.empty()) r.rootLayout.driver = sub->driver;
             return r;
         }
@@ -222,7 +224,7 @@ namespace sirius {
             if (name == "int32" || name == "int64") return PixelType::Int32;
             if (name == "float32" || name == "float16" || name == "bfloat16") return PixelType::Float32;
             if (name == "float64") return PixelType::Float64;
-            throw std::runtime_error("unsupported zarr data type '" + name + "'");
+            throw IoError("unsupported zarr data type '" + name + "'");
         }
 
         const char* dtypeName(PixelType t) noexcept {
@@ -351,7 +353,7 @@ namespace sirius {
         namespace ts = tensorstore;
 
         [[noreturn]] void throwStatus(const absl::Status& s, const std::string& what) {
-            throw std::runtime_error(what + ": " + s.ToString());
+            throw IoError(what + ": " + s.ToString());
         }
 
         template <typename T>
@@ -571,38 +573,6 @@ namespace sirius {
             return c;
         }
 
-        // Box-average `in` (C order over `shape`) by integer `factors` per axis.
-        template <typename T>
-        std::vector<T> downsampleBox(const T* in, const std::vector<Index>& shape, const std::vector<int>& factors,
-                                     std::vector<Index>& outShape) {
-            const std::size_t r = shape.size();
-            outShape.resize(r);
-            for (std::size_t i = 0; i < r; ++i) outShape[i] = (shape[i] + factors[i] - 1) / factors[i];
-            const Index n = std::accumulate(shape.begin(), shape.end(), Index{1}, std::multiplies<>());
-            const Index m = std::accumulate(outShape.begin(), outShape.end(), Index{1}, std::multiplies<>());
-            std::vector<double> acc(static_cast<std::size_t>(m), 0.0);
-            std::vector<std::uint32_t> cnt(static_cast<std::size_t>(m), 0);
-            const std::vector<Index> outStride = cStrides(outShape, 1);
-            std::vector<Index> idx(r, 0);
-            for (Index i = 0; i < n; ++i) {
-                Index o = 0;
-                for (std::size_t k = 0; k < r; ++k) o += (idx[k] / factors[k]) * outStride[k];
-                acc[static_cast<std::size_t>(o)] += static_cast<double>(in[i]);
-                ++cnt[static_cast<std::size_t>(o)];
-                for (std::size_t k = r; k-- > 0;) {
-                    if (++idx[k] < shape[k]) break;
-                    idx[k] = 0;
-                }
-            }
-            std::vector<T> out(static_cast<std::size_t>(m));
-            for (Index i = 0; i < m; ++i) {
-                const double v = cnt[static_cast<std::size_t>(i)] ? acc[static_cast<std::size_t>(i)] / cnt[static_cast<std::size_t>(i)] : 0.0;
-                if constexpr (std::is_integral_v<T>) out[static_cast<std::size_t>(i)] = static_cast<T>(std::llround(v));
-                else out[static_cast<std::size_t>(i)] = static_cast<T>(v);
-            }
-            return out;
-        }
-
         template <typename T>
         void writeArray(const std::string& driver, const fs::path& dir, const T* data, const std::vector<Index>& shape,
                         const std::vector<Index>& chunksIn, const ZarrWriteOptions& o, const ts::Context& ctx) {
@@ -646,12 +616,12 @@ namespace sirius {
             std::error_code ec;
             if (!fs::exists(path, ec)) return;
             if (!fs::is_directory(path, ec))
-                throw std::runtime_error("cannot write a zarr store over an existing file: " + path.string());
+                throw IoError("cannot write a zarr store over an existing file: " + path.string());
             const bool empty = fs::is_empty(path, ec);
             if (!empty && !isZarrStore(path.string()))
-                throw std::runtime_error("refusing to delete " + path.string() + ": it exists and is not a zarr / N5 store");
+                throw IoError("refusing to delete " + path.string() + ": it exists and is not a zarr / N5 store");
             fs::remove_all(path, ec);
-            if (ec) throw std::runtime_error("cannot remove " + path.string() + ": " + ec.message());
+            if (ec) throw IoError("cannot remove " + path.string() + ": " + ec.message());
         }
 
     } // namespace
@@ -701,8 +671,9 @@ namespace sirius {
         std::vector<double> levelScale = scale;
         for (int k = 0; k < levels; ++k) {
             if (k > 0) {
-                std::vector<Index> outShape;
-                next = downsampleBox<T>(src, levelShape, factors, outShape);
+                const std::vector<Index> outShape = detail::downsampledShape(levelShape, factors);
+                next.resize(static_cast<std::size_t>(detail::elementCount(outShape)));
+                detail::downsampleBoxMean<T>(src, levelShape, factors, next.data());
                 std::swap(level, next);
                 src = level.data();
                 levelShape = outShape;

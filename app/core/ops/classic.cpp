@@ -242,6 +242,7 @@ namespace sirius::app {
                     std::copy_n(vol.data(), n, work.data());
                     // 1. flatten and smooth, per plane
                     for (Index z = 0; z < d.z; ++z) {
+                        ctx.throwIfCancelled();
                         float* pl = work.data() + z * plane;
                         topHatPlane(pl, d.y, d.x, tophat, scratch, tmp);
                         gaussianPlane(pl, d.y, d.x, sigma, tmp);
@@ -255,6 +256,7 @@ namespace sirius::app {
                     if (method == "Local mean") {
                         localMean.resize(static_cast<std::size_t>(plane));
                         for (Index z = 0; z < d.z; ++z) {
+                            ctx.throwIfCancelled();
                             const float* pl = work.data() + z * plane;
                             localMeanPlane(pl, d.y, d.x, window, localMean.data(), integral);
                             std::uint8_t* m = mask.data() + z * plane;
@@ -268,6 +270,7 @@ namespace sirius::app {
                     ctx.report(base + span * 0.5, "mask");
                     // 3. clean the mask, per plane
                     for (Index z = 0; z < d.z; ++z) {
+                        ctx.throwIfCancelled();
                         std::uint8_t* m = mask.data() + z * plane;
                         if (opening > 0) {
                             boxFilterPlane<std::uint8_t, false>(m, d.y, d.x, opening, maskTmp);

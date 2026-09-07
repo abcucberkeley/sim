@@ -19,13 +19,20 @@ namespace sirius::app {
         // Consecutive commands with the same non-empty merge key collapse into
         // one entry (slider drags, brush strokes): the newest command's
         // closures replace the entry's, so the caller composes them to span
-        // the whole merged range (see Workbench::pushEdit).
+        // the whole merged range (see Workbench::pushEdit). Any other push,
+        // and an undo, ends the group: the history is the single source of
+        // truth for what merges (mergesWith).
         std::string mergeKey;
     };
 
     class History {
     public:
         void push(Command c);            // clears the redo stack
+        // True when a command with this key would merge into the top undo
+        // entry (same non-empty key, and no other push, undo or redo since):
+        // what the caller checks to compose the "before" state of a merged
+        // group.
+        bool mergesWith(const std::string& key) const noexcept;
         bool canUndo() const noexcept { return !undo_.empty(); }
         bool canRedo() const noexcept { return !redo_.empty(); }
         std::string undoLabel() const;   // "" when nothing
@@ -38,6 +45,7 @@ namespace sirius::app {
 
     private:
         std::vector<Command> undo_, redo_;
+        bool mergeOpen_ = false;         // the top entry is still taking merges
         std::size_t limit_ = 200;
     };
 

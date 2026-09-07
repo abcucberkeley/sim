@@ -3,7 +3,7 @@ time, streamed progress, cancellation.
 
 Requests (see protocol.py for the framing):
 
-    hello       {token}                     -> capabilities
+    hello       {token, protocol_version}   -> capabilities (incl. protocol_version)
     ping        {}                          -> {}
     list_plugins   {}                       -> {plugins: [spec + file (+ error)], dirs}
     reload_plugins {}                       -> the same, after re-importing every plugin file
@@ -43,10 +43,18 @@ Run kinds and their tensors:
 The reader loop runs on the connection's thread and the job on a worker
 thread, so a cancel request is read while a run is in progress. Every reply
 carries the request's id.
+
+Trust model (app/python/SECURITY.md): whoever completes `hello` can run code
+here, so the listener refuses a non-loopback address without a token, the
+token is compared in constant time, and everything a peer sends before its
+`hello` is capped at protocol.MAX_PREAUTH_FRAME. `hello` also exchanges
+protocol.PROTOCOL_VERSION and refuses a peer that speaks another one.
 """
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -56,14 +64,14 @@ import sys
 import threading
 import time
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 from . import __version__
 from . import models as model_hub
 from . import plugins as plugin_registry
-from .protocol import ProtocolError, encode_frame, read_frame
+from .protocol import MAX_PREAUTH_FRAME, PROTOCOL_VERSION, ProtocolError, encode_frame, read_frame
 from .steps import workbench
 
 log = logging.getLogger("sirius_worker")
@@ -92,6 +100,18 @@ class WorkerServer:
     # --- lifecycle ------------------------------------------------------------
 
     def bind(self) -> int:
+        # Reaching this port is the whole of the authorisation model, so a
+        # port anyone on the network can reach must at least need the token.
+        if not self.token and not is_loopback(self.host):
+            raise ValueError(
+                f"refusing to listen on {self.host or '0.0.0.0'} without a token: any host that can reach this "
+                f"port could run code as {_username()}. Pass --token (or set $SIRIUS_TOKEN), for example "
+                "SIRIUS_TOKEN=$(openssl rand -hex 16); or bind 127.0.0.1 and reach the worker through an SSH "
+                "tunnel (app/python/SECURITY.md)")
+        if not self.token:
+            log.warning("no token: every client that can connect to %s:%s is served. That is only safe on a "
+                        "machine you are the only user of; pass --token to require a shared secret.",
+                        self.host, self.port or "<auto>")
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((self.host, self.port))
@@ -114,15 +134,16 @@ class WorkerServer:
                     continue
                 except OSError:
                     break
-                log.info("client %s:%d connected", *addr[:2])
+                peer = _peer(addr)
+                log.info("client %s connected", peer)
                 try:
-                    self._serve_client(conn)
+                    self._serve_client(conn, peer)
                 finally:
                     try:
                         conn.close()
                     except OSError:
                         pass
-                    log.info("client %s:%d disconnected", *addr[:2])
+                    log.info("client %s disconnected", peer)
         finally:
             self.close()
 
@@ -174,6 +195,7 @@ class WorkerServer:
             device = f"cpu · {os.cpu_count() or 1} threads"
         return {
             "version": __version__,
+            "protocol_version": PROTOCOL_VERSION,
             "methods": methods,
             "cuda": cuda and self.resolved_device().startswith("cuda"),
             "device": device,
@@ -184,12 +206,36 @@ class WorkerServer:
             "workbench": getattr(wb, "__source_file__", getattr(wb, "__file__", "")),
         }
 
+    def _handshake(self, params: Dict[str, Any]) -> Tuple[bool, str]:
+        """Check a `hello`: the token first (constant time, so a wrong one
+        leaks nothing through timing), then the protocol version. Returns
+        (ok, message); the message is what the client is told and logged."""
+        if self.token:
+            supplied = params.get("token", "")
+            supplied = supplied if isinstance(supplied, str) else ""
+            if not hmac.compare_digest(supplied.encode("utf-8"), self.token.encode("utf-8")):
+                return False, "authentication failed: bad token"
+        # Same version required on both ends. A peer that does not send the
+        # field predates the handshake and counts as version 0.
+        raw = params.get("protocol_version", 0)
+        theirs = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        if theirs != PROTOCOL_VERSION:
+            fix = ("update the SIRIUS application that connects to this worker"
+                   if theirs < PROTOCOL_VERSION else
+                   "update sirius_worker on this machine (app/python)")
+            return False, (f"protocol version mismatch: this worker speaks version {PROTOCOL_VERSION}, "
+                           f"the client speaks version {theirs}; {fix}")
+        return True, ""
+
     # --- one connection ----------------------------------------------------------
 
-    def _serve_client(self, conn: socket.socket) -> None:
+    def _serve_client(self, conn: socket.socket, peer: str = "?") -> None:
         conn.settimeout(None)
         send_lock = threading.Lock()
-        authenticated = not self.token
+        # Nothing is served, with or without a token, until `hello` has agreed
+        # on the protocol version -- and until then the peer's frames are held
+        # to MAX_PREAUTH_FRAME.
+        authenticated = False
 
         def send(header: Dict[str, Any], tensors=None) -> None:
             data = encode_frame(header, tensors)
@@ -204,11 +250,14 @@ class WorkerServer:
 
         while not self._stop.is_set():
             try:
-                header, tensors = read_frame(conn)
+                if authenticated:
+                    header, tensors = read_frame(conn)
+                else:
+                    header, tensors = read_frame(conn, MAX_PREAUTH_FRAME, MAX_PREAUTH_FRAME)
             except ConnectionError:
                 break
             except ProtocolError as e:
-                log.warning("protocol error: %s", e)
+                log.warning("protocol error from %s: %s", peer, e)
                 try:
                     error(None, f"protocol error: {e}")
                 except OSError:
@@ -225,9 +274,10 @@ class WorkerServer:
                 continue
             try:
                 if method == "hello":
-                    if self.token and str(params.get("token", "")) != self.token:
-                        error(rid, "authentication failed: bad token")
-                        log.warning("rejected client with a bad token")
+                    ok, message = self._handshake(params)
+                    if not ok:
+                        error(rid, message)
+                        log.warning("%s: %s", peer, message)
                         break
                     authenticated = True
                     reply(rid, self.capabilities())
@@ -236,6 +286,11 @@ class WorkerServer:
                 elif method == "ping":
                     reply(rid, {"time": time.time()})
                 elif method == "shutdown":
+                    # Privileged: it ends every job on this worker. Left
+                    # reachable from a tunnelled (non-loopback) client because
+                    # that is how the application stops the worker it started
+                    # on a cluster node; logged so the log says who did it.
+                    log.warning("privileged request: shutdown, from %s", peer)
                     reply(rid, {})
                     self.stop()
                     break
@@ -260,6 +315,11 @@ class WorkerServer:
                 elif method == "install":
                     family = str(params.get("family", ""))
                     dry_run = bool(params.get("dry_run", False))
+                    # Privileged: a real install runs pip / conda in this
+                    # interpreter, i.e. arbitrary package code as this user.
+                    # models.install refuses it unless --allow-install was given.
+                    log.warning("privileged request: install '%s'%s, from %s (allow_install=%s)", family,
+                                " (dry run)" if dry_run else "", peer, model_hub.ALLOW_INSTALL)
                     self._start_job(rid, f"install {family}", send,
                                     lambda progress, cancel: (model_hub.install(
                                         family, progress, cancelled=cancel.is_set, dry_run=dry_run), None))
@@ -509,6 +569,36 @@ class WorkerServer:
 
 
 # --- helpers -----------------------------------------------------------------------
+
+
+def is_loopback(host: str) -> bool:
+    """True for an address that only this machine can reach. "" and "0.0.0.0"
+    are every interface, and a name that is not literally loopback is treated
+    as public: the point is to be wrong on the safe side."""
+    h = (host or "").strip()
+    if not h:
+        return False
+    if h.lower() in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _peer(addr) -> str:
+    try:
+        return f"{addr[0]}:{addr[1]}"
+    except (IndexError, TypeError):
+        return str(addr)
+
+
+def _username() -> str:
+    for key in ("USER", "USERNAME", "LOGNAME"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return "the user running it"
 
 
 def _tensor(tensors: Dict[str, np.ndarray], name: str, ndim: int) -> np.ndarray:

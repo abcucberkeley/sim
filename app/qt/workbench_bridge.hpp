@@ -5,6 +5,12 @@
 // the workbench's observer callbacks as signals, runs RunJobs on a worker
 // thread and reports their progress on the GUI thread. Every panel takes a
 // WorkbenchBridge& and talks to `wb()` directly for reads and edits.
+//
+// A run's job executes entirely on the worker thread, including the start
+// of the Python worker it may need; the GUI thread only polls the job's
+// progress until the queued onJobFinished() folds the finished job back
+// into the workbench. While the run is active the workbench refuses edits
+// (Workbench::canEdit), so the panels can keep calling it as usual.
 
 #include <atomic>
 #include <functional>
@@ -67,13 +73,16 @@ namespace sirius::app {
         void taskStarted(const QString& label);
         void taskProgress(double fraction, const QString& message);
         void taskFinished(bool ok, const QString& error);
+        // A run started or finished: what the workbench refuses to edit
+        // changed with it (Workbench::canEdit).
+        void runStateChanged();
 
     private:
         // The Workbench::Observer lives in a relay object so its callbacks can
         // share names with the signals they forward to.
         struct Relay;
         friend struct Relay;
-        void runStateChanged();
+        void onRunStateChanged();
 
         void pollProgress();
         void onJobFinished();

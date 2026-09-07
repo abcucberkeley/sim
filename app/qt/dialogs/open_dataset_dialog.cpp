@@ -47,12 +47,6 @@ namespace sirius::app {
             return n;
         }
 
-        QString sizeText(std::uint64_t bytes) {
-            const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-            if (gb >= 1.0) return QStringLiteral("%1 GB").arg(gb, 0, 'f', 1);
-            return QStringLiteral("%1 MB").arg(static_cast<double>(bytes) / (1024.0 * 1024.0), 0, 'f', 1);
-        }
-
         QString fileFilter() {
             QStringList exts;
             for (const std::string& e : readableExtensions()) exts << QStringLiteral("*") + fromStd(e);
@@ -131,7 +125,7 @@ namespace sirius::app {
         impl_->facts = widgets::label(QString(), 12, theme::kNeutral600, -1, this);
         impl_->facts->setWordWrap(true);
         root->addWidget(impl_->facts);
-        impl_->error = widgets::label(QString(), 11, theme::kAccent, -1, this);
+        impl_->error = widgets::label(QString(), 11, theme::kAccentText, -1, this);
         impl_->error->setWordWrap(true);
         impl_->error->hide();
         root->addWidget(impl_->error);
@@ -348,7 +342,7 @@ namespace sirius::app {
                 impl_->dimsFromMetadata = folder || m.format != "tiff";   // plain TIFF: the page mapping is the user's call
                 QString facts = QStringLiteral("%1 · %2 · %3 · %4 · %5 channel(s)")
                                     .arg(fromStd(m.format), fromStd(m.shapeString()), QString::fromLatin1(toString(m.sourceType)),
-                                         sizeText(m.bytesOnDisk))
+                                         widgets::bytesText(m.bytesOnDisk))
                                     .arg(m.channels.size());
                 if (m.hasTiles()) facts += QStringLiteral(" · %1 tiles").arg(m.tiles.size());
                 impl_->facts->setText(facts);

@@ -35,6 +35,11 @@ CancelFn = Optional[Callable[[], bool]]
 MODEL_EXTENSIONS = (".pt", ".pts", ".pth", ".onnx")
 FAMILIES = ("file", "hf", "cellpose", "microsam")
 
+# `install` runs pip / conda inside the worker's environment on a client's
+# request. Off unless the worker was started with --allow-install (the local
+# launcher passes it; a shared cluster node must not): see app/python/SECURITY.md.
+ALLOW_INSTALL = False
+
 CELLPOSE_MODELS = ("cyto3", "nuclei", "cyto2", "cyto", "livecell", "tissuenet", "yeast_PhC", "yeast_BF",
                    "bact_phase", "bact_fluor", "deepbacs", "cyto2_cp3")
 MICROSAM_MODELS = ("vit_b_lm", "vit_l_lm", "vit_t_lm", "vit_b_em_organelles", "vit_l_em_organelles",
@@ -173,12 +178,26 @@ def list_cached_models() -> List[Dict[str, Any]]:
 # --- Hugging Face ------------------------------------------------------------------------
 
 
-def _hf_api():
+# The access token of the request being served (set_hub_token), handed to each
+# huggingface_hub call as its `token=` argument. It is never written to the
+# environment: HF_TOKEN would outlive the request and reach every subprocess
+# the worker starts (pip, conda). None lets huggingface_hub fall back to its
+# own sources (HF_TOKEN in the worker's environment, `huggingface-cli login`).
+_request_token: Optional[str] = None
+
+
+def _token_arg(token: Optional[str]) -> Optional[str]:
+    """`token` when given, else the request's token; "" means "none given"."""
+    token = (token if token is not None else _request_token) or ""
+    return token.strip() or None
+
+
+def _hf_api(token: Optional[str] = None):
     try:
         from huggingface_hub import HfApi  # type: ignore
     except ImportError as e:
         raise NotAvailable(f"Hugging Face access needs the 'huggingface_hub' package ({INSTALL_HINTS['hf']})") from e
-    return HfApi()
+    return HfApi(token=_token_arg(token))
 
 
 def _hub_error(e: BaseException, repo: str) -> ModelError:
@@ -203,7 +222,7 @@ def _hub_error(e: BaseException, repo: str) -> ModelError:
 _SEARCH_EXPAND = ["gated", "private", "downloads", "likes", "tags", "pipeline_tag", "lastModified", "library_name"]
 
 
-def hub_search(query: str, limit: int = 25, filter_tag: str = "") -> List[Dict[str, Any]]:
+def hub_search(query: str, limit: int = 25, filter_tag: str = "", token: Optional[str] = None) -> List[Dict[str, Any]]:
     api = _hf_api()
     kwargs: Dict[str, Any] = {"search": query or None, "limit": max(1, int(limit)), "sort": "downloads",
                               "direction": -1}
@@ -232,7 +251,7 @@ def hub_search(query: str, limit: int = 25, filter_tag: str = "") -> List[Dict[s
     return out
 
 
-def hub_files(repo: str) -> List[Dict[str, Any]]:
+def hub_files(repo: str, token: Optional[str] = None) -> List[Dict[str, Any]]:
     api = _hf_api()
     try:
         info = api.model_info(repo, files_metadata=True)
@@ -248,9 +267,9 @@ def hub_files(repo: str) -> List[Dict[str, Any]]:
     return files
 
 
-def pick_model_file(repo: str) -> str:
+def pick_model_file(repo: str, token: Optional[str] = None) -> str:
     """The single model file of a repository, or an error naming the candidates."""
-    candidates = [f["name"] for f in hub_files(repo) if f["model"]]
+    candidates = [f["name"] for f in hub_files(repo, token) if f["model"]]
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
@@ -279,7 +298,7 @@ def _progress_tqdm(progress: ProgressFn):
     return _Tqdm
 
 
-def hub_download(repo: str, filename: str = "", progress: ProgressFn = None) -> str:
+def hub_download(repo: str, filename: str = "", progress: ProgressFn = None, token: Optional[str] = None) -> str:
     """Download one repository file into the cache; returns the local path.
     Files already present are not fetched again."""
     try:
@@ -287,7 +306,7 @@ def hub_download(repo: str, filename: str = "", progress: ProgressFn = None) -> 
     except ImportError as e:
         raise NotAvailable(f"Hugging Face downloads need 'huggingface_hub' ({INSTALL_HINTS['hf']})") from e
     if not filename:
-        filename = pick_model_file(repo)
+        filename = pick_model_file(repo, token)
     have = cached_path(repo, filename)
     if have:
         if progress:
@@ -297,7 +316,8 @@ def hub_download(repo: str, filename: str = "", progress: ProgressFn = None) -> 
     target.mkdir(parents=True, exist_ok=True)
     if progress:
         progress(0.0, f"downloading {filename}")
-    kwargs: Dict[str, Any] = {"repo_id": repo, "filename": filename, "local_dir": str(target)}
+    kwargs: Dict[str, Any] = {"repo_id": repo, "filename": filename, "local_dir": str(target),
+                              "token": _token_arg(token)}
     tqdm_class = _progress_tqdm(progress)
     if tqdm_class is not None:
         kwargs["tqdm_class"] = tqdm_class
@@ -317,10 +337,11 @@ def hub_download(repo: str, filename: str = "", progress: ProgressFn = None) -> 
 
 
 def set_hub_token(token: str) -> None:
-    """An access token for gated / private repositories, for this process."""
-    token = (token or "").strip()
-    if token:
-        os.environ["HF_TOKEN"] = token
+    """The access token for gated / private repositories that the hub calls of
+    the current request use (the server calls this before each of them; an
+    empty token means "the client sent none"). Kept out of os.environ."""
+    global _request_token
+    _request_token = (token or "").strip() or None
 
 
 def resolve(spec: str, progress: ProgressFn = None) -> Tuple[ModelSpec, str]:
@@ -392,7 +413,9 @@ def install_plan(family: str) -> Dict[str, Any]:
     """How `install` would add a family's package to this interpreter:
     {family, installer: pip|conda, command: [...], display, packages, python, note}.
     conda is used for packages whose authors recommend it, unless torch here
-    came from pip: conda would then add its own torch build next to it."""
+    came from pip: conda would then add its own torch build next to it.
+    Advisory only -- the dialog shows the command; `install` runs it, and
+    refuses without --allow-install."""
     if family not in PACKAGES:
         raise ModelError(f"nothing to install for '{family}'")
     spec = PACKAGES[family]
@@ -416,8 +439,17 @@ def install_plan(family: str) -> Dict[str, Any]:
 def install(family: str, progress: ProgressFn = None, cancelled: CancelFn = None, dry_run: bool = False) -> Dict[str, Any]:
     """Run the family's install command, streaming its output lines through
     `progress`; returns {ok, returncode, available, command, tail}. `dry_run`
-    adds pip's --dry-run (conda: --dry-run) so nothing is changed."""
+    adds pip's --dry-run (conda: --dry-run) so nothing is changed.
+
+    A real install is refused unless the worker was started with
+    --allow-install: it is code execution in the worker's environment, which a
+    shared node must not hand to whoever holds the token. `dry_run` is always
+    allowed -- it resolves against the index and writes nothing, and the model
+    hub dialog uses it to preview the command (app/python/SECURITY.md)."""
     plan = install_plan(family)
+    if not (ALLOW_INSTALL or dry_run):
+        raise ModelError(f"this worker does not install packages; start it with --allow-install, or run "
+                         f"'{plan['display']}' in {sys.executable} yourself")
     command = list(plan["command"])
     if dry_run:
         command.append("--dry-run")
@@ -552,8 +584,8 @@ def prepare(spec: str, progress: ProgressFn = None, cancelled: CancelFn = None) 
         return {"spec": ms.text(), "path": path, "cached": True}
     if ms.family == "microsam":
         try:
-            from micro_sam.automatic_segmentation import get_predictor_and_segmenter  # type: ignore
             from micro_sam import util  # type: ignore
+            from micro_sam.automatic_segmentation import get_predictor_and_segmenter  # type: ignore
         except ImportError as e:
             raise NotAvailable(f"{ms.text()} needs the 'micro_sam' package ({INSTALL_HINTS['microsam']})") from e
         predictor, segmenter = get_predictor_and_segmenter(model_type=ms.name, device="cpu", amg=False, is_tiled=False)
@@ -700,7 +732,9 @@ def run_microsam(volume: np.ndarray, model_type: str, params: Dict[str, Any], de
     by plane (or through its 3D z-linking for stacks in 3D mode)."""
     try:
         from micro_sam.automatic_segmentation import (  # type: ignore
-            automatic_instance_segmentation, get_predictor_and_segmenter)
+            automatic_instance_segmentation,
+            get_predictor_and_segmenter,
+        )
     except ImportError as e:
         raise NotAvailable(f"microsam:{model_type} needs the 'micro_sam' package ({INSTALL_HINTS['microsam']})") from e
     z = volume.shape[0]

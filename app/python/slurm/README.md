@@ -15,7 +15,9 @@ sbatch app/python/slurm/sirius_worker.sbatch
 
 The template asks for one GPU and eight cores; edit the `#SBATCH` lines and
 the `module load` block for your cluster. It refuses to start without a
-token, since the port is open to every user of the node. The log
+token, since the port is open to every user of the node -- and so does the
+worker itself: `--host 0.0.0.0` with an empty token is refused at startup
+(`../SECURITY.md`). The log
 (`sirius-worker-<jobid>.log`) prints the node name, the port (7645 by
 default, `SIRIUS_PORT` to change) and the exact tunnel command.
 
@@ -55,6 +57,10 @@ The same worker runs anywhere:
 ```
 python -m sirius_worker --host 0.0.0.0 --port 7645 --token X --device cuda
 ```
+
+The token is not optional here: a non-loopback `--host` without one is a
+startup error. The application and the worker must also speak the same
+protocol version (`hello` checks it), so update both ends together.
 
 Locally the application starts one itself for Torch models (see
 `app/python/README.md`).

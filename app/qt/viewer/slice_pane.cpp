@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <QFocusEvent>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QElapsedTimer>
 #include <QPainter>
@@ -11,6 +13,9 @@
 #include <QWheelEvent>
 
 #include "qt/theme.hpp"
+#include "qt/trace.hpp"
+#include "qt/widgets/controls.hpp"
+#include "qt/viewer/viewer_constants.hpp"
 #include "qt/viewer/viewer_widgets.hpp"
 
 namespace sirius::app {
@@ -22,6 +27,27 @@ namespace sirius::app {
         setAutoFillBackground(false);
         setAttribute(Qt::WA_OpaquePaintEvent);
         setCursor(Qt::CrossCursor);
+        // reachable from the keyboard: tab to a pane, then walk the crosshair
+        setFocusPolicy(Qt::StrongFocus);
+        static const struct { Kind kind; const char* h; const char* v; const char* d; const char* name; } axes[] = {
+            {Kind::XY, "x", "y", "z", "XY view"},   {Kind::YZ, "z", "y", "x", "YZ view"},
+            {Kind::XZ, "x", "z", "y", "XZ view"},   {Kind::MIP, "x", "y", "z", "Z maximum projection"},
+            {Kind::Compare, "x", "y", "z", "Compare view"}};
+        for (const auto& a : axes)
+            if (a.kind == kind_) {
+                setAxisNames(QString::fromLatin1(a.h), QString::fromLatin1(a.v), QString::fromLatin1(a.d));
+                setAccessibleName(QString::fromLatin1(a.name));
+                break;
+            }
+    }
+
+    void SlicePane::setAxisNames(const QString& horizontal, const QString& vertical, const QString& depth) {
+        axisH_ = horizontal;
+        axisV_ = vertical;
+        axisD_ = depth;
+        setAccessibleDescription(QStringLiteral("Arrow keys move the crosshair along %1 and %2, page up and page down step %3; "
+                                                "shift moves ten voxels at a time.")
+                                     .arg(axisH_, axisV_, axisD_));
     }
 
     void SlicePane::setContent(const QImage& img, int factor, Index cols, Index rows, const QPoint& origin) {
@@ -95,7 +121,7 @@ namespace sirius::app {
     // --- painting ----------------------------------------------------------------
 
     void SlicePane::paintEvent(QPaintEvent*) {
-        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+        const bool trace = ScopedTrace::enabled();
         QElapsedTimer clock;
         if (trace) clock.start();
         QPainter p(this);
@@ -149,9 +175,11 @@ namespace sirius::app {
                 pen.setStyle(Qt::DashLine);
                 p.setOpacity(0.45);
             }
+            const qreal dpr = devicePixelRatioF();
+            pen.setWidthF(widgets::crispPen(1.0, dpr));
             p.setPen(pen);
             p.setRenderHint(QPainter::Antialiasing, false);
-            const double x = std::round(c.x()) + 0.5, y = std::round(c.y()) + 0.5;
+            const double x = widgets::crispLine(c.x(), 1.0, dpr), y = widgets::crispLine(c.y(), 1.0, dpr);
             p.drawLine(QPointF(x, 0), QPointF(x, height()));
             p.drawLine(QPointF(0, y), QPointF(width(), y));
             p.setOpacity(1.0);
@@ -169,45 +197,56 @@ namespace sirius::app {
         if (!title_.isEmpty()) {
             // bold first token, the rest at 70 %
             const int cut = title_.indexOf(QLatin1String("  "));
-            QFont bold(theme::kFontFamily);
-            bold.setPixelSize(11);
-            bold.setWeight(QFont::ExtraBold);
+            QFont bold = theme::font(11, QFont::ExtraBold);
             bold.setLetterSpacing(QFont::PercentageSpacing, 108);
             const QFontMetrics fm(bold);
             const QString head = cut < 0 ? title_ : title_.left(cut);
-            drawOverlayText(p, QPointF(10, 8), head, true);
-            if (cut >= 0) drawOverlayText(p, QPointF(10 + fm.horizontalAdvance(head) + 12, 8), title_.mid(cut + 2), false, 0.7);
+            drawOverlayText(p, QPointF(viewer::kOverlayInset, viewer::kOverlayTop), head, true);
+            if (cut >= 0)
+                drawOverlayText(p, QPointF(viewer::kOverlayInset + fm.horizontalAdvance(head) + viewer::kOverlayGap,
+                                           viewer::kOverlayTop),
+                                title_.mid(cut + 2), false, 0.7);
         }
         if (umPerVoxel_ > 0.0 && hasContent()) {
             // largest of the design's steps that stays under 140 px
             static const double steps[] = {50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05};
             double um = steps[sizeof steps / sizeof steps[0] - 1];
             for (double s : steps) {
-                if (s / umPerVoxel_ * view_.zx <= 140.0) {
+                if (s / umPerVoxel_ * view_.zx <= viewer::kScaleBarMaxPx) {
                     um = s;
                     break;
                 }
             }
             const double px = um / umPerVoxel_ * view_.zx;
             QString label = um >= 1.0 ? QString::number(um) + QStringLiteral(" µm") : QString::number(um * 1000.0) + QStringLiteral(" nm");
-            QFont f(theme::kFontFamily);
-            f.setPixelSize(11);
-            const QFontMetrics fm(f);
+            const QFontMetrics fm(theme::tabular(theme::font(11)));
             const int lw = fm.horizontalAdvance(label);
-            const double x1 = width() - 10.0 - lw - 6.0;
-            p.fillRect(QRectF(x1 - px, height() - 8.0 - 8.0, px, 2.0), theme::kViewerText);
-            drawOverlayText(p, QPointF(width() - 10.0 - lw, height() - 8.0 - fm.height()), label);
+            const double x1 = width() - viewer::kOverlayInset - lw - 6.0;
+            const qreal dpr = devicePixelRatioF();
+            const double barY = std::round((height() - viewer::kOverlayBottom - 8.0) * dpr) / dpr;
+            p.fillRect(QRectF(std::round((x1 - px) * dpr) / dpr, barY, std::round(px * dpr) / dpr,
+                              widgets::crispPen(2.0, dpr)),
+                       theme::kViewerText);
+            drawOverlayText(p, QPointF(width() - viewer::kOverlayInset - lw, height() - viewer::kOverlayBottom - fm.height()),
+                            label);
         }
         if (!hint_.isEmpty()) {
-            QFont f(theme::kFontFamily);
-            f.setPixelSize(11);
-            const QFontMetrics fm(f);
-            drawOverlayText(p, QPointF(10, height() - 8.0 - fm.height()), hint_, false, 0.75);
+            const QFontMetrics fm(theme::font(11));
+            drawOverlayText(p, QPointF(viewer::kOverlayInset, height() - viewer::kOverlayBottom - fm.height()), hint_, false, 0.75);
         }
         if (!message_.isEmpty()) {
             p.setFont(theme::font(12));
             p.setPen(QColor(243, 242, 242, 180));
             p.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, message_);
+        }
+        // the design's 2 px accent focus ring, keyboard focus only
+        if (property("focusVisible").toBool()) {
+            const qreal dpr = devicePixelRatioF();
+            const qreal pen = widgets::crispPen(2.0, dpr);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(QPen(theme::kAccent, pen));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(widgets::crispRect(QRectF(rect()), 2.0, dpr));
         }
         if (trace) qInfo("pane %s paint %lld us (%dx%d, image %dx%d)", objectName().isEmpty() ? "?" : qPrintable(objectName()), clock.nsecsElapsed() / 1000, width(), height(), image_.width(), image_.height());
     }
@@ -253,7 +292,7 @@ namespace sirius::app {
     void SlicePane::wheelEvent(QWheelEvent* e) {
         const double steps = e->angleDelta().y() / 120.0;
         if (steps == 0.0) return;
-        emit wheeled(e->position(), steps);
+        emit wheeled(e->position(), steps, e->modifiers());
         e->accept();
     }
 
@@ -264,5 +303,31 @@ namespace sirius::app {
     }
 
     void SlicePane::resizeEvent(QResizeEvent*) { emit resized(); }
+
+    void SlicePane::keyPressEvent(QKeyEvent* e) {
+        const int step = e->modifiers().testFlag(Qt::ShiftModifier) ? 10 : 1;
+        int dc = 0, dr = 0, dd = 0;
+        switch (e->key()) {
+            case Qt::Key_Left: dc = -step; break;
+            case Qt::Key_Right: dc = step; break;
+            case Qt::Key_Up: dr = -step; break;
+            case Qt::Key_Down: dr = step; break;
+            case Qt::Key_PageUp: dd = -step; break;
+            case Qt::Key_PageDown: dd = step; break;
+            default: QWidget::keyPressEvent(e); return;
+        }
+        emit keyNavigated(dc, dr, dd);
+        e->accept();
+    }
+
+    void SlicePane::focusInEvent(QFocusEvent* e) {
+        QWidget::focusInEvent(e);
+        update();
+    }
+
+    void SlicePane::focusOutEvent(QFocusEvent* e) {
+        QWidget::focusOutEvent(e);
+        update();
+    }
 
 } // namespace sirius::app

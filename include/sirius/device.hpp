@@ -3,8 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <string>
+
+#include "sirius/errors.hpp"
 
 // Execution/memory placement primitives shared by every SIRIUS algorithm.
 //
@@ -41,9 +42,9 @@ namespace sirius {
 
     // Thrown for any failing CUDA runtime / library call. The message carries
     // the CUDA error string and the call that failed.
-    class CudaError : public std::runtime_error {
+    class CudaError : public SiriusError {
     public:
-        using std::runtime_error::runtime_error;
+        using SiriusError::SiriusError;
     };
 
     // --- capability queries ---------------------------------------------

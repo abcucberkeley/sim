@@ -4,6 +4,8 @@
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <set>
+#include <tuple>
 
 #include <QComboBox>
 #include <QGridLayout>
@@ -13,30 +15,90 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QCoreApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QElapsedTimer>
 #include <QPainter>
+#include <QSettings>
 #include <QShortcut>
+#include <QShowEvent>
+#include <QSplitter>
+#include <QSplitterHandle>
 #include <QStackedWidget>
+#include <QTextDocument>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <sirius/constants.hpp>
+
 #include "core/array_source.hpp"
 #include "core/ops/builtin.hpp"
+#include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
+#include "qt/trace.hpp"
 #include "qt/widgets/controls.hpp"
 #include "qt/viewer/dims_strip.hpp"
 #include "qt/viewer/display_model.hpp"
 #include "qt/viewer/slice_pane.hpp"
+#include "qt/viewer/viewer_constants.hpp"
+#include "qt/viewer/viewer_loader.hpp"
 #include "qt/viewer/viewer_widgets.hpp"
 #include "qt/viewer/volume_view.hpp"
 
 namespace sirius::app {
 
+    using widgets::GlyphButton;
+    using widgets::Icon;
+    using widgets::SegmentedControl;
+
     namespace {
-        constexpr double kMinZoom = 0.5, kMaxZoom = 16.0;
-        constexpr int kPlayIntervalMs = 125;   // ~8 fps
+        using viewer::kButtonZoomFactor;
+        using viewer::kMaxZoom;
+        using viewer::kMinZoom;
+        using viewer::kPlayIntervalMs;
+        using viewer::kWheelZoomBase;
+
+        // The ortho splitters' saved balance, beside the window layout.
+        const QString kOrthoRowsKey = QStringLiteral("viewer/orthoRows");
+        const QString kOrthoColsKey = QStringLiteral("viewer/orthoCols");
+
+        // "(V)", "(Shift+A)": the shortcut a tooltip advertises, in the
+        // platform's own notation -- never hard-coded Mac glyphs.
+        QString shortcutSuffix(const QKeySequence& keys) {
+            const QString text = keys.toString(QKeySequence::NativeText);
+            return text.isEmpty() ? QString() : QStringLiteral(" (") + text + QLatin1Char(')');
+        }
+
+        // A splitter whose 2 px handles keep the viewer ground of the design
+        // ("2 px gaps on neutral-900") instead of the divider grey the
+        // application stylesheet gives every other splitter.
+        class GroundSplitter : public QSplitter {
+        public:
+            GroundSplitter(Qt::Orientation o, QWidget* parent) : QSplitter(o, parent) {
+                setHandleWidth(viewer::kPaneGap);
+                setChildrenCollapsible(false);
+                setOpaqueResize(true);
+            }
+
+        protected:
+            QSplitterHandle* createHandle() override {
+                class Handle : public QSplitterHandle {
+                public:
+                    using QSplitterHandle::QSplitterHandle;
+
+                protected:
+                    void paintEvent(QPaintEvent*) override {
+                        QPainter p(this);
+                        p.fillRect(rect(), theme::kNeutral900);
+                    }
+                };
+                auto* h = new Handle(orientation(), this);
+                h->setAccessibleName(orientation() == Qt::Horizontal ? QStringLiteral("Pane width")
+                                                                     : QStringLiteral("Pane height"));
+                return h;
+            }
+        };
 
         // The zoom readout of the tool strip: 10 px text running upwards.
         class VerticalLabel : public QWidget {
@@ -51,9 +113,7 @@ namespace sirius::app {
         protected:
             void paintEvent(QPaintEvent*) override {
                 QPainter p(this);
-                QFont f(theme::kFontFamily);
-                f.setPixelSize(10);
-                p.setFont(f);
+                p.setFont(theme::tabular(theme::font(10)));
                 p.setPen(theme::kNeutral600);
                 p.translate(width(), height());
                 p.rotate(-90);
@@ -72,7 +132,7 @@ namespace sirius::app {
         }
 
         QString num2(int index) {
-            return QString::fromStdString(Step::number(index));
+            return fromStd(Step::number(index));
         }
 
         Index clampIndex(double v, Index n) {
@@ -113,6 +173,15 @@ namespace sirius::app {
         // views
         QStackedWidget* stack = nullptr;
         QWidget* orthoPage = nullptr;
+        // The ortho grid is two horizontal splitters (XY | YZ and XZ | MIP)
+        // inside a vertical one, their columns kept in step, so the design's
+        // 220 / 170 targets are a starting balance and not a cage.
+        QSplitter* orthoRows = nullptr;
+        QSplitter* orthoTop = nullptr;
+        QSplitter* orthoBottom = nullptr;
+        bool syncingSplit = false;
+        bool orthoSized = false;
+        QTimer saveSplitTimer;
         SlicePane* xy = nullptr;
         SlicePane* yz = nullptr;
         SlicePane* xz = nullptr;
@@ -126,6 +195,14 @@ namespace sirius::app {
 
         // rendering state
         DisplayModel model, rawModel;
+        // Volumes, projections, exact ranges and the 3D bricks are produced
+        // here, never on the GUI thread.
+        ViewerLoader loader;
+        quint64 volumeKey = 0;          // the reduction the 3D view is waiting for
+        QString sliceNotice;            // "Loading…" for the panes that need a volume
+        // (output, c, t) reads that threw: not asked for again until the
+        // displayed output changes.
+        std::set<std::tuple<const StepOutput*, Index, Index>> failedVolumes;
         int displayIndex = -1;
         QImage xyImg, xzImg, yzImg, mipImg, cmpLeftImg, cmpRightImg;
         int xyFactor = 1, mipFactor = 1, cmpFactor = 1;
@@ -225,7 +302,10 @@ namespace sirius::app {
         }
 
         void build();
+        void buildOrthoPage(QWidget* parent);
         void connectSignals();
+        void restoreOrthoSizes();
+        void saveOrthoSizes();
         void rebuildOutput();          // display output changed
         void applyLivePreview();       // window / gamma of a previewed step
         bool previewing = false;
@@ -239,6 +319,17 @@ namespace sirius::app {
         void applyDirty();
         void layoutPanes();
         void renderVolume();
+        // Asks the loader for whatever (c, t) volumes the visible channels
+        // still need; the aggregate state of those channels.
+        DisplayModel::VolumeState ensureVolumes(DisplayModel& m, Index t);
+        void onVolumeReady(const ViewerLoader::Volume& v);
+        void onReductionReady(const ViewerLoader::Reduction& r);
+        bool canPaint() const { return wb.canEdit(); }
+        // Compare's own plane when View ▸ Sync Z / T is off.
+        Index compareZ() const;
+        Index compareT() const;
+        Index cmpZ = 0, cmpT = 0;      // the raw pane's plane while unsynced
+        bool cmpPinned = false;        // set when the sync is switched off
         void setZoomPan(double zoom, double panX, double panY);
         void zoomAround(double factor, const QPointF& xyScreen);
         void fit();
@@ -255,6 +346,90 @@ namespace sirius::app {
 
     // --- building ----------------------------------------------------------------
 
+    // "Grid 1fr 220px / 1fr 170px, 2 px gaps on neutral-900" -- as splitters,
+    // so the user can rebalance XY against YZ / XZ and the design values are
+    // where the balance starts. The two column splitters are kept in step so
+    // XY stays above XZ and YZ above MIP.
+    void ViewerWidget::Impl::buildOrthoPage(QWidget* parent) {
+        orthoPage = new QWidget(parent);
+        auto* ol = new QVBoxLayout(orthoPage);
+        ol->setContentsMargins(0, 0, 0, 0);
+        ol->setSpacing(0);
+        orthoRows = new GroundSplitter(Qt::Vertical, orthoPage);
+        orthoTop = new GroundSplitter(Qt::Horizontal, orthoRows);
+        orthoBottom = new GroundSplitter(Qt::Horizontal, orthoRows);
+        xy = new SlicePane(SlicePane::Kind::XY, orthoTop);
+        yz = new SlicePane(SlicePane::Kind::YZ, orthoTop);
+        xz = new SlicePane(SlicePane::Kind::XZ, orthoBottom);
+        mip = new SlicePane(SlicePane::Kind::MIP, orthoBottom);
+        xy->setObjectName(QStringLiteral("xyPane"));
+        yz->setObjectName(QStringLiteral("yzPane"));
+        xz->setObjectName(QStringLiteral("xzPane"));
+        mip->setObjectName(QStringLiteral("mipPane"));
+        xy->setMinimumSize(viewer::kMainPaneMin, viewer::kMainPaneMin);
+        yz->setMinimumWidth(viewer::kSidePaneMin);
+        xz->setMinimumHeight(viewer::kSidePaneMin);
+        mip->setMinimumSize(viewer::kSidePaneMin, viewer::kSidePaneMin);
+        orthoTop->addWidget(xy);
+        orthoTop->addWidget(yz);
+        orthoBottom->addWidget(xz);
+        orthoBottom->addWidget(mip);
+        orthoRows->addWidget(orthoTop);
+        orthoRows->addWidget(orthoBottom);
+        for (QSplitter* sp : {orthoTop, orthoBottom, orthoRows}) {
+            sp->setStretchFactor(0, 1);
+            sp->setStretchFactor(1, 0);
+        }
+        ol->addWidget(orthoRows);
+
+        // one column balance for both rows
+        auto mirror = [this](QSplitter* from, QSplitter* to) {
+            if (syncingSplit) return;
+            syncingSplit = true;
+            to->setSizes(from->sizes());
+            syncingSplit = false;
+            saveSplitTimer.start();
+        };
+        QObject::connect(orthoTop, &QSplitter::splitterMoved, q, [this, mirror](int, int) { mirror(orthoTop, orthoBottom); });
+        QObject::connect(orthoBottom, &QSplitter::splitterMoved, q, [this, mirror](int, int) { mirror(orthoBottom, orthoTop); });
+        QObject::connect(orthoRows, &QSplitter::splitterMoved, q, [this](int, int) { saveSplitTimer.start(); });
+        saveSplitTimer.setSingleShot(true);
+        saveSplitTimer.setInterval(400);
+        QObject::connect(&saveSplitTimer, &QTimer::timeout, q, [this] { saveOrthoSizes(); });
+    }
+
+    void ViewerWidget::Impl::restoreOrthoSizes() {
+        if (orthoSized || !orthoRows) return;
+        orthoSized = true;
+        QSettings settings;
+        const QByteArray rows = settings.value(kOrthoRowsKey).toByteArray();
+        const QByteArray cols = settings.value(kOrthoColsKey).toByteArray();
+        syncingSplit = true;
+        const bool haveRows = !rows.isEmpty() && orthoRows->restoreState(rows);
+        const bool haveCols = !cols.isEmpty() && orthoTop->restoreState(cols);
+        if (haveCols) orthoBottom->setSizes(orthoTop->sizes());
+        syncingSplit = false;
+        if (haveRows && haveCols) return;
+        // the design's targets for the 1600 x 960 window, as the balance to start from
+        const int h = orthoRows->height(), w = orthoTop->width();
+        syncingSplit = true;
+        if (!haveRows && h > viewer::kXzHeight + viewer::kMainPaneMin)
+            orthoRows->setSizes({h - viewer::kXzHeight - viewer::kPaneGap, viewer::kXzHeight});
+        if (!haveCols && w > viewer::kYzWidth + viewer::kMainPaneMin) {
+            const QList<int> sizes{w - viewer::kYzWidth - viewer::kPaneGap, viewer::kYzWidth};
+            orthoTop->setSizes(sizes);
+            orthoBottom->setSizes(sizes);
+        }
+        syncingSplit = false;
+    }
+
+    void ViewerWidget::Impl::saveOrthoSizes() {
+        if (!orthoRows || !orthoSized) return;
+        QSettings settings;
+        settings.setValue(kOrthoRowsKey, orthoRows->saveState());
+        settings.setValue(kOrthoColsKey, orthoTop->saveState());
+    }
+
     void ViewerWidget::Impl::build() {
         auto* root = new QVBoxLayout(q);
         root->setContentsMargins(0, 0, 0, 0);
@@ -269,12 +444,17 @@ namespace sirius::app {
         bl->setSpacing(14);
         modeSeg = new SegmentedControl({QStringLiteral("Ortho"), QStringLiteral("3D"), QStringLiteral("Compare")}, bar);
         bl->addWidget(modeSeg);
+        modeSeg->setAccessibleName(QStringLiteral("View mode"));
         viewing = richLabel(bar);
-        bl->addWidget(viewing);
-        bl->addStretch(1);
+        // the one widget that yields when the toolbar is tight, so
+        // "Ortho | 3D | Compare" is never clipped to "Orth"
+        viewing->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        viewing->setMinimumWidth(0);
+        bl->addWidget(viewing, 1);
         labelsCheck = new TokenCheck(QStringLiteral("Labels"), bar);
         soloCheck = new TokenCheck(QStringLiteral("Solo"), bar);
-        soloCheck->setToolTip(QStringLiteral("Show only the selected label, in the slices and in 3D; selecting a label jumps to it (O)"));
+        soloCheck->setToolTip(QStringLiteral("Show only the selected label, in the slices and in 3D; selecting a label jumps to it") +
+                              shortcutSuffix(QKeySequence(Qt::Key_O)));
         crossCheck = new TokenCheck(QStringLiteral("Crosshair"), bar);
         boxCheck = new TokenCheck(QStringLiteral("Bounding box"), bar);
         bl->addWidget(labelsCheck);
@@ -293,7 +473,7 @@ namespace sirius::app {
         tl->setSpacing(4);
         tl->addWidget(new widgets::CaptionLabel(QStringLiteral("Tile"), tileHost));
         tileCombo = new QComboBox(tileHost);
-        tileCombo->setFocusPolicy(Qt::NoFocus);
+        tileCombo->setAccessibleName(QStringLiteral("Tile"));
         tileCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         tileCombo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads (Load ▸ tile); the viewed step is re-run on it"));
         tl->addWidget(tileCombo);
@@ -316,19 +496,17 @@ namespace sirius::app {
         for (QPushButton* b : {autoBtn, resetBtn}) {
             widgets::setButtonClass(b, "ghost small");
             b->setCursor(Qt::PointingHandCursor);
-            b->setFocusPolicy(Qt::NoFocus);
         }
-        autoBtn->setToolTip(QStringLiteral("Auto contrast (display): window on the 0.1–99.9 percentiles (⇧A)"));
-        resetBtn->setToolTip(QStringLiteral("Reset the display window to the full data range (⇧R)"));
+        autoBtn->setToolTip(QStringLiteral("Auto contrast (display): window on the 0.1–99.9 percentiles") +
+                            shortcutSuffix(QKeySequence(Qt::SHIFT | Qt::Key_A)));
+        resetBtn->setToolTip(QStringLiteral("Reset the display window to the full data range") +
+                             shortcutSuffix(QKeySequence(Qt::SHIFT | Qt::Key_R)));
         QObject::connect(autoBtn, &QPushButton::clicked, q, [this] { q->autoContrast(); });
         QObject::connect(resetBtn, &QPushButton::clicked, q, [this] { q->resetContrast(); });
         bl->addWidget(autoBtn);
         bl->addWidget(resetBtn);
         root->addWidget(bar);
-        auto* rule1 = new QFrame(q);
-        rule1->setFixedHeight(theme::kRule);
-        rule1->setStyleSheet(QStringLiteral("background:%1;").arg(theme::kDivider.name()));
-        root->addWidget(rule1);
+        root->addWidget(new widgets::Rule(theme::kRule, Qt::Horizontal, q));
 
         // canvas area: tool strip + views on the neutral-900 ground
         auto* canvas = new QWidget(q);
@@ -354,34 +532,36 @@ namespace sirius::app {
         sl->setContentsMargins(0, 4, 0, 4);
         sl->setSpacing(2);
         sl->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-        static const struct { const char* glyph; const char* tip; } toolDefs[] = {
-            {"✥", "Navigate — drag to pan, wheel to zoom, double-click to fit (V)"},
-            {"+", "Probe — click to place the crosshair and read values (P)"},
-            {"↔", "Measure distance / angle (M)"},
-            {"▢", "ROI — drag a box (R)"},
-            {"●", "Paint labels — needs a segmentation step (B)"}};
+        static const struct { Icon icon; const char* name; const char* tip; int key; } toolDefs[] = {
+            {Icon::Navigate, "Navigate", "Navigate — drag to pan, wheel to zoom, double-click to fit", Qt::Key_V},
+            {Icon::Probe, "Probe", "Probe — click to place the crosshair and read values", Qt::Key_P},
+            {Icon::Measure, "Measure", "Measure distance / angle", Qt::Key_M},
+            {Icon::Roi, "ROI", "ROI — drag a box", Qt::Key_R},
+            {Icon::Brush, "Paint labels", "Paint labels — needs a segmentation step", Qt::Key_B}};
         for (std::size_t i = 0; i < tools.size(); ++i) {
-            auto* b = new GlyphButton(QString::fromUtf8(toolDefs[i].glyph), strip);
-            b->setToolTip(QString::fromUtf8(toolDefs[i].tip));
+            auto* b = new GlyphButton(toolDefs[i].icon, 28, strip);
+            const QKeySequence keys(toolDefs[i].key);
+            b->setToolTip(QString::fromUtf8(toolDefs[i].tip) + shortcutSuffix(keys));
+            b->setAccessibleName(QString::fromUtf8(toolDefs[i].name));
+            b->setAccessibleDescription(b->toolTip());
             b->setCheckable(true);
             tools[i] = b;
             sl->addWidget(b, 0, Qt::AlignHCenter);
         }
-        auto* stripRule = new QFrame(strip);
+        auto* stripRule = new widgets::Rule(theme::kRule, Qt::Horizontal, strip);
         stripRule->setFixedSize(20, theme::kRule);
-        stripRule->setStyleSheet(QStringLiteral("background:%1;").arg(theme::kDivider.name()));
         sl->addSpacing(6);
         sl->addWidget(stripRule, 0, Qt::AlignHCenter);
         sl->addSpacing(6);
-        auto* zin = new GlyphButton(QStringLiteral("+"), strip);
-        zin->setGlyphPx(14);
-        zin->setToolTip(QStringLiteral("Zoom in (+)"));
-        auto* zout = new GlyphButton(QStringLiteral("−"), strip);
-        zout->setGlyphPx(14);
-        zout->setToolTip(QStringLiteral("Zoom out (−)"));
-        auto* zfit = new GlyphButton(QStringLiteral("⤢"), strip);
-        zfit->setGlyphPx(11);
-        zfit->setToolTip(QStringLiteral("Fit to view (0)"));
+        auto* zin = new GlyphButton(Icon::Plus, 28, strip);
+        zin->setToolTip(QStringLiteral("Zoom in") + shortcutSuffix(QKeySequence(Qt::Key_Plus)));
+        zin->setAccessibleName(QStringLiteral("Zoom in"));
+        auto* zout = new GlyphButton(Icon::Minus, 28, strip);
+        zout->setToolTip(QStringLiteral("Zoom out") + shortcutSuffix(QKeySequence(Qt::Key_Minus)));
+        zout->setAccessibleName(QStringLiteral("Zoom out"));
+        auto* zfit = new GlyphButton(Icon::Fit, 28, strip);
+        zfit->setToolTip(QStringLiteral("Fit to view") + shortcutSuffix(QKeySequence(Qt::Key_0)));
+        zfit->setAccessibleName(QStringLiteral("Fit to view"));
         for (GlyphButton* b : {zin, zout, zfit}) sl->addWidget(b, 0, Qt::AlignHCenter);
         sl->addStretch(1);
         zoomReadout = new VerticalLabel(strip);
@@ -389,29 +569,7 @@ namespace sirius::app {
         cl->addWidget(strip);
 
         stack = new QStackedWidget(canvas);
-        // ortho grid: 1fr 220 / 1fr 170, 2 px gaps on neutral-900
-        orthoPage = new QWidget(stack);
-        auto* grid = new QGridLayout(orthoPage);
-        grid->setContentsMargins(0, 0, 0, 0);
-        grid->setSpacing(2);
-        xy = new SlicePane(SlicePane::Kind::XY, orthoPage);
-        xy->setObjectName(QStringLiteral("xy"));
-        yz = new SlicePane(SlicePane::Kind::YZ, orthoPage);
-        xz = new SlicePane(SlicePane::Kind::XZ, orthoPage);
-        mip = new SlicePane(SlicePane::Kind::MIP, orthoPage);
-        xy->setObjectName(QStringLiteral("xyPane"));
-        yz->setObjectName(QStringLiteral("yzPane"));
-        xz->setObjectName(QStringLiteral("xzPane"));
-        mip->setObjectName(QStringLiteral("mipPane"));
-        yz->setFixedWidth(220);
-        mip->setFixedSize(220, 170);
-        xz->setFixedHeight(170);
-        grid->addWidget(xy, 0, 0);
-        grid->addWidget(yz, 0, 1);
-        grid->addWidget(xz, 1, 0);
-        grid->addWidget(mip, 1, 1);
-        grid->setColumnStretch(0, 1);
-        grid->setRowStretch(0, 1);
+        buildOrthoPage(stack);
         stack->addWidget(orthoPage);
 
         // QOpenGLWidget is unsupported (and crashes at flush) on the
@@ -424,7 +582,7 @@ namespace sirius::app {
         } else {
             auto* notice = new QLabel(QStringLiteral("3D rendering needs OpenGL, which the %1 platform does not provide").arg(platform), stack);
             notice->setAlignment(Qt::AlignCenter);
-            notice->setStyleSheet(QStringLiteral("background:%1;color:%2;").arg(theme::hex(theme::kViewerGround), theme::hex(theme::kViewerText)));
+            widgets::setWidgetClass(notice, "onDark");
             volumePage = notice;
         }
         stack->addWidget(volumePage);
@@ -443,10 +601,7 @@ namespace sirius::app {
         cl->addWidget(stack, 1);
         root->addWidget(canvas, 1);
 
-        auto* rule2 = new QFrame(q);
-        rule2->setFixedHeight(theme::kRule);
-        rule2->setStyleSheet(QStringLiteral("background:%1;").arg(theme::kDivider.name()));
-        root->addWidget(rule2);
+        root->addWidget(new widgets::Rule(theme::kRule, Qt::Horizontal, q));
         dims = new DimsStrip(q);
         root->addWidget(dims);
 
@@ -495,12 +650,12 @@ namespace sirius::app {
         });
         key(QKeySequence(Qt::Key_BracketLeft), [this] {
             ViewState s = vs();
-            s.brushPx = std::max(2, s.brushPx - 2);
+            s.brushPx = std::max(viewer::kBrushMinPx, s.brushPx - viewer::kBrushStepPx);
             wb.setViewState(s);
         });
         key(QKeySequence(Qt::Key_BracketRight), [this] {
             ViewState s = vs();
-            s.brushPx = std::min(60, s.brushPx + 2);
+            s.brushPx = std::min(viewer::kBrushMaxPx, s.brushPx + viewer::kBrushStepPx);
             wb.setViewState(s);
         });
 
@@ -515,6 +670,14 @@ namespace sirius::app {
         QObject::connect(dims, &DimsStrip::zRequested, q, [this](Index z) { wb.setZ(z); });
         QObject::connect(dims, &DimsStrip::tRequested, q, [this](Index t) { wb.setT(t); });
         QObject::connect(dims, &DimsStrip::playToggled, q, [this](bool on) { q->setPlaying(on); });
+
+        // Tab order: the toolbar left to right, then the tool strip top to
+        // bottom, then the panes, then the dims strip. The channel swatches
+        // are rebuilt with the output, so refreshSwatches() re-links them.
+        QWidget* chain[] = {modeSeg, labelsCheck, soloCheck, crossCheck, boxCheck, autoBtn, resetBtn,
+                            tools[0],  tools[1],  tools[2],  tools[3],   tools[4], zin,     zout,
+                            zfit,      xy,        yz,        xz,         mip,      dims};
+        for (std::size_t i = 0; i + 1 < sizeof chain / sizeof chain[0]; ++i) QWidget::setTabOrder(chain[i], chain[i + 1]);
     }
 
     void ViewerWidget::Impl::connectSignals() {
@@ -526,7 +689,9 @@ namespace sirius::app {
         QObject::connect(xy, &SlicePane::doubleClicked, q, [this](QPointF, Qt::KeyboardModifiers) {
             if (vs().tool == ViewerTool::Navigate || vs().tool == ViewerTool::Probe) fit();
         });
-        QObject::connect(xy, &SlicePane::wheeled, q, [this](QPointF s, double steps) { zoomAround(std::pow(1.15, steps), s); });
+        QObject::connect(xy, &SlicePane::wheeled, q, [this](QPointF s, double steps, Qt::KeyboardModifiers) {
+            zoomAround(std::pow(kWheelZoomBase, steps), s);
+        });
         QObject::connect(xy, &SlicePane::hovered, q, [this](QPointF v) { hover(SlicePane::Kind::XY, v); });
         QObject::connect(xy, &SlicePane::resized, q, [this] { layoutPanes(); dirty.xy = true; scheduleUpdate(); });
 
@@ -541,8 +706,8 @@ namespace sirius::app {
             else if (b == Qt::LeftButton && probe() && model.valid())
                 wb.setCrosshair(curX(), clampIndex(v.y(), ny()), clampIndex(v.x(), nz()));
         });
-        QObject::connect(yz, &SlicePane::wheeled, q, [this](QPointF s, double steps) {
-            zoomAround(std::pow(1.15, steps), QPointF(xy->width() / 2.0, s.y()));
+        QObject::connect(yz, &SlicePane::wheeled, q, [this](QPointF s, double steps, Qt::KeyboardModifiers) {
+            zoomAround(std::pow(kWheelZoomBase, steps), QPointF(xy->width() / 2.0, s.y()));
         });
         QObject::connect(yz, &SlicePane::hovered, q, [this](QPointF v) { hover(SlicePane::Kind::YZ, v); });
         QObject::connect(yz, &SlicePane::resized, q, [this] { layoutPanes(); });
@@ -557,8 +722,8 @@ namespace sirius::app {
             else if (b == Qt::LeftButton && probe() && model.valid())
                 wb.setCrosshair(clampIndex(v.x(), nx()), curY(), clampIndex(v.y(), nz()));
         });
-        QObject::connect(xz, &SlicePane::wheeled, q, [this](QPointF s, double steps) {
-            zoomAround(std::pow(1.15, steps), QPointF(s.x(), xy->height() / 2.0));
+        QObject::connect(xz, &SlicePane::wheeled, q, [this](QPointF s, double steps, Qt::KeyboardModifiers) {
+            zoomAround(std::pow(kWheelZoomBase, steps), QPointF(s.x(), xy->height() / 2.0));
         });
         QObject::connect(xz, &SlicePane::hovered, q, [this](QPointF v) { hover(SlicePane::Kind::XZ, v); });
         QObject::connect(xz, &SlicePane::resized, q, [this] { layoutPanes(); });
@@ -567,11 +732,37 @@ namespace sirius::app {
             if (b == Qt::LeftButton && probe() && model.valid())
                 wb.setCrosshair(clampIndex(v.x(), nx()), clampIndex(v.y(), ny()), curZ());
         });
-        for (SlicePane* p : {xy, yz, xz, mip, cmpLeft, cmpRight})
+        for (SlicePane* p : {xy, yz, xz, mip, cmpLeft, cmpRight}) {
             QObject::connect(p, &SlicePane::exited, q, [this] {
                 cursorText = QStringLiteral("cursor —");
                 emit q->cursorChanged(cursorText);
             });
+            // Arrow keys in a focused pane move the crosshair over that
+            // pane's own axes; page up / down step the third one.
+            const SlicePane::Kind kind = p->kind();
+            QObject::connect(p, &SlicePane::keyNavigated, q, [this, kind](int dc, int dr, int dd) {
+                if (!model.valid()) return;
+                Index x = curX(), y = curY(), z = curZ();
+                switch (kind) {
+                    case SlicePane::Kind::YZ:
+                        z += dc;
+                        y += dr;
+                        x += dd;
+                        break;
+                    case SlicePane::Kind::XZ:
+                        x += dc;
+                        z += dr;
+                        y += dd;
+                        break;
+                    default:
+                        x += dc;
+                        y += dr;
+                        z += dd;
+                        break;
+                }
+                wb.setCrosshair(x, y, z);   // clamps all three
+            });
+        }
 
         // compare panes share the XY transform
         for (SlicePane* p : {cmpLeft, cmpRight}) {
@@ -585,7 +776,19 @@ namespace sirius::app {
                 if (b == Qt::LeftButton && probe() && model.valid())
                     wb.setCrosshair(clampIndex(v.x(), nx()), clampIndex(v.y(), ny()), curZ());
             });
-            QObject::connect(p, &SlicePane::wheeled, q, [this](QPointF s, double steps) { zoomAround(std::pow(1.15, steps), s); });
+            const bool raw = p == cmpLeft;
+            QObject::connect(p, &SlicePane::wheeled, q, [this, raw](QPointF s, double steps, Qt::KeyboardModifiers m) {
+                // With View ▸ Sync Z / T off, shift + wheel over the raw pane
+                // moves its own plane -- the point of switching the sync off.
+                if (raw && !vs().syncZT && m.testFlag(Qt::ShiftModifier)) {
+                    cmpZ = std::clamp<Index>(cmpZ + static_cast<Index>(steps > 0 ? 1 : -1), 0, std::max<Index>(nz() - 1, 0));
+                    dirty.cmp = true;
+                    layoutPanes();
+                    scheduleUpdate();
+                    return;
+                }
+                zoomAround(std::pow(kWheelZoomBase, steps), s);
+            });
             QObject::connect(p, &SlicePane::doubleClicked, q, [this](QPointF, Qt::KeyboardModifiers) { fit(); });
             QObject::connect(p, &SlicePane::hovered, q, [this](QPointF v) { hover(SlicePane::Kind::Compare, v); });
             QObject::connect(p, &SlicePane::resized, q, [this] { layoutPanes(); dirty.cmp = true; scheduleUpdate(); });
@@ -630,6 +833,71 @@ namespace sirius::app {
             scheduleUpdate();
         });
         QObject::connect(&bridge, &WorkbenchBridge::viewStateChanged, q, [this] { applyViewStateDiff(vs()); });
+        // While a run holds the pipeline the workbench refuses label edits
+        // (Workbench::canEdit): the paint tools go with it.
+        QObject::connect(&bridge, &WorkbenchBridge::runStarted, q, [this] {
+            painting = false;
+            refreshChrome();
+        });
+        QObject::connect(&bridge, &WorkbenchBridge::runFinished, q, [this](bool, const QString&) { refreshChrome(); });
+
+        // the loader's results
+        QObject::connect(&loader, &ViewerLoader::volumeReady, q,
+                         [this](const ViewerLoader::Volume& v) { onVolumeReady(v); });
+        QObject::connect(&loader, &ViewerLoader::reductionReady, q,
+                         [this](const ViewerLoader::Reduction& r) { onReductionReady(r); });
+    }
+
+    // --- asynchronous volumes ------------------------------------------------------
+
+    DisplayModel::VolumeState ViewerWidget::Impl::ensureVolumes(DisplayModel& m, Index t) {
+        if (!m.valid()) return DisplayModel::VolumeState::TooLarge;
+        bool wanted = false, tooLarge = false;
+        for (Index c = 0; c < m.dims().c; ++c) {
+            if (!vs().channelOn(c)) continue;
+            switch (m.volumeState(c, t)) {
+                case DisplayModel::VolumeState::Ready: break;
+                case DisplayModel::VolumeState::Wanted:
+                    if (failedVolumes.count({m.output().get(), c, t})) break;
+                    wanted = true;
+                    loader.prepare(m.output(), c, t);
+                    break;
+                case DisplayModel::VolumeState::TooLarge: tooLarge = true; break;
+            }
+        }
+        if (tooLarge) return DisplayModel::VolumeState::TooLarge;
+        return wanted ? DisplayModel::VolumeState::Wanted : DisplayModel::VolumeState::Ready;
+    }
+
+    void ViewerWidget::Impl::onVolumeReady(const ViewerLoader::Volume& v) {
+        DisplayModel* target = nullptr;
+        if (v.out == model.output()) target = &model;
+        else if (v.out == rawModel.output()) target = &rawModel;
+        if (!target) return;                                  // the viewer moved on: drop it
+        if (target == &model && v.t != curT()) return;        // a time point ago: drop it too
+        if (!v.ok) {
+            failedVolumes.insert({v.out.get(), v.c, v.t});
+            sliceNotice = QStringLiteral("could not read the volume");
+            refreshHints();
+            wb.logLine("Viewer: " + toStd(v.error));
+            return;
+        }
+        if (ScopedTrace::enabled())
+            qInfo("view volume c%lld t%lld ready in %lld us (%s)", static_cast<long long>(v.c), static_cast<long long>(v.t),
+                  v.micros, v.volume ? "read" : "in memory");
+        target->installVolume(v.c, v.t, v.volume, v.mip, v.lo, v.hi);
+        // A new exact range can move the display window, so nothing is
+        // spared; applyDirty clears the loading notice once every visible
+        // channel has arrived.
+        dirty = Dirty{};
+        scheduleUpdate();
+    }
+
+    void ViewerWidget::Impl::onReductionReady(const ViewerLoader::Reduction& r) {
+        if (!volume || r.key != volumeKey) return;
+        if (ScopedTrace::enabled())
+            qInfo("view 3d reduction of %d channels in %lld us", static_cast<int>(r.channels.size()), r.micros);
+        volume->setTextures(r.key, r.channels, model.meta().voxelUm, nz(), ny(), nx());
     }
 
     // --- output --------------------------------------------------------------------
@@ -658,6 +926,11 @@ namespace sirius::app {
                 dirty.cmp = true;
             }
             if (changed) {
+                // results for the old output are no longer wanted
+                loader.cancelAll();
+                volumeKey = 0;
+                sliceNotice.clear();
+                failedVolumes.clear();
                 dirty = Dirty{};
                 measure.clear();
                 roi = QRectF();
@@ -707,7 +980,7 @@ namespace sirius::app {
                 for (Index c = 0; c < m.dims.c; ++c) {
                     if (static_cast<std::size_t>(c) < m.channels.size()) {
                         const ChannelInfo& ch = m.channels[static_cast<std::size_t>(c)];
-                        items.emplace_back(QString::fromStdString(ch.shortName()), QColor(QString::fromStdString(ch.hexColor())));
+                        items.emplace_back(fromStd(ch.shortName()), QColor(fromStd(ch.hexColor())));
                     } else {
                         items.emplace_back(QString::number(c), QColor(255, 255, 255));
                     }
@@ -728,6 +1001,12 @@ namespace sirius::app {
             }
         }
         for (std::size_t c = 0; c < swatches.size(); ++c) swatches[c]->setChecked(vs().channelOn(static_cast<Index>(c)));
+        // keep the rebuilt swatches in the tab order, after the check boxes
+        QWidget* previous = boxCheck;
+        for (ChannelSwatch* sw : swatches) {
+            QWidget::setTabOrder(previous, sw);
+            previous = sw;
+        }
         refreshTiles();
     }
 
@@ -741,13 +1020,13 @@ namespace sirius::app {
             return;
         }
         QString sig;
-        for (const TileInfo& t : m.tiles) sig += QString::fromStdString(t.name) + QLatin1Char(';');
+        for (const TileInfo& t : m.tiles) sig += fromStd(t.name) + QLatin1Char(';');
         QSignalBlocker block(tileCombo);
         if (sig != tileSignature) {
             tileSignature = sig;
             tileCombo->clear();
             for (std::size_t i = 0; i < m.tiles.size(); ++i)
-                tileCombo->addItem(QStringLiteral("%1 · %2").arg(i + 1).arg(QString::fromStdString(m.tiles[i].name)));
+                tileCombo->addItem(QStringLiteral("%1 · %2").arg(i + 1).arg(fromStd(m.tiles[i].name)));
         }
         tileCombo->setCurrentIndex(std::clamp(static_cast<int>(m.tileIndex), 0, tileCombo->count() - 1));
         tileHost->show();
@@ -755,7 +1034,7 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::refreshChrome() {
         const ViewState& s = vs();
-        modeSeg->setCurrent(s.mode == ViewMode::Ortho ? 0 : s.mode == ViewMode::Volume ? 1 : 2);
+        modeSeg->setCurrentIndex(s.mode == ViewMode::Ortho ? 0 : s.mode == ViewMode::Volume ? 1 : 2);
         stack->setCurrentWidget(s.mode == ViewMode::Ortho ? orthoPage : s.mode == ViewMode::Volume ? volumePage : comparePage);
 
         // "Viewing 05 Contrast rgb z48 y4096 x4096"
@@ -764,8 +1043,8 @@ namespace sirius::app {
         if (viewed >= 0 && viewed < wb.pipeline().size()) {
             const Step& st = wb.pipeline().at(viewed);
             html += QStringLiteral(" <span style='color:%1;font-weight:800'>%2 %3</span>")
-                        .arg(theme::kAccent.name(), num2(viewed), QString::fromStdString(st.name).toHtmlEscaped());
-            QString shape = QString::fromStdString(wb.outputMetaOf(viewed).shapeString());
+                        .arg(theme::kAccent.name(), num2(viewed), fromStd(st.name).toHtmlEscaped());
+            QString shape = fromStd(wb.outputMetaOf(viewed).shapeString());
             html += QStringLiteral(" <span style='color:%1'>%2</span>").arg(theme::kNeutral500.name(), shape);
             if (previewing)
                 html += QStringLiteral(" <span style='color:%1'>· live preview on %2</span>")
@@ -779,6 +1058,12 @@ namespace sirius::app {
         if (html != viewingHtml) {   // a pan drag must not relayout the toolbar
             viewingHtml = html;
             viewing->setText(html);
+            // the label is the toolbar's give: what it loses to a narrow
+            // window is still readable here
+            QTextDocument plain;
+            plain.setHtml(html);
+            viewing->setToolTip(plain.toPlainText());
+            viewing->setAccessibleName(plain.toPlainText());
         }
 
         labelsCheck->setChecked(s.labels);
@@ -795,10 +1080,18 @@ namespace sirius::app {
 
         static const ViewerTool toolIds[] = {ViewerTool::Navigate, ViewerTool::Probe, ViewerTool::Measure,
                                              ViewerTool::Roi, ViewerTool::Paint};
-        const bool paintOk = paintAvailable();
+        // A run owns the pipeline: the workbench refuses label edits while it
+        // lasts (Workbench::canEdit), so the brush is dimmed rather than
+        // silently swallowing strokes. Navigate / Probe / Measure / ROI stay.
+        const bool paintOk = paintAvailable() && canPaint();
         for (std::size_t i = 0; i < tools.size(); ++i) {
             tools[i]->setChecked(s.tool == toolIds[i]);
-            if (toolIds[i] == ViewerTool::Paint) tools[i]->setEnabled(paintOk);
+            if (toolIds[i] != ViewerTool::Paint) continue;
+            tools[i]->setEnabled(paintOk);
+            tools[i]->setToolTip(canPaint()
+                                     ? QStringLiteral("Paint labels — needs a segmentation step") +
+                                           shortcutSuffix(QKeySequence(Qt::Key_B))
+                                     : QStringLiteral("Paint labels — not while a run is in progress"));
         }
         zoomText = QStringLiteral("%1 %").arg(std::lround(s.zoom * 100.0));
         zoomReadout->setText(zoomText);
@@ -818,7 +1111,7 @@ namespace sirius::app {
                                 static_cast<float>(p.getDouble("opacity_hi", 0.6)),
                                 static_cast<float>(p.getDouble("opacity", 0.9)),
                                 static_cast<float>(p.getDouble("step", 0.5)), isMip);
-            volume->setMethodText(QString::fromStdString(method));
+            volume->setMethodText(fromStd(method));
         } else {
             volume->setTransfer(0.05f, 0.6f, 0.9f, 0.5f, false);
             volume->setMethodText(QStringLiteral("Ray casting"));
@@ -839,9 +1132,16 @@ namespace sirius::app {
         switch (s.tool) {
             case ViewerTool::Navigate: hint = QStringLiteral("drag · pan   wheel · zoom   double-click · fit"); break;
             case ViewerTool::Probe: hint = QStringLiteral("click · move crosshair   drag · follow   wheel · zoom"); break;
-            case ViewerTool::Measure: hint = QStringLiteral("click twice · distance   ⇧click · angle   right-click · clear"); break;
+            case ViewerTool::Measure:
+                hint = QStringLiteral("click twice · distance   %1 click · angle   right-click · clear")
+                           .arg(QKeySequence(Qt::SHIFT).toString(QKeySequence::NativeText).remove(QLatin1Char('+')));
+                break;
             case ViewerTool::Roi: hint = QStringLiteral("drag · box   right-click · clear"); break;
             case ViewerTool::Paint: {
+                if (!canPaint()) {
+                    hint = QStringLiteral("label edits are paused while a run is in progress");
+                    break;
+                }
                 QString what;
                 switch (s.paintTool) {
                     case PaintTool::Brush: what = QStringLiteral("brush %1 px · alt · erase · [ ] · size").arg(s.brushPx); break;
@@ -862,9 +1162,8 @@ namespace sirius::app {
             xz->setMessage(QStringLiteral("volume too large for re-slicing"));
             mip->setMessage(QStringLiteral("volume too large"));
         } else {
-            yz->setMessage({});
-            xz->setMessage({});
-            mip->setMessage({});
+            // "Loading…" while the loader reads the volume these three need
+            for (SlicePane* p : {yz, xz, mip}) p->setMessage(sliceNotice);
         }
         xy->setHint(hint);
         cmpRight->setHint(hint);
@@ -893,6 +1192,10 @@ namespace sirius::app {
     // --- view state ------------------------------------------------------------------
 
     void ViewerWidget::Impl::applyViewStateDiff(const ViewState& s) {
+        if (s.syncZT) {   // the compare plane follows until the sync is switched off
+            cmpZ = curZ();
+            cmpT = curT();
+        }
         if (!havePrev) {
             prev = s;
             havePrev = true;
@@ -909,8 +1212,9 @@ namespace sirius::app {
                 if (s.mode == ViewMode::Volume) dirty.vol = true;
                 if (s.mode == ViewMode::Compare) dirty.cmp = true;
             }
-            if (s.yaw != prev.yaw || s.pitch != prev.pitch || s.clipZ != prev.clipZ || s.boundingBox != prev.boundingBox)
-                dirty.vol = dirty.vol || false;   // the volume view keeps its own orientation state
+            if (s.syncZT != prev.syncZT) dirty.cmp = true;
+            // yaw / pitch / clip / bounding box need no re-upload: the volume
+            // view keeps its own orientation state and repaints itself.
             prev = s;
         }
         refreshChrome();
@@ -931,14 +1235,7 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::layoutPanes() {
         if (!model.valid()) return;
-        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
-        QElapsedTimer clock;
-        if (trace) clock.start();
-        struct Report {
-            bool on;
-            QElapsedTimer& c;
-            ~Report() { if (on) qInfo("layoutPanes %lld us", c.nsecsElapsed() / 1000); }
-        } report{trace, clock};
+        const ScopedTrace trace("layoutPanes");
         const ViewState& s = vs();
         const double za = zAspect();
         // XY: fit x state.zoom, offset by the pan
@@ -1034,20 +1331,26 @@ namespace sirius::app {
         }
         cmpLeft->setCrosshair(rawCross, st.crosshair, locked);
         cmpRight->setCrosshair(cross, st.crosshair, locked);
-        const double dx = model.meta().dx();
+        // View ▸ Scale bar: 0 µm per voxel hides it
+        const double dx = st.scaleBar ? model.meta().dx() : 0.0;
         xy->setScaleBar(dx);
-        cmpLeft->setScaleBar(rawDx);
+        cmpLeft->setScaleBar(st.scaleBar ? rawDx : 0.0);
         cmpRight->setScaleBar(dx);
+        mip->setScaleBar(dx);
         const QString zt = QStringLiteral("z %1 / %2  t %3 / %4  %5 %")
                                .arg(cz).arg(nz() - 1).arg(curT()).arg(nt() - 1).arg(std::lround(st.zoom * 100.0));
         xy->setTitle(QStringLiteral("XY  ") + zt);
         yz->setTitle(QStringLiteral("YZ"));
         xz->setTitle(QStringLiteral("XZ"));
         mip->setTitle(QStringLiteral("MIP · Z"));
-        cmpLeft->setTitle(QStringLiteral("01 Load · raw  ") + zt);
+        const QString rawZt = st.syncZT
+                                  ? zt
+                                  : QStringLiteral("z %1 / %2  t %3 / %4  unsynced")
+                                        .arg(compareZ()).arg(nz() - 1).arg(compareT()).arg(nt() - 1);
+        cmpLeft->setTitle(QStringLiteral("01 Load · raw  ") + rawZt);
         const int viewed = wb.viewedIndex();
         const QString name = viewed >= 0 && viewed < wb.pipeline().size()
-                                 ? num2(viewed) + QLatin1Char(' ') + QString::fromStdString(wb.pipeline().at(viewed).name)
+                                 ? num2(viewed) + QLatin1Char(' ') + fromStd(wb.pipeline().at(viewed).name)
                                  : QString();
         cmpRight->setTitle(name);
         pushAnnotations();
@@ -1065,24 +1368,42 @@ namespace sirius::app {
         const ViewState& s = vs();
         const Index t = curT(), z = curZ();
         // SIRIUS_TRACE_VIEW=1 prints what each pane costs (render, label overlay, hand-over)
-        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+        const bool trace = ScopedTrace::enabled();
         QElapsedTimer clock;
-        auto lap = [&clock](const char* what, qint64& into) {
-            (void)what;
+        auto lap = [&clock](qint64& into) {
             into = clock.nsecsElapsed() / 1000;
             clock.restart();
         };
+        // The XZ / YZ re-slices and the MIP corner need a whole (c, t)
+        // volume: ask for what is missing and say so, rather than reading
+        // gigabytes on this thread.
+        const bool needsVolume = s.mode == ViewMode::Ortho;
+        if (needsVolume) {
+            const DisplayModel::VolumeState vstate = ensureVolumes(model, t);
+            const QString notice = vstate == DisplayModel::VolumeState::Wanted ? QStringLiteral("Loading…") : QString();
+            if (notice != sliceNotice) {
+                sliceNotice = notice;
+                if (ScopedTrace::enabled())
+                    qInfo("view slices %s", notice.isEmpty() ? "have their volume" : "waiting for the volume (Loading...)");
+                refreshHints();
+            }
+            if (vstate != DisplayModel::VolumeState::Ready) {
+                // keep whatever the panes already show and try again when the
+                // volume lands (onVolumeReady re-schedules)
+                dirty.xz = dirty.yz = dirty.mip = false;
+            }
+        }
         if (s.mode == ViewMode::Ortho) {
             if (dirty.xy) {
                 qint64 r = 0, o = 0, c = 0;
                 clock.start();
                 xyRegion = renderRegion(xy, xyFactor, nx(), ny());
                 model.renderXY(t, z, s, xyFactor, xyImg, xyRegion);
-                lap("render", r);
+                lap(r);
                 if (s.labels) model.overlayLabelsXY(t, z, xyFactor, s, xyImg, xyRegion);
-                lap("overlay", o);
+                lap(o);
                 xy->setContent(xyImg, xyFactor, nx(), ny(), xyRegion.topLeft());
-                lap("content", c);
+                lap(c);
                 if (trace) {
                     const QRect vis = visibleVoxels(xy, nx(), ny());
                     qInfo("view xy %dx%d f%d at %d,%d (visible %d,%d %dx%d · pane %dx%d · zx %.3f ox %.1f): render %lld us · labels %lld us · content %lld us",
@@ -1095,11 +1416,11 @@ namespace sirius::app {
                 qint64 r = 0, o = 0, c = 0;
                 clock.start();
                 model.renderXZ(t, curY(), s, xzImg);
-                lap("render", r);
+                lap(r);
                 if (s.labels) model.overlayLabelsXZ(t, curY(), s, xzImg);
-                lap("overlay", o);
+                lap(o);
                 xz->setContent(xzImg, 1, nx(), nz());
-                lap("content", c);
+                lap(c);
                 if (trace) qInfo("view xz %dx%d: render %lld us · labels %lld us · content %lld us", xzImg.width(), xzImg.height(), r, o, c);
                 dirty.xz = false;
             }
@@ -1107,11 +1428,11 @@ namespace sirius::app {
                 qint64 r = 0, o = 0, c = 0;
                 clock.start();
                 model.renderYZ(t, curX(), s, yzImg);
-                lap("render", r);
+                lap(r);
                 if (s.labels) model.overlayLabelsYZ(t, curX(), s, yzImg);
-                lap("overlay", o);
+                lap(o);
                 yz->setContent(yzImg, 1, nz(), ny());
-                lap("content", c);
+                lap(c);
                 if (trace) qInfo("view yz %dx%d: render %lld us · labels %lld us · content %lld us", yzImg.width(), yzImg.height(), r, o, c);
                 dirty.yz = false;
             }
@@ -1119,9 +1440,9 @@ namespace sirius::app {
                 qint64 r = 0, c = 0;
                 clock.start();
                 model.renderMIP(t, s, mipFactor, mipImg);
-                lap("render", r);
+                lap(r);
                 mip->setContent(mipImg, mipFactor, nx(), ny());
-                lap("content", c);
+                lap(c);
                 if (trace) qInfo("view mip %dx%d f%d: render %lld us · content %lld us", mipImg.width(), mipImg.height(), mipFactor, r, c);
                 dirty.mip = false;
             }
@@ -1129,8 +1450,8 @@ namespace sirius::app {
         } else if (s.mode == ViewMode::Compare) {
             if (dirty.cmp) {
                 if (rawModel.valid()) {
-                    const Index rt = std::clamp<Index>(t, 0, rawModel.dims().t - 1);
-                    const Index rz = std::clamp<Index>(z, 0, rawModel.dims().z - 1);
+                    const Index rt = std::clamp<Index>(compareT(), 0, rawModel.dims().t - 1);
+                    const Index rz = std::clamp<Index>(compareZ(), 0, rawModel.dims().z - 1);
                     cmpLeftRegion = renderRegion(cmpLeft, cmpFactor, rawModel.dims().x, rawModel.dims().y);
                     rawModel.renderXY(rt, rz, s, cmpFactor, cmpLeftImg, cmpLeftRegion);
                     cmpLeft->setContent(cmpLeftImg, cmpFactor, rawModel.dims().x, rawModel.dims().y, cmpLeftRegion.topLeft());
@@ -1153,15 +1474,31 @@ namespace sirius::app {
     }
 
     void ViewerWidget::Impl::renderVolume() {
+        if (!volume) return;
         const ViewState& s = vs();
         const Index t = curT();
-        std::vector<VolumeView::Channel> chans;
+        const DisplayModel::VolumeState vstate = ensureVolumes(model, t);
+        if (vstate == DisplayModel::VolumeState::TooLarge) {
+            volume->clearVolumes();
+            volume->setPreparing(QStringLiteral("Volume too large to render"));
+            volumeKey = 0;
+            return;
+        }
+        if (vstate == DisplayModel::VolumeState::Wanted) {
+            volume->setPreparing(QStringLiteral("Loading volume…"));
+            return;   // the textures already up stay up until the new ones land
+        }
+        // The reduction to <= 256 texels per axis is a pass over every voxel:
+        // it runs on the loader thread and paintGL only uploads the result.
+        std::vector<ViewerLoader::Channel> chans;
         quint64 key = static_cast<quint64>(reinterpret_cast<std::uintptr_t>(model.output().get())) ^ (static_cast<quint64>(t) << 48);
         for (Index c = 0; c < model.dims().c; ++c) {
             if (!s.channelOn(c)) continue;
-            const float* v = model.volume(c, t);
+            const float* v = model.volumeIfReady(c, t);
             if (!v) continue;
-            VolumeView::Channel ch;
+            ViewerLoader::Channel ch;
+            ch.out = model.output();
+            ch.hold = model.volumeHold(c, t);
             ch.data = v;
             ch.z = nz();
             ch.y = ny();
@@ -1177,18 +1514,24 @@ namespace sirius::app {
             key ^= (static_cast<quint64>(c + 1) * 0x9e3779b97f4a7c15ull) ^ static_cast<quint64>(std::hash<float>{}(w.lo) * 31 + std::hash<float>{}(w.hi));
             chans.push_back(ch);
         }
-        if (volume) {
-            volume->setVolumes(key, chans, model.meta().voxelUm);
-            // labels ride along as their own texture, toggled with the Labels box
-            const LabelVolume* L = s.labels ? model.labels() : nullptr;
-            if (L && t < L->t()) {
-                const std::uint32_t only = s.soloLabel ? s.selectedLabel : 0u;
-                const quint64 lkey = (static_cast<quint64>(reinterpret_cast<std::uintptr_t>(L)) ^ (static_cast<quint64>(t + 1) << 40) ^
-                                      (labelsVersion << 8) ^ (static_cast<quint64>(only) << 20)) | 1;
-                volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity), only);
-            } else {
-                volume->clearLabels();
-            }
+        if (chans.empty()) {
+            volume->clearVolumes();
+            volume->setPreparing(QString());
+            volumeKey = 0;
+        } else if (key != volumeKey) {
+            volumeKey = key;
+            volume->setPreparing(QStringLiteral("Preparing volume…"));
+            loader.reduce(key, std::move(chans));
+        }
+        // labels ride along as their own texture, toggled with the Labels box
+        const LabelVolume* L = s.labels ? model.labels() : nullptr;
+        if (L && t < L->t()) {
+            const std::uint32_t only = s.soloLabel ? s.selectedLabel : 0u;
+            const quint64 lkey = (static_cast<quint64>(reinterpret_cast<std::uintptr_t>(L)) ^ (static_cast<quint64>(t + 1) << 40) ^
+                                  (labelsVersion << 8) ^ (static_cast<quint64>(only) << 20)) | 1;
+            volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity), only);
+        } else {
+            volume->clearLabels();
         }
     }
 
@@ -1221,6 +1564,18 @@ namespace sirius::app {
     }
 
     void ViewerWidget::Impl::fit() { setZoomPan(1.0, 0.0, 0.0); }
+
+    // View ▸ Sync Z / T across viewers. On (the default) every pane shows the
+    // plane the dims strip points at. Off, the raw side of Compare keeps the
+    // plane it was on -- a reference to scrub the processed side against --
+    // and shift + wheel over it moves that plane on its own.
+    Index ViewerWidget::Impl::compareZ() const {
+        return vs().syncZT ? curZ() : std::clamp<Index>(cmpZ, 0, std::max<Index>(nz() - 1, 0));
+    }
+
+    Index ViewerWidget::Impl::compareT() const {
+        return vs().syncZT ? curT() : std::clamp<Index>(cmpT, 0, std::max<Index>(nt() - 1, 0));
+    }
 
     // --- tools ---------------------------------------------------------------------------
 
@@ -1268,6 +1623,7 @@ namespace sirius::app {
                 pushAnnotations();
                 break;
             case ViewerTool::Paint: {
+                if (!canPaint()) return;   // a run holds the pipeline
                 const bool erase = s.paintTool == PaintTool::Erase || m.testFlag(Qt::AltModifier);
                 switch (s.paintTool) {
                     case PaintTool::Brush:
@@ -1341,15 +1697,8 @@ namespace sirius::app {
                 pushAnnotations();
                 break;
             case ViewerTool::Paint:
-                if (painting) {
-                    static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
-                    QElapsedTimer dragClock;
-                    if (trace) dragClock.start();
-                    struct Report {
-                        bool on;
-                        QElapsedTimer& c;
-                        ~Report() { if (on) qInfo("drag: paint handling %lld us", c.nsecsElapsed() / 1000); }
-                    } report{trace, dragClock};
+                if (painting && canPaint()) {
+                    const ScopedTrace dragTrace("drag: paint handling");
                     const bool erase = s.paintTool == PaintTool::Erase || m.testFlag(Qt::AltModifier);
                     // stamp along the path so fast strokes stay continuous
                     const double spacing = std::max(1.0, s.brushPx / 4.0);
@@ -1462,7 +1811,7 @@ namespace sirius::app {
             const double ux = (a.x() - b.x()) * dx, uy = (a.y() - b.y()) * dy;
             const double vx = (c.x() - b.x()) * dx, vy = (c.y() - b.y()) * dy;
             const double ang = std::acos(std::clamp((ux * vx + uy * vy) / std::max(1e-12, std::hypot(ux, uy) * std::hypot(vx, vy)), -1.0, 1.0));
-            text += QStringLiteral("  ∠ %1°").arg(ang * 180.0 / M_PI, 0, 'f', 1);
+            text += QStringLiteral("  ∠ %1°").arg(ang * 180.0 / sirius::kPi, 0, 'f', 1);
         }
         return text;
     }
@@ -1501,7 +1850,7 @@ namespace sirius::app {
                 }
             std::optional<float> val;
             if (kind == SlicePane::Kind::XY || kind == SlicePane::Kind::Compare) val = model.valueAt(c, curT(), z, y, x);
-            else if (const float* vol = model.volume(c, curT())) val = vol[(z * ny() + y) * nx() + x];
+            else if (const float* vol = model.volumeIfReady(c, curT())) val = vol[(z * ny() + y) * nx() + x];
             QString vtext = val ? QString::number(*val, 'g', 5) : QStringLiteral("—");
             if (const LabelVolume* L = model.labels(); L && vs().labels) {
                 const std::uint32_t id = labelAt(z, y, x);
@@ -1527,20 +1876,26 @@ namespace sirius::app {
 
     ViewerWidget::~ViewerWidget() = default;
 
+    void ViewerWidget::showEvent(QShowEvent* event) {
+        QWidget::showEvent(event);
+        // after the first layout pass, when the panes have their real sizes
+        QTimer::singleShot(0, this, [this] { impl_->restoreOrthoSizes(); });
+    }
+
     void ViewerWidget::zoomIn() {
         if (impl_->vs().mode == ViewMode::Volume) {
-            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() * 1.5);
+            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() * kButtonZoomFactor);
             return;
         }
-        impl_->zoomAround(1.5, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
+        impl_->zoomAround(kButtonZoomFactor, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
     }
 
     void ViewerWidget::zoomOut() {
         if (impl_->vs().mode == ViewMode::Volume) {
-            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() / 1.5);
+            if (impl_->volume) impl_->volume->setZoom(impl_->volume->zoom() / kButtonZoomFactor);
             return;
         }
-        impl_->zoomAround(1.0 / 1.5, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
+        impl_->zoomAround(1.0 / kButtonZoomFactor, QPointF(impl_->xy->width() / 2.0, impl_->xy->height() / 2.0));
     }
 
     void ViewerWidget::fitToWindow() {
@@ -1578,6 +1933,10 @@ namespace sirius::app {
         }
         impl_->model.setWindowMode(DisplayModel::WindowMode::Full);
         impl_->rawModel.setWindowMode(DisplayModel::WindowMode::Full);
+        // The full range is every voxel: ask for the volumes so the exact
+        // one replaces the sampled stand-in as soon as it is read.
+        impl_->ensureVolumes(impl_->model, impl_->curT());
+        if (impl_->rawModel.valid()) impl_->ensureVolumes(impl_->rawModel, impl_->curT());
         impl_->dirty = Impl::Dirty{};
         impl_->scheduleUpdate();
     }

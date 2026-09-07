@@ -4,9 +4,12 @@
 // CPU always and on the GPU when a CUDA device is available.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cmath>
 #include <filesystem>
+#include <stdexcept>
 
 #include "sirius/buffer.hpp"
 #include "sirius/legacy_config.hpp"
@@ -126,6 +129,75 @@ TEST_CASE("Repeated CPU reconstructions of the same input are bit-identical",
     for (std::size_t d = 0; d < fit.k0.size(); ++d) {
         CHECK(fit.k0[d][0] == recon.lastFit().k0[d][0]);
         CHECK(fit.k0[d][1] == recon.lastFit().k0[d][1]);
+    }
+}
+
+TEST_CASE("A cancel callback aborts the reconstruction promptly and changes nothing otherwise",
+          "[reconstruction][cancel]") {
+    // The contract of SimReconstructor::setCancelCallback: a predicate that
+    // never fires must not perturb a single output bit (the reconstruction is
+    // bit-reproducible -- see the determinism case above -- so "unchanged" is
+    // checkable exactly), and one that fires must end the call by throwing
+    // instead of running the pipeline out.
+    TestData t = loadTestData();
+
+    SimReconstructor reference(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+    const auto expected = toEigen<3>(reference.reconstruct(t.raw));
+    const SimFit expectedFit = reference.lastFit();
+
+    SECTION("a callback that always returns false is bit-identical to no callback") {
+        SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+        int polls = 0;
+        recon.setCancelCallback([&polls] { ++polls; return false; });
+        const auto actual = toEigen<3>(recon.reconstruct(t.raw));
+
+        REQUIRE(actual.size() == expected.size());
+        Eigen::Index differing = 0;
+        for (Eigen::Index i = 0; i < expected.size(); ++i)
+            if (actual.data()[i] != expected.data()[i]) ++differing;
+        INFO(differing << " of " << expected.size() << " voxels differ; " << polls << " polls");
+        CHECK(differing == 0);
+        CHECK(polls > 0);   // the stages really are polling
+        for (std::size_t d = 0; d < expectedFit.k0.size(); ++d) {
+            CHECK(recon.lastFit().k0[d][0] == expectedFit.k0[d][0]);
+            CHECK(recon.lastFit().k0[d][1] == expectedFit.k0[d][1]);
+        }
+    }
+
+    SECTION("cancelling after the first stage throws without finishing the pipeline") {
+        SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+        int polls = 0;
+        recon.setCancelCallback([&polls] { return ++polls > 1; });
+        CHECK_THROWS_WITH(recon.reconstruct(t.raw), Catch::Matchers::Equals("cancelled"));
+        // It stopped at the second boundary, nowhere near the ~200 polls a
+        // whole reconstruction of this stack makes.
+        INFO(polls << " polls before the throw");
+        CHECK(polls == 2);
+    }
+
+    SECTION("cancelling during the fit and during assembly both throw") {
+        // 3 lands in the per-direction band separation, 6 in findK0's
+        // overlaps and 12 inside the k0 bracket search, so every kind of
+        // stage boundary the pipeline polls at is exercised.
+        const int after = GENERATE(3, 6, 12);
+        SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+        int polls = 0;
+        recon.setCancelCallback([&polls, after] { return ++polls > after; });
+        INFO("cancel after " << after << " polls");
+        CHECK_THROWS_AS(recon.reconstruct(t.raw), std::runtime_error);
+    }
+
+    SECTION("the reconstructor is reusable after a cancelled call") {
+        SimReconstructor recon(t.params, t.otf, Device::cpu(), PlanRigor::Estimate);
+        recon.setCancelCallback([] { return true; });
+        CHECK_THROWS_WITH(recon.reconstruct(t.raw), Catch::Matchers::Equals("cancelled"));
+        recon.setCancelCallback({});
+        const auto actual = toEigen<3>(recon.reconstruct(t.raw));
+        Eigen::Index differing = 0;
+        for (Eigen::Index i = 0; i < expected.size(); ++i)
+            if (actual.data()[i] != expected.data()[i]) ++differing;
+        INFO(differing << " voxels differ from a run that was never cancelled");
+        CHECK(differing == 0);
     }
 }
 

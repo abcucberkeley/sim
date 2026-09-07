@@ -17,6 +17,7 @@
 
 #include "qt/panels/assistant_panel.hpp"
 #include "qt/qt_strings.hpp"
+#include "qt/secret_store.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 
@@ -125,7 +126,7 @@ namespace sirius::app {
         impl_->python = new QLineEdit(settings.value(QStringLiteral("worker/python"), QStringLiteral("python3")).toString(), compute);
         impl_->python->setToolTip(QStringLiteral("Interpreter with numpy (and torch for segmentation); SIRIUS_PYTHON overrides"));
         cl->addWidget(field(QStringLiteral("Python for the local worker"), impl_->python, compute));
-        impl_->hfToken = new QLineEdit(settings.value(QStringLiteral("hub/token")).toString(), compute);
+        impl_->hfToken = new QLineEdit(secrets::read(QStringLiteral("hub/token")), compute);
         impl_->hfToken->setEchoMode(QLineEdit::Password);
         impl_->hfToken->setToolTip(QStringLiteral("Access token for gated or private Hugging Face repositories (huggingface.co ▸ Settings ▸ "
                                                   "Access Tokens); passed to the local worker as HF_TOKEN"));
@@ -203,9 +204,9 @@ namespace sirius::app {
         settings.setValue(QStringLiteral("compute/cudaDevice"), impl_->device->currentData().toInt());
         settings.setValue(QStringLiteral("hpc/host"), impl_->host->text().trimmed());
         settings.setValue(QStringLiteral("hpc/port"), impl_->port->value());
-        settings.setValue(QStringLiteral("hpc/token"), impl_->token->text());
+        secrets::write(QStringLiteral("hpc/token"), impl_->token->text());
         settings.setValue(QStringLiteral("worker/python"), impl_->python->text().trimmed());
-        settings.setValue(QStringLiteral("hub/token"), impl_->hfToken->text().trimmed());
+        secrets::write(QStringLiteral("hub/token"), impl_->hfToken->text().trimmed());
         AssistantSettings as;
         as.provider = impl_->provider->currentData().toString();
         as.baseUrl = impl_->baseUrl->text().trimmed();
@@ -231,7 +232,7 @@ namespace sirius::app {
         RemoteConfig rc;
         rc.host = toStd(settings.value(QStringLiteral("hpc/host"), QStringLiteral("localhost")).toString());
         rc.port = settings.value(QStringLiteral("hpc/port"), 7645).toInt();
-        rc.token = toStd(settings.value(QStringLiteral("hpc/token")).toString());
+        rc.token = toStd(secrets::read(QStringLiteral("hpc/token")));
         wb.setRemoteConfig(rc);
     }
 

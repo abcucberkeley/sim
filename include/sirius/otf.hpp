@@ -10,11 +10,6 @@
 #include "sirius/sim_parameters.hpp"
 
 namespace sirius {
-    class OTF {
-        // TODO: General OTF class.
-        // Hold off on the abstract OTF class for now
-    };
-
     class OTFRadiallyAveraged {
     public:
         OTFRadiallyAveraged() = default;

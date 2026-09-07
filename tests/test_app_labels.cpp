@@ -292,6 +292,139 @@ TEST_CASE("LabelVolume statistics and review flags", "[app][labels]") {
     }
 }
 
+TEST_CASE("share() gives a second volume that copies the voxels on its first write", "[app][labels]") {
+    LabelVolume a(1, 4, 8, 8);
+    a.paint(0, 2, 4, 4, 1.5, 0, 3);
+    a.recomputeStats(0);
+    REQUIRE(a.statsOf(3));
+    const Index voxels = a.statsOf(3)->voxels;
+
+    auto b = a.share();
+    CHECK(b->view().data() == a.view().data());   // the same voxels
+    CHECK(a.sharesVoxels());
+    CHECK(b->sharesVoxels());
+    CHECK(b->maxLabel() == a.maxLabel());
+    REQUIRE(b->statsOf(3));
+    CHECK(b->statsOf(3)->voxels == voxels);       // its own copy of the statistics
+    CHECK(b->statsT() == a.statsT());
+
+    // reading does not detach
+    CHECK(b->at(0, 2, 4, 4) == 3);
+    CHECK(b->view().data() == a.view().data());
+
+    // the first write does
+    const LabelDiff diff = b->paint(0, 0, 0, 0, 0.0, 0, 7);
+    CHECK_FALSE(diff.empty());
+    CHECK(b->view().data() != a.view().data());
+    CHECK_FALSE(a.sharesVoxels());
+    CHECK_FALSE(b->sharesVoxels());
+    CHECK(a.at(0, 0, 0, 0) == 0);
+    CHECK(b->at(0, 0, 0, 0) == 7);
+    b->stats()[0].reviewed = true;
+    CHECK_FALSE(a.statsOf(3)->reviewed);
+
+    SECTION("clone detaches straight away") {
+        auto c = a.clone();
+        CHECK(c->view().data() != a.view().data());
+        CHECK_FALSE(a.sharesVoxels());
+        CHECK(c->at(0, 2, 4, 4) == 3);
+    }
+    SECTION("a share of a share is independent of both") {
+        auto c = a.share();
+        auto d = a.share();
+        c->paint(0, 0, 1, 1, 0.0, 0, 9);
+        CHECK(a.at(0, 0, 1, 1) == 0);
+        CHECK(d->at(0, 0, 1, 1) == 0);
+        CHECK(d->view().data() == a.view().data());
+    }
+}
+
+TEST_CASE("updateStats brings the table up to date after an edit", "[app][labels]") {
+    LabelVolume vol(1, 5, 20, 20);
+    vol.paint(0, 2, 10, 10, 3.0, 1, 1);
+    vol.paint(0, 2, 3, 3, 1.0, 0, 2);
+    LabelFlagRules rules;
+    rules.minVoxels = 3;
+    vol.recomputeStats(0);
+    vol.applyFlags(rules);
+    CHECK(vol.statsT() == 0);
+    const Index one = vol.statsOf(1)->voxels;
+    vol.stats()[0].cls = "nucleus";
+    vol.stats()[0].reviewed = true;
+
+    auto countOf = [&vol](std::uint32_t id) {
+        Index n = 0;
+        for (Index i = 0; i < vol.volumeSize(); ++i)
+            if (vol.volume(0)[i] == id) ++n;
+        return n;
+    };
+    auto agrees = [&](std::uint32_t id) {
+        const LabelStats* s = vol.statsOf(id);
+        const Index n = countOf(id);
+        if (n == 0) return s == nullptr;
+        return s && s->voxels == n;
+    };
+
+    SECTION("growing a label widens its box and its count") {
+        const LabelDiff d = vol.paint(0, 2, 10, 16, 1.0, 0, 1);
+        vol.updateStats(d);
+        CHECK(agrees(1));
+        CHECK(vol.statsOf(1)->voxels == one + static_cast<Index>(d.indices.size()));
+        CHECK(vol.statsOf(1)->bbox[5] == 18);
+        CHECK(vol.statsOf(1)->cls == "nucleus");    // the class and the review mark survive
+        CHECK(vol.statsOf(1)->reviewed);
+        CHECK(agrees(2));
+    }
+    SECTION("a new label gets an entry, in id order") {
+        const LabelDiff d = vol.paint(0, 4, 18, 18, 0.0, 0, 40);
+        vol.updateStats(d);
+        REQUIRE(vol.statsOf(40));
+        CHECK(vol.statsOf(40)->voxels == 1);
+        CHECK(vol.statsOf(40)->touchesBorder);
+        CHECK(vol.statsOf(40)->confidence == 1.0);
+        CHECK(vol.stats().back().id == 40);
+        CHECK(vol.stats().front().id == 1);
+    }
+    SECTION("removing a label drops its entry") {
+        const LabelDiff d = vol.remove(0, 2);
+        vol.updateStats(d);
+        CHECK(vol.statsOf(2) == nullptr);
+        CHECK(agrees(1));
+        vol.apply(d, false);
+        vol.updateStats(d);
+        REQUIRE(vol.statsOf(2));
+        CHECK(agrees(2));
+    }
+    SECTION("merging folds one entry into the other and widens its box") {
+        const LabelDiff m = vol.merge(0, {1, 2});
+        vol.updateStats(m);
+        CHECK(vol.statsOf(2) == nullptr);
+        CHECK(agrees(1));
+        CHECK(vol.statsOf(1)->bbox[4] == 2);   // the box reaches object 2 now
+        CHECK(vol.statsOf(1)->bbox[2] == 2);
+    }
+    SECTION("the flags of the last applyFlags are refreshed") {
+        const LabelDiff d = vol.paint(0, 2, 3, 3, 1.0, 0, 0);   // erase object 2 entirely
+        vol.updateStats(d);
+        CHECK(vol.statsOf(2) == nullptr);
+        CHECK(vol.flaggedCount("small") == 0);
+    }
+    SECTION("an empty diff and one for another time point are handled") {
+        LabelVolume two(2, 3, 8, 8);
+        two.paint(1, 1, 4, 4, 1.0, 0, 6);
+        two.recomputeStats(0);
+        CHECK(two.statsT() == 0);
+        CHECK(two.stats().empty());
+        const LabelDiff d = two.paint(1, 1, 4, 6, 1.0, 0, 6);
+        two.updateStats(d);              // falls back to a full recompute of t = 1
+        CHECK(two.statsT() == 1);
+        REQUIRE(two.statsOf(6));
+        CHECK(two.statsOf(6)->voxels > 1);
+        two.updateStats(LabelDiff{});    // nothing to do, and no throw
+        CHECK(two.statsT() == 1);
+    }
+}
+
 TEST_CASE("labelColor cycles the palette and keeps the background black", "[app][labels]") {
     CHECK(labelColor(0) == std::array<float, 3>{0.f, 0.f, 0.f});
     CHECK(labelColor(1) == labelColor(8));

@@ -18,7 +18,9 @@ target_sources(sirius
         BASE_DIRS
             ${PROJECT_SOURCE_DIR}/include
         FILES
+            ${PROJECT_SOURCE_DIR}/include/sirius/errors.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/device.hpp
+            ${PROJECT_SOURCE_DIR}/include/sirius/checked_math.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/buffer.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/tiff_io.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/tensor_util.hpp
@@ -31,7 +33,6 @@ target_sources(sirius
             ${PROJECT_SOURCE_DIR}/include/sirius/otf.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/preprocess.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/separation.hpp
-            ${PROJECT_SOURCE_DIR}/include/sirius/illumination.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/sim_reconstruction.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/registration.hpp
             ${PROJECT_SOURCE_DIR}/include/sirius/stitching.hpp
@@ -67,8 +68,12 @@ target_link_libraries(sirius
         OpenMP::OpenMP_CXX
         ${SIRIUS_FFTW_TARGETS}
         sirius_simd
-        tomlplusplus::tomlplusplus
-        nlohmann_json::nlohmann_json   # zarr / N5 metadata (zarr_io.cpp)
+        # Header-only and used only inside the .cpp files: they are compiled
+        # into the archive and contribute nothing to a consumer's link line.
+        # BUILD_INTERFACE keeps them out of the exported usage requirements,
+        # so the install tree does not have to ship them (cmake/Install.cmake).
+        $<BUILD_INTERFACE:tomlplusplus::tomlplusplus>
+        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>   # zarr / N5 metadata (zarr_io.cpp)
 )
 
 if(SIRIUS_ENABLE_TENSORSTORE)

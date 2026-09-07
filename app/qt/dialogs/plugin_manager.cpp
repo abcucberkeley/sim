@@ -91,15 +91,10 @@ namespace sirius::app {
                 if (selected) p->fillRect(QRect(r.left(), r.top(), 3, r.height()), theme::kAccent);
                 // status glyph at the right
                 const QRect glyphRect(r.right() - 26, r.top(), 20, kFileRowHeight);
-                if (status == kLoaded) {
-                    p->setFont(theme::font(12));
-                    p->setPen(theme::kNeutral600);
-                    p->drawText(glyphRect, Qt::AlignCenter, QStringLiteral("✓"));
-                } else if (status == kFailed) {
-                    p->setFont(theme::font(12, QFont::Bold));
-                    p->setPen(theme::kAccent);
-                    p->drawText(glyphRect, Qt::AlignCenter, QStringLiteral("✕"));
-                }
+                if (status == kLoaded)
+                    widgets::drawIcon(*p, QRectF(glyphRect).adjusted(4, 4, -4, -4), widgets::Icon::Check, theme::kNeutral600);
+                else if (status == kFailed)
+                    widgets::drawIcon(*p, QRectF(glyphRect).adjusted(4, 4, -4, -4), widgets::Icon::Close, theme::kAccent);
                 // name, then the kind in caption style
                 const QFont nameFont = theme::heading(12);
                 const QFont kindFont = theme::caption();
@@ -159,28 +154,6 @@ namespace sirius::app {
 
         // A one-line label that elides its text (middle) to whatever width the
         // layout gives it, so the file name at the end stays readable.
-        class ElidedLabel : public QLabel {
-        public:
-            explicit ElidedLabel(QWidget* parent) : QLabel(parent) {
-                setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-            }
-            void setFullText(const QString& text) {
-                full_ = text;
-                setToolTip(text);
-                relayout();
-            }
-
-        protected:
-            void resizeEvent(QResizeEvent* e) override {
-                QLabel::resizeEvent(e);
-                relayout();
-            }
-
-        private:
-            void relayout() { QLabel::setText(fontMetrics().elidedText(full_, Qt::ElideMiddle, std::max(40, width() - 2))); }
-            QString full_;
-        };
-
         QString cleanDir(const QString& dir) { return QDir::cleanPath(QDir(dir).absolutePath()); }
         QString cleanFile(const QString& file) { return QDir::cleanPath(QFileInfo(file).absoluteFilePath()); }
 
@@ -266,7 +239,7 @@ def run(data, params, meta, ctx):
         QPushButton* deleteButton = nullptr;
         QPushButton* reloadButton = nullptr;
 
-        ElidedLabel* pathLabel = nullptr;
+        widgets::ElidedLabel* pathLabel = nullptr;
         CaptionLabel* modifiedMark = nullptr;
         QLabel* readOnlyNote = nullptr;
         CodeEditor* editor = nullptr;
@@ -673,14 +646,12 @@ def run(data, params, meta, ctx):
 
         auto* header = new QHBoxLayout();
         header->setSpacing(10);
-        impl_->pathLabel = new ElidedLabel(right);
-        impl_->pathLabel->setStyleSheet(QStringLiteral("QLabel { font-family: monospace; font-size: %1px; color: %2; }")
-                                            .arg(theme::kSmallPx)
-                                            .arg(theme::hex(theme::kNeutral700)));
+        impl_->pathLabel = new widgets::ElidedLabel(right, Qt::ElideMiddle);
+        widgets::setWidgetClass(impl_->pathLabel, "mono");
         impl_->pathLabel->setFullText(QStringLiteral("No file selected"));
         header->addWidget(impl_->pathLabel, 1);
         impl_->modifiedMark = new CaptionLabel(QStringLiteral("modified"), right);
-        impl_->modifiedMark->setAccent(true);
+        impl_->modifiedMark->setColor(theme::kAccentText);
         impl_->modifiedMark->hide();
         header->addWidget(impl_->modifiedMark, 0, Qt::AlignRight);
         rl->addLayout(header);
@@ -722,7 +693,7 @@ def run(data, params, meta, ctx):
         bv->setContentsMargins(0, 8, 0, 8);
         bv->setSpacing(4);
         auto* bcap = new CaptionLabel(QStringLiteral("Did not load"), impl_->banner);
-        bcap->setAccent(true);
+        bcap->setColor(theme::kAccentText);
         bv->addWidget(bcap);
         impl_->bannerText = new QPlainTextEdit(impl_->banner);
         impl_->bannerText->setReadOnly(true);
@@ -730,11 +701,7 @@ def run(data, params, meta, ctx):
         impl_->bannerText->setLineWrapMode(QPlainTextEdit::WidgetWidth);
         impl_->bannerText->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         impl_->bannerText->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        impl_->bannerText->setStyleSheet(
-            QStringLiteral("QPlainTextEdit { font-family: monospace; font-size: %1px; color: %2; background: transparent;"
-                           " border: none; padding: 0; min-height: 0; }")
-                .arg(theme::kSmallPx)
-                .arg(theme::hex(theme::kAccent700)));
+        widgets::setWidgetClass(impl_->bannerText, "banner");
         impl_->bannerText->document()->setDocumentMargin(0);
         bv->addWidget(impl_->bannerText);
         bl->addLayout(bv, 1);

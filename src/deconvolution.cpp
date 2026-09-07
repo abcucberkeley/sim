@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -74,6 +75,13 @@ namespace sirius {
             gy /= norm;
             gx /= norm;
         }
+
+        // Poll the caller's cancel predicate between two stages. Host-side
+        // control flow only: it reads nothing the numerics write, so a run
+        // that is never cancelled is bit-identical to one with no callback.
+        inline void checkCancelled(const DeconvolutionOptions& options) {
+            if (options.cancelled && options.cancelled()) throw std::runtime_error("cancelled");
+        }
     } // namespace
 
     DeconvolutionResult richardsonLucy(BufferView<float> image, BufferView<const float> psf,
@@ -122,6 +130,8 @@ namespace sirius {
             for (double& v : work) v /= sum;
         }
 
+        checkCancelled(options);
+
         std::vector<int> dims;
         if (pad.z > 1) dims.push_back(static_cast<int>(pad.z));
         dims.push_back(static_cast<int>(pad.y));
@@ -159,6 +169,7 @@ namespace sirius {
         DeconvolutionResult result;
         std::vector<double> next(static_cast<std::size_t>(n));
         for (int iter = 0; iter < options.iterations; ++iter) {
+            checkCancelled(options);
             // blur = estimate * h
             fft.rfft(estimate.data(), spec.data());
             for (Index i = 0; i < nc; ++i) spec[static_cast<std::size_t>(i)] *= H[static_cast<std::size_t>(i)];
@@ -169,11 +180,13 @@ namespace sirius {
                 const double b = work[static_cast<std::size_t>(i)];
                 work[static_cast<std::size_t>(i)] = data[static_cast<std::size_t>(i)] / (b > eps ? b : eps);
             }
+            checkCancelled(options);
             // correction = ratio (x) h
             fft.rfft(work.data(), spec.data());
             for (Index i = 0; i < nc; ++i) spec[static_cast<std::size_t>(i)] *= std::conj(H[static_cast<std::size_t>(i)]);
             fft.irfft(spec.data(), work.data(), true);
 
+            checkCancelled(options);
             // update, measuring the change over the original region only
             double num = 0.0, den = 0.0;
             #pragma omp parallel for collapse(2) schedule(static) reduction(+ : num, den)
@@ -218,6 +231,9 @@ namespace sirius {
             }
         }
 
+        // A cancelled run leaves `image` untouched: the write-back below is
+        // the only place the caller's view is modified, and it is past every
+        // check above.
         // --- back to the caller's float view (interior only)
         #pragma omp parallel for collapse(2) schedule(static)
         for (Index z = 0; z < img.z; ++z)

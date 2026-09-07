@@ -1,5 +1,11 @@
 include(FetchContent)
 
+# Every dependency is pinned to an immutable revision: git dependencies to the
+# commit a release tag pointed at when it was recorded (the tag is kept as a
+# comment; `git ls-remote <repo> refs/tags/<tag>^{}` resolves a new one) and
+# tarballs to their SHA-256. Shallow clones of a commit work with CMake >= 3.25
+# against GitHub and GitLab.
+
 # Static deps must be PIC-compatible when linked into the Python extension (.so)
 if(SIRIUS_ENABLE_PYTHON_BINDINGS)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -15,7 +21,7 @@ endif()
 FetchContent_Declare(
     Eigen3
     GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-    GIT_TAG        3.4.0
+    GIT_TAG        3147391d946bb4b6c68edd901f2add6ac1f31f8c   # 3.4.0
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  cmake-not-used
 )
@@ -33,13 +39,17 @@ add_library(Eigen3::Eigen ALIAS sirius_eigen)
 FetchContent_Declare(
     ZLIB
     GIT_REPOSITORY https://github.com/madler/zlib.git
-    GIT_TAG        v1.3.1
+    GIT_TAG        51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf   # v1.3.1
     GIT_SHALLOW    TRUE
     OVERRIDE_FIND_PACKAGE
 )
 block()
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)  # zlib targets an old CMake floor
     set(ZLIB_BUILD_EXAMPLES OFF)
+    # zlib bakes the install prefix into cache variables at configure time, so
+    # its install rules ignore `cmake --install --prefix` and try to write to
+    # C:/Program Files. SIRIUS installs the archive itself (cmake/Install.cmake).
+    set(SKIP_INSTALL_ALL ON)
     FetchContent_MakeAvailable(ZLIB)
     # zlib's CMake exports zlibstatic/zlib but not the canonical ZLIB::ZLIB
     # target libtiff links against. Create it from the static lib (PIC is on
@@ -58,12 +68,13 @@ endblock()
 FetchContent_Declare(
     libtiff
     GIT_REPOSITORY https://gitlab.com/libtiff/libtiff.git
-    GIT_TAG        v4.7.0
+    GIT_TAG        9dff73bebc5661f2dace6f16e14cf9e857172f4e   # v4.7.0
     GIT_SHALLOW    TRUE
 )
 # compatibility with cmake < 3.5 has been removed from CMake
 block()
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    set(tiff-install OFF)   # SIRIUS installs the archive itself (cmake/Install.cmake)
     set(tiff-tools   OFF)
     set(tiff-tests   OFF)
     set(tiff-contrib OFF)
@@ -77,10 +88,19 @@ endblock()
 # FFTW3
 FetchContent_Declare(
     fftw3
-    URL https://www.fftw.org/fftw-3.3.10.tar.gz
+    URL      https://www.fftw.org/fftw-3.3.10.tar.gz
+    URL_HASH SHA256=56c932549852cddcfafdab3820b0200c7742675be92179e59e6215b340e26467
 )
 # fftw using offensive global names
 block()
+    # FFTW 3.3.10 has no switch to turn its own install rules off, and they
+    # would drop fftw3.h, a second copy of the archive, a pkg-config file and an
+    # FFTW3Config.cmake at the top of SIRIUS's install prefix. Redirect them
+    # into a vendor subdirectory (the copy SIRIUS's consumers link is installed
+    # by cmake/Install.cmake); these are normal variables, so they shadow
+    # GNUInstallDirs' cache entries for this subtree only.
+    set(CMAKE_INSTALL_INCLUDEDIR share/sirius-vendor/fftw3/include)
+    set(CMAKE_INSTALL_LIBDIR     share/sirius-vendor/fftw3/lib)
     # FFTW 3.3.10 declares cmake_minimum_required(VERSION 3.0); CMake 4.x
     # removed support for <3.5, so spoof a 3.5 floor for this subtree only.
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -123,7 +143,7 @@ find_package(OpenMP REQUIRED)
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG        v3.4.0
+    GIT_TAG        30172438cee64926dc41fdd9c11fb3ba5b2ba9de   # v3.4.0
     GIT_SHALLOW    TRUE
     SYSTEM          # mark its headers as system -> excluded from warnings/analyze
 )
@@ -210,7 +230,7 @@ if(SIRIUS_ENABLE_TESTS)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG        v3.7.1
+        GIT_TAG        fa43b77429ba76c462b1898d6cd2f2d7a9416b14   # v3.7.1
         GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(Catch2)

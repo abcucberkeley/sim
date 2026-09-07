@@ -8,20 +8,19 @@
 #include <QSlider>
 
 #include "qt/theme.hpp"
-#include "qt/viewer/viewer_widgets.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
+    using widgets::GlyphButton;
+    using widgets::Icon;
+
     namespace {
+        // Every readout here is a number the eye tracks while a slider
+        // moves, so all of them get tabular figures.
         QLabel* label(const QString& text, int px, int weight, const QColor& color, QWidget* parent) {
-            auto* l = new QLabel(text, parent);
-            QFont f(theme::kFontFamily);
-            f.setPixelSize(px);
-            f.setWeight(static_cast<QFont::Weight>(weight));
-            l->setFont(f);
-            QPalette pal = l->palette();
-            pal.setColor(QPalette::WindowText, color);
-            l->setPalette(pal);
+            auto* l = widgets::label(text, px, color, weight, parent);
+            widgets::useTabularNumbers(l);
             return l;
         }
         QSlider* slider(QWidget* parent) {
@@ -29,7 +28,8 @@ namespace sirius::app {
             s->setRange(0, 0);
             s->setSingleStep(1);
             s->setPageStep(1);
-            s->setFocusPolicy(Qt::NoFocus);
+            // QSlider brings its own key handling (arrows, page, home / end)
+            s->setFocusPolicy(Qt::StrongFocus);
             return s;
         }
     } // namespace
@@ -53,6 +53,8 @@ namespace sirius::app {
         zh->addWidget(zUm_);
         zh->addStretch(1);
         zSlider_ = slider(this);
+        zSlider_->setAccessibleName(QStringLiteral("Z plane"));
+        zSlider_->setAccessibleDescription(QStringLiteral("Arrow keys step one plane, page up and page down ten."));
         zPos_ = label(QStringLiteral("0 / 0"), 12, QFont::Normal, theme::kText, this);
         zPos_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         grid->addWidget(zHead, 0, 0);
@@ -65,15 +67,17 @@ namespace sirius::app {
         th->setContentsMargins(0, 0, 0, 0);
         th->setSpacing(10);
         th->addWidget(label(QStringLiteral("T"), 12, QFont::ExtraBold, theme::kText, tHead));
-        play_ = new GlyphButton(QStringLiteral("▶"), tHead, QSize(20, 20));
-        play_->setGlyphPx(9);
+        play_ = new GlyphButton(Icon::Play, QSize(20, 20), tHead);
         play_->setBorderColor(theme::kText);
         play_->setToolTip(QStringLiteral("Play / pause the time series (space in the viewer)"));
+        play_->setAccessibleName(QStringLiteral("Play the time series"));
         th->addWidget(play_);
         tSec_ = label(QStringLiteral("0.0 s"), 12, QFont::Normal, theme::kNeutral600, tHead);
         th->addWidget(tSec_);
         th->addStretch(1);
         tSlider_ = slider(this);
+        tSlider_->setAccessibleName(QStringLiteral("Time point"));
+        tSlider_->setAccessibleDescription(QStringLiteral("Arrow keys step one frame, page up and page down ten."));
         tPos_ = label(QStringLiteral("0 / 0"), 12, QFont::Normal, theme::kText, this);
         tPos_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         grid->addWidget(tHead, 1, 0);
@@ -101,6 +105,9 @@ namespace sirius::app {
         updating_ = true;
         zSlider_->setRange(0, static_cast<int>(nz_ - 1));
         tSlider_->setRange(0, static_cast<int>(nt_ - 1));
+        // a page is a tenth of the axis, whatever its extent
+        zSlider_->setPageStep(std::max<int>(1, static_cast<int>(nz_ / 10)));
+        tSlider_->setPageStep(std::max<int>(1, static_cast<int>(nt_ / 10)));
         zSlider_->setEnabled(nz_ > 1);
         updating_ = false;
         for (QWidget* w : tRow_) w->setVisible(nt_ > 1);
@@ -121,15 +128,18 @@ namespace sirius::app {
 
     void DimsStrip::setPlaying(bool on) {
         playing_ = on;
-        play_->setGlyph(on ? QStringLiteral("❚❚") : QStringLiteral("▶"));
+        play_->setSymbol(on ? Icon::Pause : Icon::Play);
+        play_->setAccessibleName(on ? QStringLiteral("Pause the time series") : QStringLiteral("Play the time series"));
     }
 
     void DimsStrip::refreshLabels() {
         zUm_->setText(QString::number(static_cast<double>(z_) * dz_, 'f', 2) + QStringLiteral(" µm"));
         zPos_->setText(QStringLiteral("%1 / %2").arg(z_).arg(nz_ - 1));
+        zSlider_->setAccessibleDescription(QStringLiteral("Plane %1 of %2.").arg(z_).arg(nz_ - 1));
         if (dt_ > 0.0) tSec_->setText(QString::number(static_cast<double>(t_) * dt_, 'f', 1) + QStringLiteral(" s"));
         else tSec_->setText(QStringLiteral("frame %1").arg(t_));
         tPos_->setText(QStringLiteral("%1 / %2").arg(t_).arg(nt_ - 1));
+        tSlider_->setAccessibleDescription(QStringLiteral("Time point %1 of %2.").arg(t_).arg(nt_ - 1));
     }
 
 } // namespace sirius::app

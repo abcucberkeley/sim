@@ -102,7 +102,7 @@ namespace sirius {
     };
 
     // Parse a legacy flat `key=value` cudasirecon config file. Blank lines and
-    // lines beginning with '#' or ';' are ignored. Throws std::runtime_error on
+    // lines beginning with '#' or ';' are ignored. Throws sirius::IoError on
     // a malformed line, a bad value, or an unrecognized key (strict mode).
     LegacyReconConfig loadLegacyConfig(const std::string& path);
 

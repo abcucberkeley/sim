@@ -113,16 +113,27 @@ namespace sirius::app {
 
     // --- LabelVolume --------------------------------------------------------------
 
+    LabelVolume::LabelVolume() : data_(std::make_shared<Buffer<std::uint32_t>>()) {}
+
     LabelVolume::LabelVolume(Index t, Index z, Index y, Index x) : t_(t), z_(z), y_(y), x_(x) {
         if (t < 1) throw std::invalid_argument("LabelVolume: t must be >= 1");
         requireExtent(z, y, x, "LabelVolume");
-        data_ = Buffer<std::uint32_t>(Shape{t, z, y, x});
-        std::fill(data_.data(), data_.data() + data_.size(), 0u);
+        data_ = std::make_shared<Buffer<std::uint32_t>>(Shape{t, z, y, x});
+        std::fill(data_->data(), data_->data() + data_->size(), 0u);
     }
 
-    std::uint32_t* LabelVolume::volume(Index t) noexcept { return data_.data() + t * volumeSize(); }
-    const std::uint32_t* LabelVolume::volume(Index t) const noexcept { return data_.data() + t * volumeSize(); }
-    std::uint32_t* LabelVolume::plane(Index t, Index z) noexcept { return volume(t) + z * y_ * x_; }
+    void LabelVolume::detach() {
+        // Copy-on-write: the voxels are shared with another volume (share())
+        // until the first write, which lands in a private copy.
+        if (data_.use_count() > 1) data_ = std::make_shared<Buffer<std::uint32_t>>(data_->clone());
+    }
+
+    std::uint32_t* LabelVolume::volume(Index t) {
+        detach();
+        return data_->data() + t * volumeSize();
+    }
+    const std::uint32_t* LabelVolume::volume(Index t) const noexcept { return data_->data() + t * volumeSize(); }
+    std::uint32_t* LabelVolume::plane(Index t, Index z) { return volume(t) + z * y_ * x_; }
     const std::uint32_t* LabelVolume::plane(Index t, Index z) const noexcept { return volume(t) + z * y_ * x_; }
     std::uint32_t LabelVolume::at(Index t, Index z, Index y, Index x) const noexcept { return plane(t, z)[y * x_ + x]; }
 
@@ -130,8 +141,8 @@ namespace sirius::app {
 
     void LabelVolume::resetMaxLabel() noexcept {
         std::uint32_t m = 0;
-        const std::uint32_t* v = data_.data();
-        const Index n = data_.size();
+        const std::uint32_t* v = data_->data();
+        const Index n = data_->size();
         for (Index i = 0; i < n; ++i) m = std::max(m, v[i]);
         maxLabel_ = m;
     }
@@ -142,7 +153,7 @@ namespace sirius::app {
         std::unordered_map<std::uint32_t, LabelStats> previous;
         for (const LabelStats& s : stats_) previous.emplace(s.id, s);
 
-        const std::uint32_t* v = volume(t);
+        const std::uint32_t* v = static_cast<const LabelVolume&>(*this).volume(t);   // read only: no detach
         const Index n = volumeSize();
         std::uint32_t maxId = 0;
         for (Index i = 0; i < n; ++i) maxId = std::max(maxId, v[i]);
@@ -190,6 +201,75 @@ namespace sirius::app {
                               (z_ > 1 && (a.z0 == 0 || a.z1 == z_ - 1));
             stats_.push_back(std::move(s));
         }
+        statsT_ = t;
+    }
+
+    void LabelVolume::updateStats(const LabelDiff& diff) {
+        if (diff.empty()) return;
+        if (diff.t < 0 || diff.t >= t_) throw std::out_of_range("LabelVolume::updateStats: t out of range");
+        if (statsT_ != diff.t) {
+            recomputeStats(diff.t);
+            if (flagRules_) applyFlags(*flagRules_);
+            return;
+        }
+        // The labels the diff touched and the box it spans: each touched
+        // label is rescanned within its old bounding box joined with that
+        // box, which is where every voxel it has now must lie.
+        std::vector<std::uint32_t> touched;
+        const Index plane = y_ * x_, n = volumeSize();
+        std::array<Index, 6> box{z_, -1, y_, -1, x_, -1};
+        for (std::size_t k = 0; k < diff.indices.size(); ++k) {
+            const Index i = diff.indices[k];
+            if (i < 0 || i >= n) throw std::out_of_range("LabelVolume::updateStats: index outside the volume");
+            const Index z = i / plane, y = (i / x_) % y_, x = i % x_;
+            box[0] = std::min(box[0], z); box[1] = std::max(box[1], z);
+            box[2] = std::min(box[2], y); box[3] = std::max(box[3], y);
+            box[4] = std::min(box[4], x); box[5] = std::max(box[5], x);
+            if (diff.before[k]) touched.push_back(diff.before[k]);
+            if (diff.after[k]) touched.push_back(diff.after[k]);
+        }
+        std::sort(touched.begin(), touched.end());
+        touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+        const std::uint32_t* v = static_cast<const LabelVolume&>(*this).volume(diff.t);
+        for (std::uint32_t id : touched) {
+            LabelStats* known = mutableStatsOf(id);
+            Index z0 = box[0], z1 = box[1], y0 = box[2], y1 = box[3], x0 = box[4], x1 = box[5];
+            if (known) {
+                z0 = std::min(z0, known->bbox[0]); z1 = std::max(z1, known->bbox[1] - 1);
+                y0 = std::min(y0, known->bbox[2]); y1 = std::max(y1, known->bbox[3] - 1);
+                x0 = std::min(x0, known->bbox[4]); x1 = std::max(x1, known->bbox[5] - 1);
+            }
+            Index count = 0;
+            Index bz0 = z_, bz1 = -1, by0 = y_, by1 = -1, bx0 = x_, bx1 = -1;
+            for (Index z = z0; z <= z1; ++z)
+                for (Index y = y0; y <= y1; ++y) {
+                    const std::uint32_t* row = v + (z * y_ + y) * x_;
+                    for (Index x = x0; x <= x1; ++x) {
+                        if (row[x] != id) continue;
+                        ++count;
+                        bz0 = std::min(bz0, z); bz1 = std::max(bz1, z);
+                        by0 = std::min(by0, y); by1 = std::max(by1, y);
+                        bx0 = std::min(bx0, x); bx1 = std::max(bx1, x);
+                    }
+                }
+            if (count == 0) {
+                stats_.erase(std::remove_if(stats_.begin(), stats_.end(), [id](const LabelStats& s) { return s.id == id; }),
+                             stats_.end());
+                continue;
+            }
+            if (!known) {
+                LabelStats s;
+                s.id = id;
+                // keep the table ordered by id, as recomputeStats leaves it
+                auto at = std::find_if(stats_.begin(), stats_.end(), [id](const LabelStats& o) { return o.id > id; });
+                known = &*stats_.insert(at, std::move(s));
+            }
+            known->voxels = count;
+            known->bbox = {bz0, bz1 + 1, by0, by1 + 1, bx0, bx1 + 1};
+            known->touchesBorder = by0 == 0 || by1 == y_ - 1 || bx0 == 0 || bx1 == x_ - 1 ||
+                                   (z_ > 1 && (bz0 == 0 || bz1 == z_ - 1));
+        }
+        if (flagRules_) applyFlags(*flagRules_);
     }
 
     const LabelStats* LabelVolume::statsOf(std::uint32_t id) const noexcept {
@@ -198,7 +278,14 @@ namespace sirius::app {
         return nullptr;
     }
 
+    LabelStats* LabelVolume::mutableStatsOf(std::uint32_t id) noexcept {
+        for (LabelStats& s : stats_)
+            if (s.id == id) return &s;
+        return nullptr;
+    }
+
     void LabelVolume::applyFlags(const LabelFlagRules& rules) {
+        flagRules_ = rules;
         if (stats_.empty()) return;
         std::vector<Index> sizes;
         sizes.reserve(stats_.size());
@@ -423,13 +510,21 @@ namespace sirius::app {
     }
 
     std::shared_ptr<LabelVolume> LabelVolume::clone() const {
+        auto c = share();
+        c->detach();
+        return c;
+    }
+
+    std::shared_ptr<LabelVolume> LabelVolume::share() const {
         auto c = std::make_shared<LabelVolume>();
         c->t_ = t_;
         c->z_ = z_;
         c->y_ = y_;
         c->x_ = x_;
-        if (!data_.empty()) c->data_ = data_.clone();
+        c->data_ = data_;
         c->stats_ = stats_;
+        c->statsT_ = statsT_;
+        c->flagRules_ = flagRules_;
         c->maxLabel_ = maxLabel_;
         return c;
     }

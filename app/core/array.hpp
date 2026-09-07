@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <sirius/buffer.hpp>
+#include <sirius/checked_math.hpp>
 
 namespace sirius::app {
 
@@ -32,11 +33,17 @@ namespace sirius::app {
 
         Index operator[](Axis a) const noexcept;
         Index& operator[](Axis a) noexcept;
-        Index numel() const noexcept { return c * t * z * y * x; }
+        // Checked: the extents come from a file header or a step's output
+        // metadata, so a wrapped product would size an allocation far too
+        // small. Throws std::overflow_error instead (sirius/checked_math.hpp).
+        Index numel() const {
+            const std::array<Index, kAxisCount> e{c, t, z, y, x};
+            return sirius::detail::checkedProduct(e.begin(), e.end(), "Dims5::numel");
+        }
         Index planes() const noexcept { return c * t * z; }
         Index planeIndex(Index ci, Index ti, Index zi) const noexcept { return (ci * t + ti) * z + zi; }
         Index planeSize() const noexcept { return y * x; }
-        std::size_t bytes() const noexcept { return static_cast<std::size_t>(numel()) * sizeof(float); }
+        std::size_t bytes() const { return sirius::detail::checkedBytes(numel(), sizeof(float), "Dims5::bytes"); }
         // "c2 t40 z48 y2048 x2048"
         std::string toString() const;
         // "2 x 40 x 48 x 2048 x 2048"
@@ -63,8 +70,8 @@ namespace sirius::app {
 
         const Dims5& dims() const noexcept { return dims_; }
         bool empty() const noexcept { return data_.empty(); }
-        Index numel() const noexcept { return dims_.numel(); }
-        std::size_t bytes() const noexcept { return data_.bytes(); }
+        Index numel() const { return dims_.numel(); }          // may throw, see Dims5::numel
+        std::size_t bytes() const { return data_.bytes(); }
 
         float* data() noexcept { return data_.data(); }
         const float* data() const noexcept { return data_.data(); }

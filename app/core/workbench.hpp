@@ -8,13 +8,20 @@
 //
 // Threading: the workbench is single-threaded (the GUI thread). Runs are
 // prepared here as RunJob objects, executed by the caller on a worker
-// thread (RunJob::execute is self-contained) and folded back in with
-// finishRun() on the GUI thread; progress is read from the job's atomics.
+// thread (RunJob::execute is self-contained: it also obtains the Python or
+// HPC worker there, so the GUI never waits for a process to start) and
+// folded back in with finishRun() on the GUI thread; progress is read from
+// the job's atomics, the results only once finished() is true.
+//
+// While a run is active the pipeline, the dataset, the caches, the history
+// and the label volumes are frozen: every such edit is refused with a log
+// line and a false / zero / early return (canEdit() says so up front), so
+// the worker thread sees the same pipeline and outputs from start to end.
+// Selection, viewing and view-state changes stay allowed.
 
 #include <array>
 #include <atomic>
 #include <functional>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -89,7 +96,24 @@ namespace sirius::app {
 
     class Workbench;
 
+    struct RemoteConfig {
+        std::string host = "localhost";
+        int port = 7645;
+        std::string token;
+    };
+
+    // Connects to (starting when needed) the local Python worker; installed
+    // by the Qt layer, called on the thread that executes the run.
+    using LocalWorkerLauncher = std::function<std::unique_ptr<RemoteWorker>()>;
+
     // One run, prepared on the GUI thread, executed anywhere.
+    //
+    // Contract: execute() runs once, on any thread; while it runs only
+    // progress(), cancel() and finished() may be called from elsewhere. The
+    // results (error, reports, output, seconds) are published by the
+    // release store in finished() and may be read only after finished()
+    // returned true on the reading thread: reading them earlier throws
+    // std::logic_error.
     class RunJob {
     public:
         // Pipeline snapshot, target step index and context are fixed at creation.
@@ -99,35 +123,41 @@ namespace sirius::app {
         void cancel() noexcept { cancelled_.store(true); }
         bool cancelled() const noexcept { return cancelled_.load(); }
 
-        // Blocking; never throws (errors land in error()).
+        // Blocking; never throws (errors land in error()). Obtains the worker
+        // the run needs first (the Python worker, or the HPC connection).
         void execute();
-        bool succeeded() const noexcept { return finished_ && error_.empty(); }
-        bool finished() const noexcept { return finished_; }
-        const std::string& error() const noexcept { return error_; }
-        const std::vector<StepReport>& reports() const noexcept { return reports_; }
-        std::shared_ptr<const StepOutput> output() const noexcept { return output_; }
-        double seconds() const noexcept { return seconds_; }
+        bool finished() const noexcept { return finished_.load(std::memory_order_acquire); }
+        bool succeeded() const { return finished() && error_.empty(); }
+        bool wasCancelled() const { requireFinished("wasCancelled"); return cancelledResult_; }
+        const std::string& error() const { requireFinished("error"); return error_; }
+        const std::vector<StepReport>& reports() const { requireFinished("reports"); return reports_; }
+        std::shared_ptr<const StepOutput> output() const { requireFinished("output"); return output_; }
+        double seconds() const { requireFinished("seconds"); return seconds_; }
 
     private:
         friend class Workbench;
+        void requireFinished(const char* what) const;
+        void connectWorker();                          // on the executing thread
+
         Pipeline pipeline_;
         int target_ = 0;
         Executor* executor_ = nullptr;
         StepContext ctx_;
-        std::unique_ptr<RemoteWorker> ownedRemote_;   // HPC connection for the job
+        Backend backend_ = Backend::Cpu;
+        bool needsWorker_ = false;                     // a step wants the Python worker
+        LocalWorkerLauncher launcher_;
+        RemoteConfig remoteConfig_;                    // Backend::Hpc
+        std::unique_ptr<RemoteWorker> ownedRemote_;    // the job's connection
         RunProgress progress_;
         std::atomic<bool> cancelled_{false};
-        bool finished_ = false;
+        // written by execute() before the release store to finished_
+        std::atomic<bool> finished_{false};
+        bool cancelledResult_ = false;
         std::string error_;
+        std::string workerNote_;                       // "Local worker: cuda", for the log
         std::vector<StepReport> reports_;
         std::shared_ptr<const StepOutput> output_;
         double seconds_ = 0.0;
-    };
-
-    struct RemoteConfig {
-        std::string host = "localhost";
-        int port = 7645;
-        std::string token;
     };
 
     class Workbench {
@@ -169,8 +199,11 @@ namespace sirius::app {
         std::shared_ptr<ArraySource> source() const noexcept { return source_; }
 
         // --- pipeline (every mutation is one undo entry) ---------------------
+        // False while a run is active: every edit below (pipeline, dataset,
+        // caches, history, labels) is then refused with a log line.
+        bool canEdit() const noexcept { return !running(); }
         const Pipeline& pipeline() const noexcept { return pipeline_; }
-        StepId addStep(const std::string& kind, int at = -1);
+        StepId addStep(const std::string& kind, int at = -1);        // 0 when refused
         void removeStep(int index);
         bool moveStep(int index, int delta);
         StepId duplicateStep(int index);
@@ -249,12 +282,15 @@ namespace sirius::app {
         void setRemoteConfig(RemoteConfig c);
         // Steps that need the Python worker (Operation::remoteCapable) get a
         // local worker from this launcher when the backend is not HPC; the
-        // Qt layer installs one that spawns app/python/sirius_worker.
-        using WorkerLauncher = std::function<std::unique_ptr<RemoteWorker>()>;
+        // Qt layer installs one that spawns app/python/sirius_worker. A run
+        // job calls it on its own thread; loadPlugins calls it here.
+        using WorkerLauncher = LocalWorkerLauncher;
         void setLocalWorkerLauncher(WorkerLauncher launcher) { launcher_ = std::move(launcher); }
-        // Starts the local worker (through the launcher), registers the user
-        // operations it finds (app/python/sirius_worker/plugins.py) and logs the
-        // outcome; returns the number registered. `reload` re-imports the files.
+        // Starts the local worker (through the launcher, synchronously: this
+        // blocks until the worker answers), registers the user operations it
+        // finds (app/python/sirius_worker/plugins.py) and logs the outcome;
+        // returns the number registered. `reload` re-imports the files.
+        // Refused (0) while a run is active: the registry is in use.
         int loadPlugins(bool reload);
         struct PluginInfo {
             std::string kind, name, file, error;   // error non-empty when the file did not load
@@ -262,7 +298,9 @@ namespace sirius::app {
         const std::vector<PluginInfo>& plugins() const noexcept { return plugins_; }
         const std::vector<std::string>& pluginDirs() const noexcept { return pluginDirs_; }
         // A job for step `target` (or the last step when -1); null with a log
-        // line when nothing can run. The caller executes it and calls finishRun.
+        // line when nothing can run. The caller executes it and calls
+        // finishRun once it is finished (a job that never executed is
+        // logged as abandoned).
         std::shared_ptr<RunJob> createRun(int target = -1);
         void finishRun(const std::shared_ptr<RunJob>& job);
         bool running() const noexcept { return static_cast<bool>(activeRun_); }
@@ -270,11 +308,19 @@ namespace sirius::app {
         void cancelRun();
 
         // --- labels (undoable, on the viewed output) -------------------------
+        // The volume shown for the viewed step. It belongs to that step's
+        // output (a step that carries its input's labels through owns a
+        // copy-on-write view of them, see labels.hpp), so an edit here never
+        // changes another step's cached labels.
         std::shared_ptr<LabelVolume> viewedLabels() const;
         // One brush stroke = one undo entry: call beginPaintStroke() on press,
-        // paintLabels() on every move.
+        // paintLabels() on every move and endPaintStroke() on release. The
+        // label statistics are brought up to date at the end of the stroke
+        // (every other edit updates them at once); a stroke still open is
+        // ended by the next stroke, edit or statistics query.
         void beginPaintStroke();
         void paintLabels(Index z, Index y, Index x, bool erase);          // uses brush size / label
+        void endPaintStroke();
         void fillLabel(Index z, Index y, Index x);
         void mergeLabels(const std::vector<std::uint32_t>& ids);
         void splitLabel(std::uint32_t id, std::array<Index, 3> a, std::array<Index, 3> b);
@@ -302,12 +348,28 @@ namespace sirius::app {
         Snapshot snapshot() const;
         void restore(const Snapshot& s);
         void pushEdit(const std::string& label, const Snapshot& before, const std::string& mergeKey = {});
+        void pushCommand(Command c);      // every history push goes through here
         void notify(void (Observer::*fn)());
         void notifyStep(int index);
+        void notifyLabels(StepId id);
         void clampSelection();
         void onStepSelected(int index);
         Diagnostics previewDiagnostics(int index) const;
-        void recordLabelDiff(const std::string& label, StepId id, LabelDiff diff);
+        // True (with a log line naming `what`) when a run is active.
+        bool refuseIfRunning(const char* what);
+        void installDataset(std::shared_ptr<ArraySource> source, DatasetMeta meta, std::string note);
+        // The labels of step `id` as the executor holds them now, or null.
+        std::shared_ptr<LabelVolume> labelsOf(StepId id) const;
+        // The viewed labels and the step they belong to (0 when none).
+        std::shared_ptr<LabelVolume> editableLabels(StepId* id);
+        // Undo / redo of a label edit: applies `diff` to the labels of step
+        // `id` if they are still the volume the edit was made on, else a
+        // logged no-op (the step was re-run or removed since).
+        void applyLabelDiff(StepId id, const std::weak_ptr<LabelVolume>& target, const LabelDiff& diff, bool forward);
+        void pushLabelCommand(const std::string& label, const std::string& mergeKey, StepId id,
+                              const std::shared_ptr<LabelVolume>& labels, std::shared_ptr<LabelDiff> diff);
+        void recordLabelDiff(const std::string& label, StepId id, const std::shared_ptr<LabelVolume>& labels,
+                             LabelDiff diff);
 
         std::vector<Observer*> observers_;
         std::shared_ptr<ArraySource> source_;
@@ -329,11 +391,14 @@ namespace sirius::app {
         WorkerLauncher launcher_;
         std::vector<PluginInfo> plugins_;
         std::vector<std::string> pluginDirs_;
-        std::map<std::string, Snapshot> mergeBefore_;    // first "before" of an open merge group
-        std::string lastMergeKey_;
+        // The first "before" of the merge group the top history entry belongs
+        // to (History::mergesWith decides whether it still applies).
+        std::optional<std::pair<std::string, Snapshot>> mergeFirst_;
         int strokeCounter_ = 0;
-        LabelDiff strokeDiff_;
+        LabelDiff strokeDiff_;                           // the open stroke so far
         StepId strokeStep_ = 0;
+        std::shared_ptr<LabelVolume> strokeLabels_;      // the volume the open stroke edits
+        bool strokeOpen_ = false;
     };
 
 } // namespace sirius::app

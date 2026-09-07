@@ -20,15 +20,21 @@ Arrays are always ``(c, t, z, y, x)`` float32 (x fastest), labels are
 ``sirius`` extension (SIM reconstruction, GPU TIFF decode) are used when
 importable and reported as missing otherwise.
 
-Parameter keys follow the operation definitions in ``app/core/ops``; the
-``_get`` helper accepts the aliases listed with each step so pipelines saved
-by older app versions keep running.
+Parameter keys are the application's: every step declares a :class:`StepSpec`
+with exactly the keys, defaults and choices of the C++ operation's parameter
+table (``app/core/ops/*.cpp``), and ``bindings/tests/test_workbench_schema.py``
+checks those declarations against a snapshot of the C++ tables
+(``op_schema.json``). Older key spellings are accepted through each spec's
+aliases; a key a step does not understand raises an
+:class:`UnknownParameterWarning` instead of being ignored.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -39,6 +45,8 @@ __all__ = [
     "Cancelled",
     "NotAvailable",
     "StepResult",
+    "StepSpec",
+    "UnknownParameterWarning",
     "load_dataset",
     "load_model",
     "model_cache_dir",
@@ -48,6 +56,7 @@ __all__ = [
     "run_pipeline",
     "run_step",
     "step_kinds",
+    "step_spec",
     "tiled_inference",
 ]
 
@@ -66,12 +75,20 @@ class Cancelled(RuntimeError):
     """Raised inside a step when the caller's cancel callback fired."""
 
 
+class UnknownParameterWarning(UserWarning):
+    """A step received parameter keys it does not understand; they are
+    ignored, but never silently (see :func:`_prepare_params`)."""
+
+
 # --------------------------------------------------------------------------
 # parameter helpers
 # --------------------------------------------------------------------------
 
 
-def _get(params: Dict[str, Any], keys: Sequence[str], default: Any = None) -> Any:
+def _get(params: Dict[str, Any], keys: Any, default: Any = None) -> Any:
+    """The first non-None value of `keys` (one key or a sequence) in `params`."""
+    if isinstance(keys, str):
+        keys = (keys,)
     for k in keys:
         if k in params and params[k] is not None:
             return params[k]
@@ -107,7 +124,11 @@ def _str(params, keys, default: str = "") -> str:
 
 
 def _list(params, keys, n: int, default: Sequence[float]) -> List[float]:
-    v = _get(params, keys, None)
+    return _as_list(_get(params, keys, None), n, default)
+
+
+def _as_list(v: Any, n: int, default: Sequence[float]) -> List[float]:
+    """`v` (a list, a "z, y, x" string or one number) as n floats, padded from `default`."""
     if v is None:
         return [float(d) for d in default]
     if isinstance(v, str):
@@ -122,6 +143,33 @@ def _list(params, keys, n: int, default: Sequence[float]) -> List[float]:
     if len(v) < n:
         v = v + [float(d) for d in default[len(v):]]
     return v[:n]
+
+
+def _floats(v: Any) -> List[float]:
+    """A list of floats from a list, a comma-separated string or one number (None = empty)."""
+    if v is None or v == "":
+        return []
+    if isinstance(v, (int, float)):
+        return [float(v)]
+    if isinstance(v, str):
+        v = [p for p in v.replace(";", ",").split(",") if p.strip()]
+    return [float(x) for x in v]
+
+
+def _pop_first(p: Dict[str, Any], keys: Sequence[str]) -> Any:
+    """Removes every key of `keys` from `p`; returns the first non-None value."""
+    found = None
+    for k in keys:
+        v = p.pop(k, None)
+        if found is None and v is not None:
+            found = v
+    return found
+
+
+def _voxel_um(meta: Optional[Dict[str, Any]]) -> Tuple[float, float, float]:
+    """(x, y, z) voxel size of the metadata (the loader's defaults when absent)."""
+    v = list((meta or {}).get("voxel_um") or []) + [0.1, 0.1, 0.2]
+    return float(v[0]), float(v[1]), float(v[2])
 
 
 def _choice(value: Any, options: Sequence[str], default: str) -> str:
@@ -139,6 +187,55 @@ def _choice(value: Any, options: Sequence[str], default: str) -> str:
         if o.lower().startswith(s) or s.startswith(o.lower()):
             return o
     return default
+
+
+@dataclass(frozen=True)
+class StepSpec:
+    """What a step consumes. `defaults` holds the application's canonical
+    parameter keys with the defaults of the C++ operation's parameter table
+    (kept identical: the schema test compares them), `choices` the options of
+    its choice parameters. `aliases` map older / worker spellings onto a
+    canonical key (used only when the canonical key is absent), `translate`
+    rewrites older key layouts in place before the check, and `extra` lists
+    Python-only keys. Any other key raises an UnknownParameterWarning."""
+
+    kind: str
+    defaults: Dict[str, Any]
+    choices: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+    aliases: Dict[str, str] = field(default_factory=dict)
+    extra: Tuple[str, ...] = ()
+    translate: Optional[Callable[[Dict[str, Any], Optional[Dict[str, Any]]], Any]] = None
+    needs_labels: bool = False
+
+    @property
+    def keys(self) -> Tuple[str, ...]:
+        return tuple(self.defaults)
+
+    def known(self) -> set:
+        return set(self.defaults) | set(self.aliases) | set(self.extra)
+
+
+def _prepare_params(spec: StepSpec, params: Optional[Dict[str, Any]],
+                    meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The step's parameters with aliases renamed onto the canonical keys
+    (canonical values win), older layouts translated, unknown keys warned
+    about and missing keys filled from the defaults."""
+    p = dict(params or {})
+    for alias, key in spec.aliases.items():
+        if alias in p:
+            v = p.pop(alias)
+            if p.get(key) is None:
+                p[key] = v
+    if spec.translate is not None:
+        spec.translate(p, meta)
+    unknown = sorted(k for k in p if k not in spec.known())
+    if unknown:
+        warnings.warn(f"step '{spec.kind}': unknown parameter(s) {', '.join(unknown)} ignored; "
+                      f"it takes {', '.join(spec.keys) or 'no parameters'}", UnknownParameterWarning, stacklevel=3)
+    for k, d in spec.defaults.items():
+        if p.get(k) is None:
+            p[k] = list(d) if isinstance(d, list) else d
+    return p
 
 
 def _progress(progress: ProgressFn, fraction: float, message: str = "") -> None:
@@ -165,7 +262,7 @@ def _dims(a: np.ndarray) -> Dict[str, int]:
     return dict(zip(AXES, (int(n) for n in a.shape)))
 
 
-def _channel_index(params, keys, meta: Dict[str, Any], c: int, default: int = 0) -> int:
+def _channel_index(params, keys: Any, meta: Dict[str, Any], c: int, default: int = 0) -> int:
     """A channel given as an index or as a label / wavelength string."""
     v = _get(params, keys, default)
     if isinstance(v, str):
@@ -291,7 +388,7 @@ def _parse_ome_xml(xml: str) -> Dict[str, Any]:
         if color:
             try:
                 rgba = int(color) & 0xFFFFFFFF
-                entry["color"] = "#%02x%02x%02x" % ((rgba >> 24) & 255, (rgba >> 16) & 255, (rgba >> 8) & 255)
+                entry["color"] = f"#{(rgba >> 24) & 255:02x}{(rgba >> 16) & 255:02x}{(rgba >> 8) & 255:02x}"
             except ValueError:
                 pass
         channels.append(entry)
@@ -407,7 +504,7 @@ def _load_tiff(path: str, page_order: str, c: Optional[int], t: Optional[int], z
         counts = {"c": int(c or 0), "t": int(t or 0), "z": int(z or 0)}
         unknown = [k for k, v in counts.items() if v <= 0]
         known = 1
-        for k, v in counts.items():
+        for v in counts.values():
             if v > 0:
                 known *= v
         if len(unknown) > 1:
@@ -452,17 +549,131 @@ class StepResult:
     info: Dict[str, Any] = field(default_factory=dict)
 
 
-def _kept_axes(params) -> str:
-    v = _get(params, ("axes", "keep", "kept"), None)
+_STEPS: Dict[str, Callable[..., StepResult]] = {}
+_SPECS: Dict[str, StepSpec] = {}
+
+
+def _step(spec: StepSpec) -> Callable[[Callable[..., StepResult]], Callable[..., StepResult]]:
+    """Registers a step function under its spec's kind (dispatch and the
+    schema drift test read ``_SPECS``)."""
+
+    def wrap(fn: Callable[..., StepResult]) -> Callable[..., StepResult]:
+        _SPECS[spec.kind] = spec
+        _STEPS[spec.kind] = fn
+        return fn
+
+    return wrap
+
+
+def _no_sim() -> Dict[str, Any]:
+    return {"present": False, "ndirs": 3, "nphases": 5, "fast_si": False}
+
+
+# --- intensity helpers (mirrors of sirius/image_ops.cpp) ---------------------
+
+
+def _percentiles(values: np.ndarray, lo_pct: float, hi_pct: float, max_samples: int = 1 << 22) -> Tuple[float, float]:
+    """``sirius::percentiles``: order statistics (no interpolation) of a
+    fixed-stride sub-sample with NaNs dropped; flat quantiles fall back to the
+    full range."""
+    v = np.asarray(values, dtype=np.float32).reshape(-1)
+    n = v.size
+    if n == 0:
+        return 0.0, 0.0
+    lo_pct = min(max(float(lo_pct), 0.0), 100.0)
+    hi_pct = min(max(float(hi_pct), lo_pct), 100.0)
+    stride = max(1, -(-n // max(int(max_samples), 1)))
+    s = v[::stride]
+    s = s[~np.isnan(s)]
+    if s.size == 0:
+        return 0.0, 0.0
+
+    def rank(pct: float) -> int:  # llround for a non-negative argument
+        return int(math.floor(pct / 100.0 * (s.size - 1) + 0.5))
+
+    klo, khi = rank(lo_pct), rank(hi_pct)
+    part = np.partition(s, [klo, khi])
+    lo, hi = float(part[klo]), float(part[khi])
+    if hi > lo:
+        return lo, hi
+    finite = v[~np.isnan(v)]
+    if finite.size == 0:
+        return 0.0, 0.0
+    return float(finite.min()), float(finite.max())
+
+
+def _histogram(values: np.ndarray, bins: int, lo: float, hi: float) -> np.ndarray:
+    """``sirius::histogram``: counts of `bins` equal bins over [lo, hi]; NaN and
+    values outside the range are not counted, hi lands in the last bin."""
+    counts = np.zeros(max(bins, 1), dtype=np.float64)
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    if x.size == 0 or not hi > lo:
+        return counts
+    scale = bins / (float(hi) - float(lo))
+    x = x[(x >= lo) & (x <= hi)]
+    b = ((x - lo) * scale).astype(np.int64)
+    b[b >= bins] = bins - 1
+    return np.bincount(b, minlength=bins).astype(np.float64)
+
+
+def _otsu_threshold(values: np.ndarray) -> float:
+    """``sirius::app::otsuThreshold`` (threshold.cpp): Otsu's cut on a 256-bin
+    histogram between the data's min and max, returned as the upper edge of
+    the best bin."""
+    v = np.asarray(values, dtype=np.float32).reshape(-1)
+    v = v[~np.isnan(v)]
+    if v.size == 0:
+        return float("inf")
+    mn, mx = float(v.min()), float(v.max())
+    if not mx > mn:
+        return mn
+    bins = 256
+    h = _histogram(v, bins, mn, mx)
+    idx = np.arange(bins, dtype=np.float64)
+    total = h.sum()
+    sum_all = (idx * h).sum()
+    w_b = np.cumsum(h)
+    sum_b = np.cumsum(idx * h)
+    w_f = total - w_b
+    valid = (w_b > 0) & (w_f > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        m_b = sum_b / w_b
+        m_f = (sum_all - sum_b) / w_f
+        between = w_b * w_f * (m_b - m_f) ** 2
+    between[~valid] = -np.inf
+    best = int(np.argmax(between))   # the first maximum, as the C++ strict '>' keeps
+    return mn + (mx - mn) * float(best + 1) / bins
+
+
+def _rescale_gamma(a: np.ndarray, lo: float, hi: float, gamma: float) -> np.ndarray:
+    """``sirius::rescaleGamma``: clamp((v - lo) / (hi - lo), 0, 1) ^ (1 / gamma);
+    an empty window maps v > hi to 1 and the rest to 0 (NaN stays NaN)."""
+    span = float(hi) - float(lo)
+    inv_gamma = 1.0 / gamma if gamma > 0.0 else 1.0
+    out = np.empty_like(a, dtype=np.float32)
+    for c in range(a.shape[0]):   # one (t, z, y, x) block at a time bounds the float64 scratch
+        v = a[c]
+        if not span > 0.0:
+            r = np.where(v > hi, np.float32(1.0), np.float32(0.0))
+            r[np.isnan(v)] = np.nan
+            out[c] = r
+            continue
+        t = np.clip((v.astype(np.float64) - lo) / span, 0.0, 1.0)
+        out[c] = t if inv_gamma == 1.0 else np.power(t, inv_gamma)
+    return out
+
+
+# --- reductions ---------------------------------------------------------------
+
+
+def _kept_axes(params: Dict[str, Any]) -> str:
+    v = params.get("keep")
     if isinstance(v, dict):  # {"c": true, "t": false, ...}
         return "".join(ax for ax in AXES if v.get(ax, True))
     if isinstance(v, (list, tuple)):
         return "".join(str(x)[0].lower() for x in v)
     if v is None:
-        reduced = _get(params, ("reduce", "reduced"), "t")
-        if isinstance(reduced, (list, tuple)):
-            reduced = "".join(str(x)[0].lower() for x in reduced)
-        return "".join(ax for ax in AXES if ax not in str(reduced).lower())
+        return AXES
     s = str(v).lower().replace("->", " ").split()
     s = s[-1] if s else ""
     return "".join(ax for ax in AXES if ax in s)
@@ -473,9 +684,9 @@ def _reduce(a: np.ndarray, reduce_axes: Sequence[int], op: str) -> np.ndarray:
         return a
     axes = tuple(sorted(reduce_axes))
     if op == "sum":
-        return a.sum(axis=axes, keepdims=True, dtype=np.float32)
+        return a.sum(axis=axes, keepdims=True, dtype=np.float64).astype(np.float32)
     if op == "mean":
-        return a.mean(axis=axes, keepdims=True, dtype=np.float32)
+        return a.mean(axis=axes, keepdims=True, dtype=np.float64).astype(np.float32)
     if op == "max":
         return np.nanmax(a, axis=axes, keepdims=True)
     if op == "min":
@@ -483,61 +694,334 @@ def _reduce(a: np.ndarray, reduce_axes: Sequence[int], op: str) -> np.ndarray:
     raise ValueError(f"unknown reduction '{op}'")
 
 
+def _einsum_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    # older exports named the reduced axes instead of the kept ones
+    reduced = _pop_first(p, ("reduce", "reduced"))
+    if reduced is not None and p.get("keep") is None:
+        if isinstance(reduced, (list, tuple)):
+            reduced = "".join(str(x)[0].lower() for x in reduced)
+        p["keep"] = "".join(ax for ax in AXES if ax not in str(reduced).lower())
+
+
+_EINSUM = StepSpec("einsum", {"keep": "czyx", "reduction": "mean"},
+                   choices={"reduction": ("sum", "mean", "max", "min")},
+                   aliases={"axes": "keep", "kept": "keep", "op": "reduction", "red": "reduction"},
+                   translate=_einsum_legacy)
+
+
+@_step(_EINSUM)
 def step_einsum(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """axes: kept axes ("czyx"); reduction: sum | mean | max | min."""
+    """keep: the surviving axes ("czyx"); reduction: sum | mean | max | min.
+    Reduced axes stay with length 1."""
     kept = _kept_axes(params)
-    op = _choice(_get(params, ("reduction", "op", "red"), "mean"), ["sum", "mean", "max", "min"], "mean")
+    op = _choice(params.get("reduction"), _EINSUM.choices["reduction"], "mean")
     reduce_axes = [i for i, ax in enumerate(AXES) if ax not in kept]
     out = _reduce(a, reduce_axes, op)
     meta = dict(meta, dims=_dims(out))
     if "c" not in kept:
         meta["channels"] = [{"label": f"{op} over c", "wavelength_nm": 0.0, "color": "#ffffff"}]
         meta["rgb"] = False
+    if "z" not in kept:
+        meta["sim"] = _no_sim()
     return StepResult(np.ascontiguousarray(out, dtype=np.float32), meta,
                       info={"expression": f"{AXES} -> {kept or '·'}", "reduction": op})
 
 
+_MAXPROJ = StepSpec("maxproj", {"axis": "z"}, choices={"axis": ("z", "t", "c")})
+
+
+@_step(_MAXPROJ)
 def step_maxproj(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
     """axis: z (default) | t | c."""
-    axis = _choice(_get(params, ("axis",), "z"), list(AXES), "z")
-    return step_einsum(a, {"axes": AXES.replace(axis, ""), "reduction": "max"}, meta)
+    axis = _choice(params.get("axis"), _MAXPROJ.choices["axis"], "z")
+    return step_einsum(a, {"keep": AXES.replace(axis, ""), "reduction": "max"}, meta)
 
 
+@_step(StepSpec("meant", {}))
 def step_meant(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    return step_einsum(a, {"axes": "czyx", "reduction": "mean"}, meta)
+    return step_einsum(a, {"keep": "czyx", "reduction": "mean"}, meta)
 
 
-def _percentile_pair(v: np.ndarray, lo: float, hi: float, max_samples: int = 1 << 22) -> Tuple[float, float]:
-    flat = v.reshape(-1)
-    if flat.size > max_samples:
-        flat = flat[:: max(1, flat.size // max_samples)]
-    flat = flat[np.isfinite(flat)]
-    if flat.size == 0:
-        return 0.0, 1.0
-    p = np.percentile(flat, [lo, hi])
-    return float(p[0]), float(p[1])
+# --- intensity ----------------------------------------------------------------
 
 
+def _contrast_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    if _pop_first(p, ("per_channel", "perChannel")):
+        warnings.warn("step 'contrast': per_channel is not a parameter of the application's Contrast step; "
+                      "one window (the extreme percentiles over every channel) applies to all channels",
+                      UnknownParameterWarning, stacklevel=5)
+
+
+_CONTRAST = StepSpec(
+    "contrast",
+    {"min": 0.0, "max": 0.0, "gamma": 1.0, "lo_percentile": 0.2, "hi_percentile": 99.8, "bake": True},
+    aliases={"low": "lo_percentile", "lo": "lo_percentile", "low_percentile": "lo_percentile",
+             "p_low": "lo_percentile", "percentile_low": "lo_percentile",
+             "high": "hi_percentile", "hi": "hi_percentile", "high_percentile": "hi_percentile",
+             "p_high": "hi_percentile", "percentile_high": "hi_percentile"},
+    translate=_contrast_legacy)
+
+
+def _contrast_auto_window(a: np.ndarray, lo_pct: float, hi_pct: float, max_planes: int = 8) -> Tuple[float, float]:
+    """``contrastAutoParams``: the extreme lo / hi percentiles over every
+    channel, each estimated from at most `max_planes` planes spread over (t, z)."""
+    c, t, z = a.shape[:3]
+    planes = t * z
+    step = max(1, -(-planes // max_planes)) if max_planes > 0 else 1
+    lo, hi = float("inf"), float("-inf")
+    for ch in range(c):
+        samples = np.concatenate([a[ch, k // z, k % z].reshape(-1) for k in range(0, planes, step)])
+        plo, phi = _percentiles(samples, lo_pct, hi_pct)
+        lo, hi = min(lo, plo), max(hi, phi)
+    if not lo < hi:
+        lo, hi = 0.0, 1.0
+    return lo, hi
+
+
+@_step(_CONTRAST)
 def step_contrast(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """low / high percentiles (0.2 / 99.8), gamma (1), per_channel (true)."""
-    lo = _float(params, ("low", "lo", "low_percentile", "p_low", "percentile_low"), 0.2)
-    hi = _float(params, ("high", "hi", "high_percentile", "p_high", "percentile_high"), 99.8)
-    gamma = max(_float(params, ("gamma",), 1.0), 1e-3)
-    per_channel = _bool(params, ("per_channel", "perChannel"), True)
+    """min / max: the window mapped to 0..1 (max <= min = automatic: the
+    lo_percentile / hi_percentile of the input, one window for every channel);
+    gamma. `bake` is accepted (the data is always rewritten)."""
+    lo_pct = _float(params, "lo_percentile", 0.2)
+    hi_pct = _float(params, "hi_percentile", 99.8)
+    if lo_pct >= hi_pct:
+        raise ValueError("contrast: the auto low percentile must be below the high one")
+    gamma = _float(params, "gamma", 1.0)
+    lo, hi = _float(params, "min", 0.0), _float(params, "max", 0.0)
+    automatic = not hi > lo
+    if automatic:
+        lo, hi = _contrast_auto_window(a, lo_pct, hi_pct)
+    out = _rescale_gamma(a, lo, hi, gamma)
+    return StepResult(out, dict(meta), info={"window": [lo, hi], "automatic": automatic, "gamma": gamma})
+
+
+def _read_pages(path: str) -> np.ndarray:
+    """A TIFF as (pages, y, x) float32 (flat / dark images)."""
+    a, _ = load_dataset(path)
+    return a.reshape((-1,) + a.shape[-2:])
+
+
+_FLATFIELD = StepSpec("flatfield", {"flat": "", "dark": ""},
+                      aliases={"flat_field": "flat", "flat_path": "flat", "dark_path": "dark"})
+
+
+@_step(_FLATFIELD)
+def step_flatfield(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
+    """flat: TIFF of the illumination profile (one page, or one page per
+    channel); dark: optional camera offset. v = (v - dark) * mean(flat - dark) / (flat - dark)."""
+    flat_path = _str(params, "flat")
+    if not flat_path:
+        raise ValueError("flat-field: choose a flat image ('flat')")
+    flat = _read_pages(flat_path)
+    dark_path = _str(params, "dark")
+    dark = _read_pages(dark_path) if dark_path else None
+    c = a.shape[0]
+    if flat.shape[-2:] != a.shape[-2:]:
+        raise ValueError(f"the flat image is {flat.shape[-1]} × {flat.shape[-2]}, the data {a.shape[-1]} × {a.shape[-2]}")
+    if dark is not None and dark.shape[-2:] != a.shape[-2:]:
+        raise ValueError(f"the dark image is {dark.shape[-1]} × {dark.shape[-2]}, the data {a.shape[-1]} × {a.shape[-2]}")
     out = np.empty_like(a, dtype=np.float32)
-    windows = []
-    groups: List[Any] = list(range(a.shape[0])) if per_channel else [slice(None)]
-    for g in groups:
-        vlo, vhi = _percentile_pair(a[g], lo, hi)
-        if vhi <= vlo:
-            vhi = vlo + 1.0
-        x = (a[g] - vlo) / np.float32(vhi - vlo)
-        np.clip(x, 0.0, 1.0, out=x)
-        if gamma != 1.0:
-            x = np.power(x, np.float32(1.0 / gamma))
-        out[g] = x
-        windows.append([vlo, vhi])
-    return StepResult(out, dict(meta), info={"windows": windows, "gamma": gamma})
+    for ch in range(c):
+        f = flat[ch if flat.shape[0] == c else 0]
+        d = dark[ch if dark.shape[0] == c else 0] if dark is not None else None
+        gain = f - (d if d is not None else 0.0)
+        mean = float(gain.mean(dtype=np.float64))
+        if not mean > 0.0:
+            raise ValueError("flat-field: the flat image must be brighter than the dark image")
+        gain = (mean / np.maximum(gain, np.float32(1e-6 * mean))).astype(np.float32)
+        out[ch] = (a[ch] - (d if d is not None else 0.0)) * gain
+    return StepResult(out, dict(meta))
+
+
+def _bleach_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    to_mean = _pop_first(p, ("to_mean", "toMean", "reference_mean"))
+    if to_mean is not None and p.get("mode") is None:
+        p["mode"] = "Match mean" if _bool({"v": to_mean}, "v", False) else "Match first frame"
+
+
+_BLEACH = StepSpec("bleach", {"mode": "Match first frame", "over": "t"},
+                   choices={"mode": ("Match first frame", "Match mean"), "over": ("t", "z")},
+                   translate=_bleach_legacy)
+
+
+def _equalize_frames(stack: np.ndarray, to_mean: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """``sirius::equalizeFrames``: scale every frame (axis 0) so its sum
+    matches the first frame's (or the mean); empty frames are left alone."""
+    sums = stack.reshape(stack.shape[0], -1).sum(axis=1, dtype=np.float64)
+    target = float(sums.mean()) if to_mean else float(sums[0])
+    ok = (sums != 0.0) & np.isfinite(sums)
+    scale = np.ones_like(sums, dtype=np.float32)
+    scale[ok] = (target / sums[ok]).astype(np.float32)
+    return stack * scale.reshape((-1,) + (1,) * (stack.ndim - 1)), scale
+
+
+@_step(_BLEACH)
+def step_bleach(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
+    """mode: Match first frame | Match mean; over: t (the time series of every
+    channel) | z (the planes of every stack)."""
+    to_mean = _choice(params.get("mode"), _BLEACH.choices["mode"], "Match first frame") == "Match mean"
+    over = _choice(params.get("over"), _BLEACH.choices["over"], "t")
+    out = np.empty_like(a, dtype=np.float32)
+    scales: List[Any] = []
+    for c in range(a.shape[0]):
+        if over == "t":
+            out[c], s = _equalize_frames(a[c], to_mean)
+            scales.append(s.tolist())
+        else:
+            per_t = []
+            for t in range(a.shape[1]):
+                out[c, t], s = _equalize_frames(a[c, t], to_mean)
+                per_t.append(s.tolist())
+            scales.append(per_t)
+    return StepResult(out, dict(meta), info={"scales": scales, "mode": "mean" if to_mean else "first", "over": over})
+
+
+# --- geometry -----------------------------------------------------------------
+
+
+def _croppad_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    # older exports: origin [z, y, x] and size [z, y, x] lists
+    origin = _pop_first(p, ("origin", "offset", "start"))
+    size = _pop_first(p, ("size", "extent", "shape"))
+    if origin is not None:
+        for k, v in zip(("z0", "y0", "x0"), _as_list(origin, 3, [0, 0, 0])):
+            p.setdefault(k, int(v))
+    if size is not None:
+        for k, v in zip(("z", "y", "x"), _as_list(size, 3, [0, 0, 0])):
+            p.setdefault(k, int(v))
+
+
+_CROPPAD = StepSpec("croppad", {"z0": 0, "y0": 0, "x0": 0, "z": 0, "y": 0, "x": 0, "fill": 0.0},
+                    aliases={"pad_value": "fill"}, translate=_croppad_legacy, needs_labels=True)
+
+
+@_step(_CROPPAD)
+def step_croppad(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any],
+                 labels: Optional[np.ndarray] = None) -> StepResult:
+    """z0, y0, x0: origin (negative = padding); z, y, x: size (0 = to the
+    edge); fill. Labels are cropped along (padding is background)."""
+    nz, ny, nx = a.shape[2:]
+    origin = [_int(params, k, 0) for k in ("z0", "y0", "x0")]
+    size = [_int(params, k, 0) for k in ("z", "y", "x")]
+    ext = [size[i] if size[i] > 0 else max(1, (nz, ny, nx)[i] - origin[i]) for i in range(3)]
+    fill = _float(params, "fill", 0.0)
+
+    def box(src: np.ndarray, dst: np.ndarray) -> None:
+        s, d = [], []
+        for i, n in enumerate((nz, ny, nx)):
+            s0, s1 = max(origin[i], 0), min(origin[i] + ext[i], n)
+            if s1 <= s0:
+                return   # no overlap: the output is all fill
+            s.append(slice(s0, s1))
+            d.append(slice(s0 - origin[i], s1 - origin[i]))
+        lead = (slice(None),) * (src.ndim - 3)
+        dst[lead + tuple(d)] = src[lead + tuple(s)]
+
+    out = np.full(a.shape[:2] + tuple(ext), np.float32(fill), dtype=np.float32)
+    box(a, out)
+    out_labels = None
+    if labels is not None and labels.size:
+        out_labels = np.zeros((labels.shape[0],) + tuple(ext), dtype=np.uint32)
+        box(labels, out_labels)
+    m = dict(meta, dims=_dims(out))
+    if ext[0] != nz:
+        m["sim"] = _no_sim()
+    return StepResult(out, m, labels=out_labels, info={"origin": origin, "size": ext})
+
+
+def _resample_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    # older exports: voxel [z, y, x] (or one isotropic size) or factor [z, y, x]
+    voxel = _pop_first(p, ("voxel", "voxel_um", "target", "isotropic"))
+    factor = _pop_first(p, ("factor", "factors", "zoom"))
+    if voxel is not None:
+        target = [float(voxel)] * 3 if isinstance(voxel, (int, float)) else _as_list(voxel, 3, [0, 0, 0])
+        for k, v in zip(("voxel_z", "voxel_y", "voxel_x"), target):
+            p.setdefault(k, v)
+    elif factor is not None:
+        vx, vy, vz = _voxel_um(meta)
+        f = _as_list(factor, 3, [1, 1, 1])
+        for k, cur, fi in zip(("voxel_z", "voxel_y", "voxel_x"), (vz, vy, vx), f):
+            p.setdefault(k, cur / fi if fi > 0 else 0.0)
+
+
+_RESAMPLE = StepSpec("resample", {"voxel_x": 0.0, "voxel_y": 0.0, "voxel_z": 0.0, "interpolation": "linear"},
+                     choices={"interpolation": ("linear", "cubic", "nearest")},
+                     aliases={"interp": "interpolation"}, translate=_resample_legacy)
+
+
+def _resample_extent(n: int, d: float, t: float) -> int:
+    """``resampleGeometry``: the output extent keeps the physical field."""
+    return 1 if n == 1 else int(math.floor((n - 1) * d / t + 1e-9)) + 1
+
+
+def _axis_taps(n_in: int, n_out: int, ratio: float, interp: str) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """``axisTaps`` of image_ops.cpp for every output index of one axis:
+    (indices, weights) pairs; positions outside the input weigh 0 (fill)."""
+    p = np.arange(n_out, dtype=np.float64) * ratio
+    if n_in == 1:
+        ok = (p >= -0.5) & (p <= 0.5)
+        return [(np.zeros(n_out, dtype=np.int64), ok.astype(np.float64))]
+    if interp == "nearest":
+        ok = (p >= -0.5) & (p < n_in - 0.5)
+        i = np.clip(np.floor(p + 0.5), 0, n_in - 1).astype(np.int64)
+        return [(i, ok.astype(np.float64))]
+    ok = (p >= 0.0) & (p <= n_in - 1)
+    fl = np.floor(p)
+    i0 = fl.astype(np.int64)
+    f = p - fl
+    if interp == "linear":
+        return [(np.clip(i0, 0, n_in - 1), (1.0 - f) * ok), (np.clip(i0 + 1, 0, n_in - 1), f * ok)]
+    f2, f3 = f * f, f * f * f   # Catmull-Rom, clamped taps at the edges
+    w = [0.5 * (-f3 + 2.0 * f2 - f), 0.5 * (3.0 * f3 - 5.0 * f2 + 2.0), 0.5 * (-3.0 * f3 + 4.0 * f2 + f), 0.5 * (f3 - f2)]
+    return [(np.clip(i0 - 1 + k, 0, n_in - 1), w[k] * ok) for k in range(4)]
+
+
+def _resample_volume(v: np.ndarray, extents: Sequence[int], ratios: Sequence[float], interp: str) -> np.ndarray:
+    """Separable resampling of a (z, y, x) volume onto `extents` with the
+    taps of the application's `resampleAffine` (axis-aligned scaling)."""
+    out = v
+    for axis in (2, 1, 0):
+        n_in, n_out = out.shape[axis], int(extents[axis])
+        if n_in == n_out and abs(ratios[axis] - 1.0) < 1e-12:
+            continue
+        acc = None
+        for idx, w in _axis_taps(n_in, n_out, ratios[axis], interp):
+            shape = [1, 1, 1]
+            shape[axis] = n_out
+            term = np.take(out, idx, axis=axis) * w.astype(np.float32).reshape(shape)
+            acc = term if acc is None else acc + term
+        out = acc
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+@_step(_RESAMPLE)
+def step_resample(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
+    """voxel_x / voxel_y / voxel_z: the output voxel size in µm (0 keeps the
+    axis); interpolation: linear | cubic | nearest."""
+    vx, vy, vz = _voxel_um(meta)
+    if not (vx > 0 and vy > 0 and vz > 0):
+        raise ValueError(f"resample: the input voxel size must be positive (voxel_um = {[vx, vy, vz]})")
+    interp = _choice(params.get("interpolation"), _RESAMPLE.choices["interpolation"], "linear")
+    target = [_float(params, "voxel_z", 0.0), _float(params, "voxel_y", 0.0), _float(params, "voxel_x", 0.0)]
+    cur = [vz, vy, vx]
+    tgt = [target[i] if target[i] > 0 else cur[i] for i in range(3)]
+    extents = [_resample_extent(a.shape[2 + i], cur[i], tgt[i]) for i in range(3)]
+    ratios = [tgt[i] / cur[i] for i in range(3)]
+    voxel_um = [tgt[2], tgt[1], tgt[0]]
+    if tuple(extents) == a.shape[2:] and all(abs(r - 1.0) < 1e-12 for r in ratios):
+        return StepResult(a, dict(meta, voxel_um=voxel_um), info={"voxel_um": voxel_um})
+    out = np.empty(a.shape[:2] + tuple(extents), dtype=np.float32)
+    for c in range(a.shape[0]):
+        for t in range(a.shape[1]):
+            out[c, t] = _resample_volume(a[c, t], extents, ratios, interp)
+    m = dict(meta, dims=_dims(out), voxel_um=voxel_um)
+    if extents[0] != a.shape[2]:
+        m["sim"] = _no_sim()
+    return StepResult(out, m, info={"voxel_um": voxel_um, "interpolation": interp})
+
+
+# --- combine ------------------------------------------------------------------
 
 
 def _hex_to_rgb(s: str) -> Tuple[float, float, float]:
@@ -550,249 +1034,474 @@ def _hex_to_rgb(s: str) -> Tuple[float, float, float]:
         return 1.0, 1.0, 1.0
 
 
+_MERGE = StepSpec("merge", {"blend": "Additive", "colors": [], "weights": [], "normalize_percentile": 99.9},
+                  choices={"blend": ("Additive", "Screen", "Max")}, aliases={"colours": "colors"})
+
+
+@_step(_MERGE)
 def step_merge(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """blend: Additive | Screen | Max; colors: list of "#rrggbb" per channel
-    (defaults to the channel colours of the metadata)."""
-    blend = _choice(_get(params, ("blend",), "Additive"), ["Additive", "Screen", "Max"], "Additive")
+    """blend: Additive | Screen | Max; colors: "#rrggbb" per channel (empty =
+    the channels' own colours); weights: per-channel gain (empty = 1);
+    normalize_percentile: each channel is scaled so this percentile maps to 1
+    unless it already lies in 0..1."""
+    if meta.get("rgb"):
+        raise ValueError("merge: the input is already an RGB merge")
+    blend = _choice(params.get("blend"), _MERGE.choices["blend"], "Additive")
     c = a.shape[0]
-    colors = _get(params, ("colors", "colours"), None)
+    colors = params.get("colors")
     if isinstance(colors, str):
         colors = [x.strip() for x in colors.split(",") if x.strip()]
-    if not colors:
-        colors = [ch.get("color", "#ffffff") for ch in meta.get("channels", [])]
-    colors = [colors[i] if i < len(colors) else "#ffffff" for i in range(c)]
+    colors = list(colors or [])
+    channel_colors = [ch.get("color", "#ffffff") for ch in meta.get("channels", [])]
+    colors = [colors[i] if i < len(colors) else (channel_colors[i] if i < len(channel_colors) else "#ffffff")
+              for i in range(c)]
     rgbs = [_hex_to_rgb(col) for col in colors]
-    out = np.zeros((3,) + a.shape[1:], dtype=np.float32)
+    weights = _floats(params.get("weights"))
+    pct = _float(params, "normalize_percentile", 99.9)
+    scales = []
     for i in range(c):
         ch = a[i]
-        vmax = float(np.nanmax(ch)) if ch.size else 1.0
-        norm = ch / np.float32(vmax) if vmax > 1.0 else ch
+        finite = ch[~np.isnan(ch)]
+        mn, mx = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+        if mn >= 0.0 and mx <= 1.0:
+            scales.append(1.0)
+            continue
+        hi = _percentiles(ch, 0.0, pct)[1]
+        scales.append(1.0 / hi if hi > 0.0 else 1.0)
+    out = np.zeros((3,) + a.shape[1:], dtype=np.float32)
+    for i in range(c):
+        w = float(weights[i]) if i < len(weights) else 1.0
+        v0 = np.clip(a[i] * np.float32(scales[i] * w), 0.0, 1.0)
         for k in range(3):
-            w = rgbs[i][k]
-            if w == 0.0:
+            if rgbs[i][k] == 0.0:
                 continue
-            contribution = norm * np.float32(w)
-            if blend == "Additive":
-                out[k] += contribution
-            elif blend == "Screen":
-                out[k] = 1.0 - (1.0 - out[k]) * (1.0 - np.clip(contribution, 0.0, 1.0))
-            else:
+            contribution = v0 * np.float32(rgbs[i][k])
+            if blend == "Screen":
+                out[k] = 1.0 - (1.0 - out[k]) * (1.0 - contribution)
+            elif blend == "Max":
                 np.maximum(out[k], contribution, out=out[k])
-    np.clip(out, 0.0, 1.0, out=out)
+            else:
+                out[k] = np.minimum(1.0, out[k] + contribution)
     m = dict(meta, dims=_dims(out), rgb=True,
              channels=[{"label": n, "wavelength_nm": 0.0, "color": col}
-                       for n, col in (("R", "#ff0000"), ("G", "#00ff00"), ("B", "#0000ff"))])
-    return StepResult(out, m, info={"blend": blend, "colors": colors})
+                       for n, col in (("R", "#ff0000"), ("G", "#00ff00"), ("B", "#0000ff"))],
+             sim=_no_sim())
+    return StepResult(out, m, info={"blend": blend, "colors": colors, "scales": scales})
 
 
-def step_croppad(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """origin [z, y, x] (may be negative = pad), size [z, y, x] (0 = to the end), fill."""
-    z, y, x = a.shape[2:]
-    origin = [int(v) for v in _list(params, ("origin", "offset", "start"), 3, [0, 0, 0])]
-    size = [int(v) for v in _list(params, ("size", "extent", "shape"), 3, [0, 0, 0])]
-    fill = _float(params, ("fill", "pad_value"), 0.0)
-    ext = [size[i] if size[i] > 0 else (z, y, x)[i] - origin[i] for i in range(3)]
-    if any(e <= 0 for e in ext):
-        raise ValueError(f"crop box {origin} + {size} is empty for z{z} y{y} x{x}")
-    out = np.full(a.shape[:2] + tuple(ext), np.float32(fill), dtype=np.float32)
-    src = []
-    dst = []
-    for i, n in enumerate((z, y, x)):
-        s0 = max(origin[i], 0)
-        s1 = min(origin[i] + ext[i], n)
-        if s1 <= s0:
-            return StepResult(out, dict(meta, dims=_dims(out)), info={"origin": origin, "size": ext})
-        src.append(slice(s0, s1))
-        dst.append(slice(s0 - origin[i], s1 - origin[i]))
-    out[(slice(None), slice(None)) + tuple(dst)] = a[(slice(None), slice(None)) + tuple(src)]
-    return StepResult(out, dict(meta, dims=_dims(out)), info={"origin": origin, "size": ext})
+# --- labels (mirrors of app/core/labels.cpp and segment_common.cpp) -----------
 
 
-def _zoom_volume(v: np.ndarray, factors: Sequence[float], order: int) -> np.ndarray:
-    try:
-        from scipy import ndimage  # type: ignore
-
-        return ndimage.zoom(v, factors, order=order, mode="nearest", grid_mode=True).astype(np.float32, copy=False)
-    except ImportError:
-        idx = [np.clip(np.round(np.arange(int(round(n * f))) / max(f, 1e-9)).astype(int), 0, n - 1)
-               for n, f in zip(v.shape, factors)]
-        return v[np.ix_(*idx)].astype(np.float32, copy=False)
-
-
-def step_resample(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """voxel [z, y, x] target size in µm (0 keeps an axis) or a single
-    isotropic size; factor [z, y, x] zoom factors; interpolation: linear |
-    nearest | cubic."""
-    vx, vy, vz = (list(meta.get("voxel_um", [0.1, 0.1, 0.2])) + [0.1, 0.1, 0.2])[:3]
-    interp = _choice(_get(params, ("interpolation", "interp"), "linear"), ["linear", "nearest", "cubic"], "linear")
-    order = {"nearest": 0, "linear": 1, "cubic": 3}[interp]
-    if _get(params, ("factor", "factors", "zoom"), None) is not None:
-        f = _list(params, ("factor", "factors", "zoom"), 3, [1, 1, 1])
-    else:
-        raw = _get(params, ("voxel", "voxel_um", "target", "isotropic"), None)
-        if isinstance(raw, (int, float)):
-            target = [float(raw)] * 3
-        else:
-            target = _list(params, ("voxel", "voxel_um", "target", "isotropic"), 3, [0, 0, 0])
-        cur = [vz, vy, vx]
-        f = [cur[i] / target[i] if target[i] > 0 else 1.0 for i in range(3)]
-    if all(abs(fi - 1.0) < 1e-9 for fi in f):
-        return StepResult(a, dict(meta), info={"factor": f})
-    out = None
-    for c in range(a.shape[0]):
-        for t in range(a.shape[1]):
-            v = _zoom_volume(a[c, t], f, order)
-            if out is None:
-                out = np.empty(a.shape[:2] + v.shape, dtype=np.float32)
-            out[c, t] = v
-    assert out is not None
-    m = dict(meta, dims=_dims(out), voxel_um=[vx / f[2], vy / f[1], vz / f[0]])
-    return StepResult(out, m, info={"factor": f, "interpolation": interp})
-
-
-def step_bleach(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """Scale every time point's volume so its total matches the first one
-    (to_mean: the mean over time)."""
-    to_mean = _bool(params, ("to_mean", "toMean", "reference_mean"), False)
-    out = a.copy()
-    sums = a.sum(axis=(2, 3, 4), dtype=np.float64)  # (c, t)
-    ref = sums.mean(axis=1) if to_mean else sums[:, 0]
-    scales = np.ones_like(sums)
-    for c in range(a.shape[0]):
-        for t in range(a.shape[1]):
-            if sums[c, t] > 0:
-                scales[c, t] = ref[c] / sums[c, t]
-                out[c, t] *= np.float32(scales[c, t])
-    return StepResult(out, dict(meta), info={"scales": scales.tolist()})
-
-
-def step_flatfield(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """flat: path of the flat-field image (TIFF, (y, x) or (z, y, x)); dark: optional dark frame."""
-    flat_path = _str(params, ("flat", "flat_field", "flat_path"))
-    if not flat_path:
-        raise ValueError("flat-field: no flat image given")
-    flat, _ = load_dataset(flat_path)
-    flat2 = flat[0, 0].mean(axis=0) if flat.shape[2] > 1 else flat[0, 0, 0]
-    dark_path = _str(params, ("dark", "dark_path"))
-    if dark_path:
-        dark, _ = load_dataset(dark_path)
-        dark2 = dark[0, 0].mean(axis=0) if dark.shape[2] > 1 else dark[0, 0, 0]
-    else:
-        dark2 = np.zeros_like(flat2)
-    if flat2.shape != a.shape[-2:]:
-        raise ValueError(f"flat field {flat2.shape} does not match planes {a.shape[-2:]}")
-    gain = flat2 - dark2
-    gain = np.where(gain > 1e-6, gain, 1e-6).astype(np.float32)
-    scale = np.float32(gain.mean())
-    out = (a - dark2) / gain * scale
-    return StepResult(out.astype(np.float32, copy=False), dict(meta))
-
-
-def _label_components(mask: np.ndarray) -> np.ndarray:
+def _ndimage():
     try:
         from scipy import ndimage  # type: ignore
     except ImportError as e:
-        raise NotAvailable("connected components need 'scipy'") from e
-    labels, _ = ndimage.label(mask)
+        raise NotAvailable("label post-processing needs 'scipy' (pip install scipy)") from e
+    return ndimage
+
+
+def _label_components(mask: np.ndarray) -> np.ndarray:
+    """6-connected components, labelled 1..n in raster order."""
+    labels, _ = _ndimage().label(mask)
     return labels.astype(np.uint32, copy=False)
 
 
+def _distance_transform(mask: np.ndarray) -> np.ndarray:
+    """Euclidean distance of every foreground voxel to the nearest background
+    voxel; without any background every voxel is as far as the volume is wide."""
+    mask = np.asarray(mask, dtype=bool)
+    if mask.all():
+        return np.full(mask.shape, float(max(mask.shape)), dtype=np.float32)
+    return _ndimage().distance_transform_edt(mask).astype(np.float32)
+
+
+def _distance_seeds(mask: np.ndarray, min_distance: float) -> Tuple[np.ndarray, int]:
+    """``distanceSeeds``: local maxima (26-neighbourhood) of the distance
+    transform, accepted deepest first when at least `min_distance` from every
+    accepted seed. Returns (seed volume, count)."""
+    ndimage = _ndimage()
+    mask = np.asarray(mask, dtype=bool)
+    dist = _distance_transform(mask)
+    neighbourhood = ndimage.maximum_filter(dist, size=3, mode="constant", cval=-np.inf)
+    candidates = np.flatnonzero(mask & (dist > 0.0) & (dist >= neighbourhood))
+    seeds = np.zeros(mask.shape, dtype=np.uint32)
+    if candidates.size == 0:
+        return seeds, 0
+    d = dist.reshape(-1)[candidates]
+    order = np.argsort(-d, kind="stable")
+    candidates = candidates[order]
+    coords = np.stack(np.unravel_index(candidates, mask.shape), axis=1).astype(np.float64)
+    min_d2 = max(float(min_distance), 1.0) ** 2
+    alive = np.ones(candidates.size, dtype=bool)
+    flat = seeds.reshape(-1)
+    n = 0
+    for k in range(candidates.size):
+        if not alive[k]:
+            continue
+        n += 1
+        flat[candidates[k]] = n
+        alive &= ((coords - coords[k]) ** 2).sum(axis=1) >= min_d2
+    return seeds, n
+
+
+def _watershed(landscape: np.ndarray, mask: np.ndarray, seeds: np.ndarray) -> np.ndarray:
+    """Marker-based flooding of `landscape` (higher = ridge) from `seeds`
+    inside `mask`, 6-connected -- scikit-image's watershed, which is the same
+    priority flood as the application's."""
+    try:
+        from skimage.segmentation import watershed  # type: ignore
+    except ImportError as e:
+        raise NotAvailable("watershed post-processing needs 'scikit-image' (pip install scikit-image); "
+                           "choose post = Connected components to run without it") from e
+    return watershed(landscape, markers=seeds, mask=mask, connectivity=1).astype(np.uint32)
+
+
 def _remove_small(labels: np.ndarray, min_voxels: int) -> np.ndarray:
-    if min_voxels <= 1:
-        return labels
+    """``removeSmall``: drop labels with fewer than `min_voxels` voxels and
+    relabel the rest 1..n densely in id order (always, as the application does)."""
     counts = np.bincount(labels.reshape(-1))
-    keep = counts >= min_voxels
+    keep = (counts >= max(int(min_voxels), 0)) & (counts > 0)
     keep[0] = False
-    remap = np.zeros_like(counts, dtype=np.uint32)
+    remap = np.zeros(counts.size, dtype=np.uint32)
     remap[keep] = np.arange(1, int(keep.sum()) + 1, dtype=np.uint32)
     return remap[labels]
 
 
+def _labels_from_probabilities(fg: np.ndarray, boundary: Optional[np.ndarray], threshold: float, post: str,
+                               min_voxels: int, seed_distance: float) -> np.ndarray:
+    """``labelsFromProbabilities``: fg > threshold -> instances by connected
+    components, a seeded watershed (on the boundary map, or the negated
+    distance transform) or none (one semantic label), then small-object removal."""
+    mask = fg > threshold
+    if post.startswith("None"):
+        labels = mask.astype(np.uint32)
+    elif post.startswith("Watershed"):
+        seeds, n = _distance_seeds(mask, seed_distance)
+        if n == 0:
+            labels = _label_components(mask)
+        else:
+            landscape = boundary if boundary is not None else -_distance_transform(mask)
+            labels = _watershed(landscape, mask, seeds)
+    else:
+        labels = _label_components(mask)
+    return _remove_small(labels, min_voxels)
+
+
+def _border_labels(vol: np.ndarray) -> np.ndarray:
+    """Ids whose bounding box touches the volume border (z only counts when
+    the volume has more than one plane)."""
+    faces = [vol[:, 0, :], vol[:, -1, :], vol[:, :, 0], vol[:, :, -1]]
+    if vol.shape[0] > 1:
+        faces += [vol[0], vol[-1]]
+    ids = np.unique(np.concatenate([f.reshape(-1) for f in faces]))
+    return ids[ids > 0]
+
+
+def _label_flags(vol: np.ndarray, low_conf: float, size_outlier_factor: float,
+                 confidence: Optional[Dict[int, float]] = None) -> Dict[str, List[int]]:
+    """``LabelVolume::applyFlags`` on one volume: small (< median / 8),
+    touching border, merged? (> factor x median), low conf (when known)."""
+    counts = np.bincount(vol.reshape(-1))
+    ids = np.flatnonzero(counts[1:] > 0) + 1
+    flags: Dict[str, List[int]] = {"low conf": [], "small": [], "touching border": [], "merged?": []}
+    if ids.size == 0:
+        return flags
+    sizes = counts[ids]
+    median = int(np.sort(sizes)[sizes.size // 2])
+    min_voxels = max(1, median // 8)
+    border = set(int(i) for i in _border_labels(vol))
+    for i, n in zip(ids.tolist(), sizes.tolist()):
+        if confidence is not None and confidence.get(i, 1.0) < low_conf:
+            flags["low conf"].append(i)
+        if n < min_voxels:
+            flags["small"].append(i)
+        if i in border:
+            flags["touching border"].append(i)
+        if size_outlier_factor > 0.0 and n > size_outlier_factor * median:
+            flags["merged?"].append(i)
+    return flags
+
+
+def _threshold_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    # Python-only pipelines named the manual cut `threshold` and had no method
+    manual = _pop_first(p, ("threshold",))
+    if manual is not None:
+        p.setdefault("value", manual)
+        if p.get("method") is None:
+            p["method"] = "Manual"
+    if p.get("method") is None and p.get("percentile") is not None:
+        p["method"] = "Percentile"
+
+
+_THRESHOLD = StepSpec(
+    "threshold",
+    {"channel": 0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "post": "Connected components",
+     "min_voxels": 20, "seed_distance": 5.0, "class_name": "object"},
+    choices={"method": ("Manual", "Otsu", "Percentile"), "post": ("Connected components", "Watershed (distance)")},
+    aliases={"input_channel": "channel", "minVoxels": "min_voxels", "min_size": "min_voxels"},
+    translate=_threshold_legacy)
+
+
+def _global_cut(v: np.ndarray, method: str, params: Dict[str, Any]) -> float:
+    if method == "Otsu":
+        return _otsu_threshold(v)
+    if method == "Percentile":
+        return _percentiles(v, 0.0, _float(params, "percentile", 90.0))[1]
+    return _float(params, "value", 0.5)
+
+
+@_step(_THRESHOLD)
 def step_threshold(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """channel; threshold (absolute value) or percentile (0..100); min_voxels;
-    labels via 3D connected components."""
-    c = _channel_index(params, ("channel", "input_channel"), meta, a.shape[0])
-    percentile = _get(params, ("percentile",), None)
+    """channel; method: Manual (value) | Otsu | Percentile (percentile); post:
+    Connected components | Watershed (distance) (seed_distance); min_voxels;
+    class_name."""
+    if meta.get("rgb"):
+        raise ValueError("threshold needs an intensity channel, not an RGB merge")
+    c = _channel_index(params, "channel", meta, a.shape[0])
+    method = _choice(params.get("method"), _THRESHOLD.choices["method"], "Otsu")
+    post = _choice(params.get("post"), _THRESHOLD.choices["post"], "Connected components")
+    min_voxels = _int(params, "min_voxels", 20)
+    seed_distance = _float(params, "seed_distance", 5.0)
     labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
-    thresholds = []
-    min_voxels = _int(params, ("min_voxels", "minVoxels", "min_size"), 0)
+    cuts = []
+    total = 0
     for t in range(a.shape[1]):
         v = a[c, t]
-        if percentile is not None:
-            thr = float(np.percentile(v, float(percentile)))
-        else:
-            thr = _float(params, ("threshold", "value"), 0.5)
-        labels[t] = _remove_small(_label_components(v > thr), min_voxels)
-        thresholds.append(thr)
+        cut = _global_cut(v, method, params)
+        labels[t] = _labels_from_probabilities(v, None, cut, post, min_voxels, seed_distance)
+        total += int(labels[t].max())
+        cuts.append(cut)
     return StepResult(a, dict(meta), labels=labels,
-                      info={"thresholds": thresholds, "channel": c, "labels": int(labels.max())})
+                      info={"thresholds": cuts, "method": method, "channel": c, "labels": total,
+                            "class_name": _str(params, "class_name", "object")})
+
+
+def _local_mean_plane(pl: np.ndarray, r: int) -> np.ndarray:
+    """Mean over a (2r+1)² window clamped to the plane (integral image)."""
+    y, x = pl.shape
+    integral = np.zeros((y + 1, x + 1), dtype=np.float64)
+    integral[1:, 1:] = pl.astype(np.float64).cumsum(axis=0).cumsum(axis=1)
+    yy, xx = np.arange(y), np.arange(x)
+    y0, y1 = np.maximum(yy - r, 0), np.minimum(yy + r + 1, y)
+    x0, x1 = np.maximum(xx - r, 0), np.minimum(xx + r + 1, x)
+    s = (integral[y1[:, None], x1[None, :]] - integral[y0[:, None], x1[None, :]]
+         - integral[y1[:, None], x0[None, :]] + integral[y0[:, None], x0[None, :]])
+    count = (y1 - y0)[:, None] * (x1 - x0)[None, :]
+    return (s / count).astype(np.float32)
+
+
+def _filter_plane(pl: np.ndarray, tophat: int, sigma: float) -> np.ndarray:
+    """White top-hat with a (2r+1)² box (borders clamped), then a Gaussian
+    truncated at ceil(3 sigma) with mirrored borders -- classic.cpp's steps."""
+    ndimage = _ndimage()
+    out = pl
+    if tophat > 0:
+        size = (2 * tophat + 1, 2 * tophat + 1)
+        opening = ndimage.grey_dilation(ndimage.grey_erosion(out, size=size, mode="nearest"), size=size, mode="nearest")
+        out = np.maximum(0.0, out - opening).astype(np.float32)
+    if sigma > 0.0:
+        r = max(1, int(math.ceil(3.0 * sigma)))
+        out = ndimage.gaussian_filter(out.astype(np.float32), sigma, mode="mirror", truncate=r / sigma)
+    return np.asarray(out, dtype=np.float32)
+
+
+def _clean_plane(m: np.ndarray, opening: int, fill_holes: bool) -> np.ndarray:
+    ndimage = _ndimage()
+    if opening > 0:
+        size = (2 * opening + 1, 2 * opening + 1)
+        m = ndimage.grey_dilation(ndimage.grey_erosion(m, size=size, mode="nearest"), size=size, mode="nearest")
+    if fill_holes:
+        m = ndimage.binary_fill_holes(m).astype(np.uint8)
+    return m
+
+
+_CLASSIC = StepSpec(
+    "classic",
+    {"channel": 0, "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
+     "local_ratio": 1.1, "local_offset": 0.0, "opening": 1, "fill_holes": True, "post": "Watershed (distance)",
+     "seed_distance": 8.0, "min_voxels": 20, "class_name": "object"},
+    choices={"method": ("Otsu", "Manual", "Percentile", "Local mean"),
+             "post": ("Watershed (distance)", "Connected components")},
+    aliases={"input_channel": "channel", "minVoxels": "min_voxels"})
+
+
+@_step(_CLASSIC)
+def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
+    """Classical segmentation (classic.cpp): per plane a white top-hat
+    (tophat radius), Gaussian (sigma), a global (Otsu | Manual | Percentile)
+    or Local mean (window, local_ratio, local_offset) threshold, binary opening
+    and hole filling; then 3D instances (post, seed_distance, min_voxels)."""
+    c = _channel_index(params, "channel", meta, a.shape[0])
+    tophat = _int(params, "tophat", 0)
+    sigma = _float(params, "sigma", 1.0)
+    method = _choice(params.get("method"), _CLASSIC.choices["method"], "Otsu")
+    window = max(1, _int(params, "window", 51) // 2)
+    ratio, offset = _float(params, "local_ratio", 1.1), _float(params, "local_offset", 0.0)
+    opening = _int(params, "opening", 1)
+    fill_holes = _bool(params, "fill_holes", True)
+    post = _choice(params.get("post"), _CLASSIC.choices["post"], "Watershed (distance)")
+    min_voxels = _int(params, "min_voxels", 20)
+    seed_distance = _float(params, "seed_distance", 8.0)
+    labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
+    cuts: List[Any] = []
+    total = 0
+    foreground = 0.0
+    for t in range(a.shape[1]):
+        work = np.stack([_filter_plane(a[c, t, z], tophat, sigma) for z in range(a.shape[2])])
+        if method == "Local mean":
+            mask = np.stack([(pl > ratio * _local_mean_plane(pl, window) + offset) for pl in work]).astype(np.uint8)
+            cuts.append(f"local mean × {ratio:g}")
+        else:
+            cut = _global_cut(work, method, params)
+            mask = (work > cut).astype(np.uint8)
+            cuts.append(cut)
+        mask = np.stack([_clean_plane(m, opening, fill_holes) for m in mask])
+        foreground += float(mask.mean()) / a.shape[1]
+        labels[t] = _labels_from_probabilities(mask.astype(np.float32), None, 0.5, post, min_voxels, seed_distance)
+        total += int(labels[t].max())
+    return StepResult(a, dict(meta), labels=labels,
+                      info={"thresholds": cuts, "method": method, "channel": c, "labels": total,
+                            "foreground_fraction": foreground, "class_name": _str(params, "class_name", "object")})
+
+
+_CLEANUP = StepSpec(
+    "cleanup",
+    {"min_voxels": 50, "remove_border": False, "relabel": True, "low_conf": 0.6, "size_outlier_factor": 4.0},
+    aliases={"minVoxels": "min_voxels"}, needs_labels=True)
+
+
+@_step(_CLEANUP)
+def step_cleanup(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any],
+                 labels: Optional[np.ndarray] = None) -> StepResult:
+    """Label cleanup (cleanup.cpp) on the labels of the segmentation step
+    upstream: remove_border, min_voxels, relabel (densely); low_conf and
+    size_outlier_factor only set review flags (reported in info["flags"]).
+    The intensities pass through."""
+    if labels is None or not labels.size:
+        raise ValueError("Label cleanup needs labels: add a segmentation step before it")
+    min_voxels = _int(params, "min_voxels", 50)
+    remove_border = _bool(params, "remove_border", False)
+    relabel = _bool(params, "relabel", True)
+    low_conf = _float(params, "low_conf", 0.6)
+    outlier = _float(params, "size_outlier_factor", 4.0)
+    out = np.array(labels, dtype=np.uint32, copy=True)
+    flags: Dict[str, List[int]] = {}
+    for t in range(out.shape[0]):
+        vol = out[t]
+        if remove_border:
+            drop = _border_labels(vol)
+            if drop.size:
+                vol[np.isin(vol, drop)] = 0
+        if min_voxels > 0 or relabel:
+            vol = _remove_small(vol, min_voxels)
+        out[t] = vol
+        flags = _label_flags(vol, low_conf, outlier)
+    kept = int(np.count_nonzero(np.bincount(out.reshape(-1))[1:]))
+    return StepResult(a, dict(meta), labels=out, info={"labels": kept, "flags": flags})
 
 
 # --- SIM ----------------------------------------------------------------------
 
-_SIM_ALIASES = {
-    "angles": "ndirs", "directions": "ndirs", "phases": "nphases", "orders": "norders",
-    "wavelength": "wavelength_nm", "linespacing": "linespacing_um", "line_spacing": "linespacing_um",
-    "k0angle": "k0_start_angle", "k0_angle": "k0_start_angle", "k0angles": "k0_angles",
-    "zoom": "zoomfact", "bleach": "do_rescale", "bleach_correction": "do_rescale",
-    "suppress_zero": "dampen_order0", "suppress_zero_order": "dampen_order0",
-    "otf_cutoff": "otfcutoff", "immersion": "nimm",
-}
 _sim_cache: Dict[str, Any] = {}
 
 
-def _sim_parameters(params: Dict[str, Any], meta: Dict[str, Any]):
+def _sim_legacy(p: Dict[str, Any], meta: Optional[Dict[str, Any]]) -> None:
+    # a parameter file without a mode means "From file" (the older Python
+    # export loaded it first); the application ignores it in the other modes
+    if p.get("mode") is None and p.get("params_file"):
+        p["mode"] = "From file"
+
+
+_SIM = StepSpec(
+    "sim",
+    {"mode": "Estimate", "params_file": "", "angles": 3, "phases": 5, "wiener": 0.001, "apodization": "Cosine",
+     "otf": "", "na": 1.4, "nimm": 1.515, "wavelength_nm": 510.0, "linespacing_um": 0.2, "k0_angles": [],
+     "k0_start_angle": 0.0, "band_specific_wiener": False, "suppress_zero_order": True, "bleach_correction": True,
+     "zoomfact": 2.0, "z_zoom": 1, "orders": 0, "dz_psf": 0.0, "otfcutoff": 0.006, "background": 0.0,
+     "apodize_input": "Triangle", "napodize": 10, "suppression_radius": 10, "suppress_singularities": True,
+     "no_kz0": True, "filter_overlaps": True, "explodefact": 1.0, "equalizez": False},
+    choices={"mode": ("Estimate", "Manual", "From file"), "apodization": ("Cosine", "Triangle", "None"),
+             "apodize_input": ("Triangle", "Cosine", "None")},
+    aliases={"ndirs": "angles", "directions": "angles", "nphases": "phases", "norders": "orders",
+             "wavelength": "wavelength_nm", "linespacing": "linespacing_um", "line_spacing": "linespacing_um",
+             "k0angle": "k0_start_angle", "k0_angle": "k0_start_angle", "k0angles": "k0_angles", "zoom": "zoomfact",
+             "do_rescale": "bleach_correction", "bleach": "bleach_correction",
+             "dampen_order0": "suppress_zero_order", "suppress_zero": "suppress_zero_order",
+             "apodize_output": "apodization", "otf_cutoff": "otfcutoff", "immersion": "nimm",
+             "otf_path": "otf", "otf_file": "otf", "config": "params_file", "parameter_file": "params_file"},
+    extra=("dx", "dy", "dz", "fast_si"),   # SIMParameters fields the metadata normally provides
+    translate=_sim_legacy)
+
+
+def _sirius_ext():
     try:
         import sirius  # type: ignore
     except ImportError as e:
         raise NotAvailable("SIM reconstruction needs the 'sirius' extension") from e
-    p = None
-    cfg = _str(params, ("params_file", "config", "parameter_file"))
-    if cfg:
+    if not hasattr(sirius, "SimReconstructor"):
+        raise NotAvailable("SIM reconstruction needs the 'sirius' extension (the installed package has no SimReconstructor)")
+    return sirius
+
+
+def _sim_parameters(params: Dict[str, Any], meta: Dict[str, Any]):
+    """SIMParameters as sim.cpp's buildParameters assembles them."""
+    sirius = _sirius_ext()
+    apod = {"None": sirius.ApodizationType.None_, "Cosine": sirius.ApodizationType.Cosine,
+            "Triangle": sirius.ApodizationType.Triangle}
+    mode = _choice(params.get("mode"), _SIM.choices["mode"], "Estimate")
+    if mode == "From file":
+        cfg = _str(params, "params_file")
+        if not cfg:
+            raise ValueError("SIM: From file mode needs a parameter file ('params_file')")
         try:
             p = sirius.load_parameters(cfg) if cfg.lower().endswith(".toml") else sirius.load_legacy_parameters(cfg)
         except Exception:  # noqa: BLE001 - try the other format
             p = sirius.load_legacy_parameters(cfg)
-    if p is None:
+    else:
         p = sirius.SIMParameters()
-        vx, vy, vz = (list(meta.get("voxel_um", [0.1, 0.1, 0.2])) + [0.1, 0.1, 0.2])[:3]
-        p.dx, p.dy, p.dz = float(vx), float(vy), float(vz)
+        p.ndirs = _int(params, "angles", 3)
+        p.nphases = _int(params, "phases", 5)
+        orders = _int(params, "orders", 0)
+        p.norders = orders if orders > 0 else p.nphases // 2 + 1
+        p.wiener = _float(params, "wiener", 0.001)
+        p.apodize_output = apod[_choice(params.get("apodization"), list(apod), "Cosine")]
+        p.apodize_input = apod[_choice(params.get("apodize_input"), list(apod), "Triangle")]
+        p.na = _float(params, "na", 1.4)
+        p.nimm = _float(params, "nimm", 1.515)
+        p.wavelength_nm = _float(params, "wavelength_nm", 510.0)
+        p.linespacing_um = _float(params, "linespacing_um", 0.2)
+        p.k0_start_angle = _float(params, "k0_start_angle", 0.0)
+        if mode == "Manual":
+            angles = _floats(params.get("k0_angles"))
+            if angles:
+                p.k0_angles = angles
+        p.dampen_order0 = _bool(params, "suppress_zero_order", True)
+        p.do_rescale = _bool(params, "bleach_correction", True)
+        p.zoomfact = _float(params, "zoomfact", 2.0)
+        p.z_zoom = _int(params, "z_zoom", 1)
+        p.otfcutoff = _float(params, "otfcutoff", 0.006)
+        p.background = _float(params, "background", 0.0)
+        p.napodize = _int(params, "napodize", 10)
+        p.suppression_radius = _int(params, "suppression_radius", 10)
+        p.suppress_singularities = _bool(params, "suppress_singularities", True)
+        p.no_kz0 = _bool(params, "no_kz0", True)
+        p.filter_overlaps = _bool(params, "filter_overlaps", True)
+        p.explodefact = _float(params, "explodefact", 1.0)
+        p.equalizez = _bool(params, "equalizez", False)
         sim = meta.get("sim") or {}
-        if sim.get("ndirs"):
-            p.ndirs = int(sim["ndirs"])
-        if sim.get("nphases"):
-            p.nphases = int(sim["nphases"])
-        if sim.get("fast_si"):
-            p.fast_si = True
-    apod = {"None": sirius.ApodizationType.None_, "Cosine": sirius.ApodizationType.Cosine,
-            "Triangle": sirius.ApodizationType.Triangle}
-    explicit_orders = _get(params, ("norders", "orders"), None) is not None
-    for key, value in params.items():
-        k = _SIM_ALIASES.get(key, key)
-        if k == "apodization":
-            p.apodize_output = apod[_choice(value, list(apod), "Triangle")]
-            continue
-        if k in ("apodize_input", "apodize_output") and isinstance(value, str):
-            value = apod[_choice(value, list(apod), "Triangle")]
-        if k.startswith("_") or not hasattr(p, k):
-            continue
-        cur = getattr(p, k)
-        try:
-            if isinstance(cur, bool):
-                setattr(p, k, _bool({k: value}, (k,), cur))
-            elif isinstance(cur, int):
-                setattr(p, k, int(round(float(value))))
-            elif isinstance(cur, float):
-                setattr(p, k, float(value))
-            elif k == "k0_angles":
-                seq = value if isinstance(value, (list, tuple)) else str(value).split(",")
-                setattr(p, k, [float(x) for x in seq])
-            else:
-                setattr(p, k, value)
-        except (TypeError, ValueError):
-            pass
-    if not explicit_orders and not cfg:
-        p.norders = p.nphases // 2 + 1
+        p.fast_si = bool(sim.get("present") and sim.get("fast_si"))
+    vx, vy, vz = _voxel_um(meta)
+    p.dx, p.dy, p.dz = float(vx), float(vy), float(vz)
+    for k in ("dx", "dy", "dz"):
+        if params.get(k) is not None:
+            setattr(p, k, _float(params, k, getattr(p, k)))
+    if params.get("fast_si") is not None:
+        p.fast_si = _bool(params, "fast_si", p.fast_si)
+    dz_psf = _float(params, "dz_psf", 0.0)
+    p.dz_psf = dz_psf if dz_psf > 0.0 else p.dz
+    if _bool(params, "band_specific_wiener", False):
+        warnings.warn("step 'sim': band_specific_wiener is not available; the global Wiener constant applies "
+                      "to every band (as in the application)", UnknownParameterWarning, stacklevel=3)
     p.validate()
     return p
 
@@ -823,21 +1532,26 @@ def _to_numpy(result) -> np.ndarray:
         raise NotAvailable("reading a CUDA sirius.Buffer back needs 'torch' (DLPack)") from e
 
 
+@_step(_SIM)
 def step_sim(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progress: ProgressFn = None,
              cancelled: CancelFn = None, device: str = "cpu") -> StepResult:
     """Structured illumination reconstruction of a raw stack whose z axis holds
-    ndirs * nphases * nz sections. Needs `otf` (radially averaged OTF TIFF) and
-    the acquisition parameters (any SIMParameters field, or params_file)."""
-    import sirius  # type: ignore  (its absence is reported by _sim_parameters)
-
+    angles * phases * nz sections, with the application's SIM step parameters
+    (mode: Estimate | Manual | From file (params_file); angles, phases, wiener,
+    apodization, na, nimm, wavelength_nm, linespacing_um, k0_start_angle /
+    k0_angles, ...). Needs a measured `otf` file: the theoretical OTF exists
+    only in the application."""
+    sirius = _sirius_ext()
     p = _sim_parameters(params, meta)
-    otf = _str(params, ("otf", "otf_path", "otf_file"))
-    if not otf or not os.path.exists(otf):
-        raise ValueError("SIM reconstruction in Python needs a measured OTF file ('otf'); "
-                         "the theoretical OTF is only available in the application")
+    otf = _str(params, "otf")
+    if not otf:
+        raise NotAvailable("SIM reconstruction in Python needs a measured OTF file ('otf'); "
+                           "the theoretical OTF is only available in the application")
+    if not os.path.exists(otf):
+        raise FileNotFoundError(f"OTF file not found: {otf}")
     sections = p.ndirs * p.nphases
     if a.shape[2] % sections:
-        raise ValueError(f"{a.shape[2]} sections is not a multiple of ndirs * nphases = {sections}")
+        raise ValueError(f"{a.shape[2]} sections is not a multiple of angles × phases = {sections}")
     device = resolve_device(device)
     use_cuda = device.startswith("cuda") and sirius.cuda_available()
     dev = sirius.Device.cuda(int(device.split(":")[1]) if ":" in device else 0) if use_cuda else sirius.Device.cpu()
@@ -866,7 +1580,7 @@ def step_sim(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progre
                          "amps": [[[float(x.real), float(x.imag)] for x in row] for row in fit.amps]})
             k += 1
     assert out is not None
-    vx, vy, vz = (list(meta.get("voxel_um", [0.1, 0.1, 0.2])) + [0.1, 0.1, 0.2])[:3]
+    vx, vy, vz = _voxel_um(meta)
     m = dict(meta, dims=_dims(out), voxel_um=[vx / p.zoomfact, vy / p.zoomfact, vz / max(p.z_zoom, 1)],
              sim={"present": False, "ndirs": p.ndirs, "nphases": p.nphases, "fast_si": p.fast_si})
     _progress(progress, 1.0, "done")
@@ -1126,7 +1840,7 @@ def tiled_inference(volume: np.ndarray, model, tile: Sequence[int] = (32, 256, 2
     if volume.ndim != 3:
         raise ValueError(f"tiled_inference expects (z, y, x), got {volume.shape}")
     if normalize:
-        lo, hi = _percentile_pair(volume, 1.0, 99.9)
+        lo, hi = _percentiles(volume, 1.0, 99.9)
         if hi <= lo:
             hi = lo + 1.0
         volume = np.clip((volume - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
@@ -1183,47 +1897,44 @@ def tiled_inference(volume: np.ndarray, model, tile: Sequence[int] = (32, 256, 2
     return _activation(acc, activation).astype(np.float32, copy=False)
 
 
-def _watershed_labels(prob: np.ndarray, threshold: float, boundary_channel: int, fg_channel: int) -> np.ndarray:
-    fg = prob[fg_channel] > threshold
-    has_boundary = 0 <= boundary_channel < prob.shape[0] and boundary_channel != fg_channel
-    if not has_boundary:
-        return _label_components(fg)
-    boundary = prob[boundary_channel]
-    try:
-        from scipy import ndimage  # type: ignore
-    except ImportError as e:
-        raise NotAvailable("watershed post-processing needs 'scipy'") from e
-    seeds, _ = ndimage.label(fg & (boundary < 0.5))
-    try:
-        from skimage.segmentation import watershed  # type: ignore
-
-        return watershed(boundary, markers=seeds, mask=fg).astype(np.uint32)
-    except ImportError:
-        # nearest-seed assignment of the remaining foreground voxels
-        _, idx = ndimage.distance_transform_edt(seeds == 0, return_indices=True)
-        nearest = seeds[tuple(idx)]
-        return np.where(fg, nearest, 0).astype(np.uint32)
+_SEG = StepSpec(
+    "seg",
+    {"model": "", "input_channel": 0, "tile": [32.0, 256.0, 256.0], "overlap": 32, "threshold": 0.5,
+     "post": "Watershed on boundary channel", "min_voxels": 0, "label_opacity": 0.45, "class_name": "nucleus",
+     "seed_distance": 5.0},
+    choices={"post": ("Watershed on boundary channel", "Connected components", "None (raw probabilities)")},
+    aliases={"channel": "input_channel", "model_path": "model", "torch_model": "model", "tile_size": "tile",
+             "tau": "threshold", "post_processing": "post", "postprocess": "post", "minVoxels": "min_voxels"},
+    # Python-only: how the model runs (the worker's torch_segment takes the
+    # same), which probability channels are foreground / boundary, and the
+    # options of the cellpose: / microsam: model families
+    extra=("normalize", "activation", "pad_to", "fg_channel", "boundary_channel", "diameter", "do_3d",
+           "anisotropy", "flow_threshold", "cellprob_threshold", "stitch_threshold", "mode", "amg", "checkpoint"))
 
 
+@_step(_SEG)
 def step_seg(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progress: ProgressFn = None,
              cancelled: CancelFn = None, device: str = "auto") -> StepResult:
-    """Torch segmentation: model, channel, tile [z, y, x], overlap, threshold,
-    post (Watershed on boundary channel | Connected components | None),
-    fg_channel / boundary_channel, min_voxels, normalize, activation, pad_to."""
-    path = _str(params, ("model", "model_path", "torch_model"))
+    """Torch segmentation: model (a file or hub / family spec), input_channel,
+    tile [z, y, x], overlap, threshold, post (Watershed on boundary channel |
+    Connected components | None (raw probabilities)), min_voxels, seed_distance,
+    class_name; label_opacity is display-only. Probability channel 0 is the
+    foreground and channel 1 (when present) the boundary, as in the
+    application; fg_channel / boundary_channel override that here."""
+    path = _str(params, "model")
     if not path:
         raise ValueError("segmentation: no model given")
-    c = _channel_index(params, ("channel", "input_channel"), meta, a.shape[0])
-    tile = [int(v) for v in _list(params, ("tile", "tile_size"), 3, [32, 256, 256])]
-    ov = _get(params, ("overlap",), 32)
+    c = _channel_index(params, "input_channel", meta, a.shape[0])
+    tile = [int(v) for v in _as_list(params.get("tile"), 3, [32, 256, 256])]
+    ov = params.get("overlap", 32)
     if isinstance(ov, (list, tuple, str)):
-        overlap = [int(v) for v in _list(params, ("overlap",), 3, [4, 32, 32])]
+        overlap = [int(v) for v in _as_list(ov, 3, [4, 32, 32])]
     else:
         overlap = [max(1, int(ov) // 8), int(ov), int(ov)]
-    threshold = _float(params, ("threshold", "tau"), 0.5)
-    post = _choice(_get(params, ("post", "post_processing", "postprocess"), "Watershed on boundary channel"),
-                   ["Watershed on boundary channel", "Connected components", "None"],
-                   "Watershed on boundary channel")
+    threshold = _float(params, "threshold", 0.5)
+    post = _choice(params.get("post"), _SEG.choices["post"], "Watershed on boundary channel")
+    min_voxels = _int(params, "min_voxels", 0)
+    seed_distance = _float(params, "seed_distance", 5.0)
     labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
     prob_last = None
     nt = a.shape[1]
@@ -1237,27 +1948,21 @@ def step_seg(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progre
             lab, prob = hub.run_family(path, a[c, t], params, device,
                                        progress=lambda f, m, _t=t: _progress(progress, (_t + f) / nt, m),
                                        cancelled=cancelled)
-            labels[t] = _remove_small(lab, _int(params, ("min_voxels", "minVoxels"), 0))
+            labels[t] = _remove_small(np.asarray(lab, dtype=np.uint32), min_voxels)
             prob_last = prob
         return StepResult(a, dict(meta), labels=labels, prob=prob_last,
                           info={"model": path, "channels_out": int(prob_last.shape[0]) if prob_last is not None else 0,
                                 "labels": int(labels.max()), "post": "model labels"})
     model = load_model(path, device, progress)
     for t in range(nt):
-        prob = tiled_inference(a[c, t], model, tile, overlap, device, _int(params, ("pad_to",), 1),
-                               _str(params, ("activation",), "auto"), _bool(params, ("normalize",), True),
+        prob = tiled_inference(a[c, t], model, tile, overlap, device, _int(params, "pad_to", 1),
+                               _str(params, "activation", "auto"), _bool(params, "normalize", True),
                                progress=lambda f, m, _t=t: _progress(progress, (_t + f) / nt, m),
                                cancelled=cancelled)
-        fg = _int(params, ("fg_channel", "foreground_channel"), 0 if prob.shape[0] < 3 else 1)
-        fg = min(max(fg, 0), prob.shape[0] - 1)
-        bd = _int(params, ("boundary_channel",), prob.shape[0] - 1 if prob.shape[0] >= 2 else -1)
-        if post == "Connected components":
-            lab = _label_components(prob[fg] > threshold)
-        elif post == "None":
-            lab = np.zeros(prob.shape[1:], dtype=np.uint32)
-        else:
-            lab = _watershed_labels(prob, threshold, bd, fg)
-        labels[t] = _remove_small(lab, _int(params, ("min_voxels", "minVoxels"), 0))
+        fg = min(max(_int(params, "fg_channel", 0), 0), prob.shape[0] - 1)
+        bd = _int(params, "boundary_channel", 1 if prob.shape[0] > 1 else -1)
+        boundary = prob[bd] if 0 <= bd < prob.shape[0] and bd != fg else None
+        labels[t] = _labels_from_probabilities(prob[fg], boundary, threshold, post, min_voxels, seed_distance)
         prob_last = prob
     return StepResult(a, dict(meta), labels=labels, prob=prob_last,
                       info={"model": path, "channels_out": int(prob_last.shape[0]) if prob_last is not None else 0,
@@ -1268,31 +1973,36 @@ def step_seg(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progre
 # dispatch
 # --------------------------------------------------------------------------
 
-_STEPS: Dict[str, Callable[..., StepResult]] = {
-    "einsum": step_einsum,
-    "maxproj": step_maxproj,
-    "meant": step_meant,
-    "contrast": step_contrast,
-    "merge": step_merge,
-    "croppad": step_croppad,
-    "resample": step_resample,
-    "bleach": step_bleach,
-    "flatfield": step_flatfield,
-    "threshold": step_threshold,
-    "sim": step_sim,
-    "seg": step_seg,
-}
+# The Load step's parameters (run_pipeline reads them; the step itself is the
+# dataset loader, not a run_step kind).
+_LOAD = StepSpec(
+    "load",
+    {"path": "", "read_as": "Lazy (chunk on demand)", "tile": 0, "page_order": "czt", "c": 0, "t": 0, "z": 0,
+     "voxel_x": 0.0, "voxel_y": 0.0, "voxel_z": 0.0, "sim_ndirs": 0, "sim_nphases": 0, "sim_fast": False,
+     "sheet_angle": 0.0},
+    choices={"read_as": ("Lazy (chunk on demand)", "Full load to RAM")},
+    aliases={"pageOrder": "page_order", "channels": "c", "timepoints": "t", "planes": "z",
+             "ndirs": "sim_ndirs", "nphases": "sim_nphases", "fast_si": "sim_fast"},
+    translate=lambda p, meta: [p.setdefault(k, v) for k, v in
+                               zip(("voxel_x", "voxel_y", "voxel_z"),
+                                   _as_list(_pop_first(p, ("voxel", "voxel_um")), 3, [0, 0, 0]))]
+    if any(k in p for k in ("voxel", "voxel_um")) else None)
+_SPECS["load"] = _LOAD
+
 _KIND_ALIASES = {
     "max_projection": "maxproj", "max": "maxproj", "mean_over_time": "meant", "mean_t": "meant",
     "crop": "croppad", "crop_pad": "croppad", "flat_field": "flatfield", "torch": "seg",
     "torch_segment": "seg", "segmentation": "seg", "sim_reconstruction": "sim",
+    "label_cleanup": "cleanup", "classical": "classic", "classical_segmentation": "classic",
 }
+# Kinds only the application implements: run_step raises NotAvailable.
 _UNSUPPORTED = {
-    "decon": "Richardson-Lucy deconvolution", "deskew": "deskew + rotate", "volrec": "volume reconstruction",
-    "stitch": "tile stitching", "register": "registration", "label_cleanup": "label cleanup",
+    "decon": "Richardson-Lucy deconvolution", "deskew": "deskew + rotate",
+    "volrec": "volume reconstruction (a display-level rendering; it also resamples the grid)",
+    "stitch": "tile stitching", "register": "registration",
 }
-# Steps that do not change the array (viewer-side) are skipped by run_pipeline.
-_PASSTHROUGH = {"load", "label_cleanup", "volrec"}
+# Steps run_pipeline skips: Load is the dataset loader itself.
+_PASSTHROUGH = {"load"}
 
 
 def step_kinds() -> List[str]:
@@ -1300,11 +2010,18 @@ def step_kinds() -> List[str]:
     return sorted(_STEPS)
 
 
+def step_spec(kind: str) -> StepSpec:
+    """The parameter declaration (canonical keys, defaults, choices, aliases)
+    of a kind; KeyError for kinds without one."""
+    return _SPECS[_KIND_ALIASES.get(kind, kind)]
+
+
 def run_step(kind: str, params: Dict[str, Any], array: np.ndarray, meta: Optional[Dict[str, Any]] = None,
              labels: Optional[np.ndarray] = None, progress: ProgressFn = None, cancelled: CancelFn = None,
              device: str = "auto") -> StepResult:
     """Run one step on a (c, t, z, y, x) array. Raises NotAvailable for kinds
-    only the C++ application implements."""
+    only the C++ application implements. Parameter keys are the
+    application's; unknown keys raise an UnknownParameterWarning."""
     a = _as5(array)
     meta = dict(meta) if meta else _default_meta(a)
     meta["dims"] = _dims(a)
@@ -1313,10 +2030,14 @@ def run_step(kind: str, params: Dict[str, Any], array: np.ndarray, meta: Optiona
     if fn is None:
         what = _UNSUPPORTED.get(k, k)
         raise NotAvailable(f"step '{kind}' ({what}) is not implemented in Python; run it in the SIRIUS application")
+    spec = _SPECS[k]
+    p = _prepare_params(spec, params, meta)
+    kwargs: Dict[str, Any] = {}
     if k in ("sim", "seg"):
-        res = fn(a, params or {}, meta, progress=progress, cancelled=cancelled, device=device)
-    else:
-        res = fn(a, params or {}, meta)
+        kwargs.update(progress=progress, cancelled=cancelled, device=device)
+    if spec.needs_labels:
+        kwargs["labels"] = labels
+    res = fn(a, p, meta, **kwargs)
     if res.labels is None and labels is not None and res.array.shape[1:] == a.shape[1:]:
         res.labels = labels
     res.meta["dims"] = _dims(res.array)
@@ -1340,12 +2061,16 @@ def run_pipeline(dataset_path: str, pipeline: Any, progress: ProgressFn = None, 
         if s.get("kind") == "load":
             load_params = s.get("params", {}) or {}
             break
-    order = _str(load_params, ("page_order", "pageOrder"), "czt") or "czt"
-    array, meta = load_dataset(dataset_path, order, _get(load_params, ("c", "channels"), None),
-                               _get(load_params, ("t", "timepoints"), None), _get(load_params, ("z", "planes"), None),
+    lp = _prepare_params(_LOAD, load_params, None)
+    order = _str(lp, "page_order", "czt") or "czt"
+    counts = [_int(lp, k, 0) or None for k in ("c", "t", "z")]
+    array, meta = load_dataset(dataset_path, order, counts[0], counts[1], counts[2],
                                progress=lambda f, m: _progress(progress, 0.0, m))
-    if _get(load_params, ("voxel", "voxel_um"), None) is not None:
-        meta["voxel_um"] = _list(load_params, ("voxel", "voxel_um"), 3, meta["voxel_um"])
+    voxel = [_float(lp, k, 0.0) for k in ("voxel_x", "voxel_y", "voxel_z")]
+    meta["voxel_um"] = [v if v > 0 else cur for v, cur in zip(voxel, meta["voxel_um"])]
+    if _int(lp, "sim_ndirs", 0) > 0 and _int(lp, "sim_nphases", 0) > 0:
+        meta["sim"] = {"present": True, "ndirs": _int(lp, "sim_ndirs", 0), "nphases": _int(lp, "sim_nphases", 0),
+                       "fast_si": _bool(lp, "sim_fast", False)}
     labels: Optional[np.ndarray] = None
     skipped: List[str] = []
     n = max(len(steps), 1)
@@ -1357,7 +2082,7 @@ def run_pipeline(dataset_path: str, pipeline: Any, progress: ProgressFn = None, 
         _progress(progress, i / n, name)
         try:
             res = run_step(kind, s.get("params", {}) or {}, array, meta, labels,
-                           progress=lambda f, m, _i=i: _progress(progress, (_i + f) / n, f"{name}: {m}"),
+                           progress=lambda f, m, _i=i, _name=name: _progress(progress, (_i + f) / n, f"{_name}: {m}"),
                            cancelled=None, device=device)
         except NotAvailable:
             if strict:

@@ -13,7 +13,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sirius_worker import plugins  # noqa: E402
-from sirius_worker.protocol import encode_frame, read_frame  # noqa: E402
+from sirius_worker.protocol import PROTOCOL_VERSION, encode_frame, read_frame  # noqa: E402
 from sirius_worker.server import WorkerServer  # noqa: E402
 
 GOOD = '''
@@ -100,7 +100,7 @@ class PluginTests(unittest.TestCase):
                         if header.get("type") == "progress":
                             continue
                         return header, tens
-                h, _ = call(1, "hello", {"token": "t"})
+                h, _ = call(1, "hello", {"token": "t", "protocol_version": PROTOCOL_VERSION})
                 self.assertIn("run:plugin", h["result"]["methods"])
                 h, _ = call(2, "list_plugins", {})
                 kinds = {p["kind"]: p for p in h["result"]["plugins"]}

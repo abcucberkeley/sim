@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <exception>
 #include <fstream>
+#include <vector>
 
 #include <QAction>
 #include <QActionGroup>
@@ -22,11 +23,15 @@
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
 #include <QProgressBar>
+#include <QScreen>
 #include <QSettings>
 #include <QStatusBar>
 #include <QUrl>
@@ -44,10 +49,13 @@
 #include "qt/panels/assistant_panel.hpp"
 #include "qt/panels/diagnostics_panel.hpp"
 #include "qt/panels/help_window.hpp"
+#include "qt/panels/log_panel.hpp"
 #include "qt/panels/ops_panel.hpp"
 #include "qt/panels/params_panel.hpp"
 #include "qt/qt_strings.hpp"
+#include "qt/shortcuts.hpp"
 #include "qt/theme.hpp"
+#include "qt/trace.hpp"
 #include "qt/viewer/viewer_widget.hpp"
 #include "qt/widgets/controls.hpp"
 
@@ -58,13 +66,16 @@ namespace sirius::app {
         constexpr const char* kIssuesUrl = "https://github.com/abcucberkeley/sirius/issues";
 
         // "✦ Assistant" toggle: 26 px, 1.5 px border, accent fill when open.
+        // (The sparkle is painted, like every other icon: see widgets/icons.hpp.)
         class AssistantButton : public QAbstractButton {
         public:
             explicit AssistantButton(QWidget* parent) : QAbstractButton(parent) {
                 setCheckable(true);
                 setFixedHeight(26);
                 setCursor(Qt::PointingHandCursor);
-                setToolTip(QStringLiteral("Assistant (⌥5)"));
+                setToolTip(withShortcut(QStringLiteral("Assistant"), keys::assistant()));
+                setAccessibleName(QStringLiteral("Assistant"));
+                setAccessibleDescription(QStringLiteral("Show or hide the assistant panel"));
                 setFont(theme::heading(12));
                 setFixedWidth(QFontMetrics(font()).horizontalAdvance(QStringLiteral("Assistant")) + 40);
             }
@@ -77,9 +88,9 @@ namespace sirius::app {
                 p.setPen(QPen(border, 1.5));
                 p.setBrush(on ? QBrush(theme::kAccent) : Qt::NoBrush);
                 p.drawRect(QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75));
-                p.setPen(on ? theme::kBg : theme::kText);
-                p.setFont(theme::font(13));
-                p.drawText(QRect(10, 0, 16, height()), Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("✦"));
+                const QColor fg = on ? theme::kBg : theme::kText;
+                widgets::drawIcon(p, QRectF(10, (height() - 13) / 2.0, 13, 13), widgets::Icon::Sparkle, fg);
+                p.setPen(fg);
                 p.setFont(theme::heading(12));
                 p.drawText(rect().adjusted(27, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("Assistant"));
             }
@@ -104,7 +115,7 @@ namespace sirius::app {
                 h->setContentsMargins(12, 0, 6, 0);
                 h->setSpacing(6);
                 h->addWidget(widgets::label(name.toUpper(), 11, theme::kNeutral700, QFont::DemiBold, this));
-                h->addWidget(widgets::label(QStringLiteral("drag to move · double-click or Dock to put back"), 11, theme::kNeutral500, -1, this), 1);
+                h->addWidget(widgets::label(QStringLiteral("drag to move · double-click or Dock to put back"), 11, theme::kNeutral600, -1, this), 1);
                 auto* back = new QPushButton(QStringLiteral("Dock"), this);
                 widgets::setButtonClass(back, "ghost small");
                 back->setCursor(Qt::PointingHandCursor);
@@ -136,21 +147,62 @@ namespace sirius::app {
             bool dragging_ = false;
         };
 
+        // The docked "title bar": a 10 px strip above the panel's own header
+        // carrying the design's flat grip rule. Qt implements dock dragging in
+        // QDockWidget's mouse handlers over whatever the title bar widget
+        // occupies, so the strip has to have a height (a 0 px one left the
+        // docks impossible to drag) and has to let the press through: it
+        // ignores every button event so the dock widget below sees it and
+        // starts its own drag, with drop indicators and all.
+        class DockGrip : public QWidget {
+        public:
+            DockGrip(QDockWidget* dock, const QString& name) : QWidget(dock) {
+                setFixedHeight(10);
+                setCursor(Qt::SizeAllCursor);
+                setToolTip(QStringLiteral("Drag to move the %1 panel; double-click to undock").arg(name.toLower()));
+                setAccessibleName(QStringLiteral("%1 panel handle").arg(name));
+            }
+
+        protected:
+            void paintEvent(QPaintEvent*) override {
+                QPainter p(this);
+                p.fillRect(rect(), theme::kBg);
+                const int w = 30;
+                p.fillRect(QRect((width() - w) / 2, 4, w, 2), hover_ ? theme::kNeutral600 : theme::kNeutral400);
+            }
+            void mousePressEvent(QMouseEvent* e) override { e->ignore(); }        // -> QDockWidget: drag
+            void mouseDoubleClickEvent(QMouseEvent* e) override { e->ignore(); }   // -> QDockWidget: float
+            void enterEvent(QEnterEvent*) override {
+                hover_ = true;
+                update();
+            }
+            void leaveEvent(QEvent*) override {
+                hover_ = false;
+                update();
+            }
+
+        private:
+            bool hover_ = false;
+        };
+
         QDockWidget* makeDock(const QString& name, QWidget* content, QMainWindow* window) {
             auto* dock = new QDockWidget(name, window);
             dock->setObjectName(name);
             dock->setWidget(content);
             dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                               QDockWidget::DockWidgetClosable);
-            // No title bar chrome while docked: the panels carry their own headers.
-            auto* title = new QWidget(dock);
-            title->setFixedHeight(0);
+            // No title bar chrome while docked beyond the grip: the panels
+            // carry their own headers.
+            auto* title = new DockGrip(dock, name);
             dock->setTitleBarWidget(title);
             auto* floating = new FloatingTitle(dock, name);
             floating->hide();
             QObject::connect(dock, &QDockWidget::topLevelChanged, dock, [dock, title, floating](bool top) {
                 dock->setTitleBarWidget(top ? static_cast<QWidget*>(floating) : title);
                 (top ? static_cast<QWidget*>(floating) : title)->show();
+                // shadow-lg while it floats, nothing while it is docked.
+                if (top) widgets::applyShadow(dock, true);
+                else widgets::clearShadow(dock);
                 if (top) {
                     // a floating panel starts as a real window of a useful size
                     dock->setWindowFlags(dock->windowFlags() | Qt::Window);
@@ -175,27 +227,26 @@ namespace sirius::app {
             }
         }
 
-        QString bytesText(std::size_t bytes) {
-            return QStringLiteral("%1 GB").arg(static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
-        }
-
     } // namespace
 
     struct MainWindow::Impl {
         MainWindow* self;
         WorkbenchBridge& bridge;
+        bool unattended = false;   // see MainWindow::setUnattended
 
         ViewerWidget* viewer = nullptr;
         OpsPanel* ops = nullptr;
         ParamsPanel* params = nullptr;
         DiagnosticsPanel* diagnostics = nullptr;
         AssistantPanel* assistant = nullptr;
+        LogPanel* log = nullptr;
         HelpWindow* help = nullptr;
         PluginManagerDialog* plugins = nullptr;   // created on first use
         QDockWidget* opsDock = nullptr;
         QDockWidget* paramsDock = nullptr;
         QDockWidget* diagDock = nullptr;
         QDockWidget* assistantDock = nullptr;
+        QDockWidget* logDock = nullptr;
 
         QLabel* datasetLabel = nullptr;
         QLabel* gpuLabel = nullptr;
@@ -213,10 +264,20 @@ namespace sirius::app {
 
         // A temporary QStatusBar message would hide the whole left block,
         // progress bar included, for as long as the worker keeps logging.
+        // The line is a button onto the log dock: four seconds is not long
+        // enough to read an error, and the full history lives there.
         void showLogLine(const QString& line, int ms) {
             const QFontMetrics fm(statusLog->font());
             statusLog->setText(fm.elidedText(line.simplified(), Qt::ElideRight, 640));
+            statusLog->setToolTip(line.simplified() + QStringLiteral("\n\nClick to open the log (%1)")
+                                                          .arg(shortcutText(keys::logDock())));
             statusLogTimer.start(ms);
+        }
+
+        void showLog() {
+            logDock->show();
+            logDock->raise();
+            log->showLatest();
         }
         QElapsedTimer progressClock;   // since the run / task started, for the estimate
         QString progressMessage;       // the step's last message ("cellpose 2/4")
@@ -265,6 +326,9 @@ namespace sirius::app {
         QAction* backendHpc = nullptr;
         QAction* helpPage = nullptr;
         QAction* assistantAction = nullptr;
+        QAction* logAction = nullptr;
+        QAction* maximiseDiag = nullptr;
+        int diagRestoreHeight = theme::kDiagnosticsH;   // before ⛶ took the viewer's room
         QAction* enableStep = nullptr;
         QAction* removeStep = nullptr;
         QAction* duplicateStep = nullptr;
@@ -281,6 +345,7 @@ namespace sirius::app {
         QAction* savePipeline = nullptr;
         QAction* savePipelineAs = nullptr;
         QAction* closeDataset = nullptr;
+        std::vector<QAction*> labelEdits;   // label mutations, refused during a run
         QByteArray defaultState;
         QString lastDir;
 
@@ -288,13 +353,38 @@ namespace sirius::app {
         Workbench& wb() { return bridge.wb(); }
 
         // --- building -----------------------------------------------------------
+        // Space, H, L, B, E, the digits, Left / Right and Backspace are
+        // window-wide shortcuts with no modifier. Qt asks the focus widget
+        // first (ShortcutOverride) and every stock text entry claims the keys
+        // it types, but a painted widget of ours might not, so the unmodified
+        // ones check for themselves that no text field is being typed into.
+        static bool typingSomewhere() {
+            QWidget* w = QApplication::focusWidget();
+            if (!w || !w->isEnabled()) return false;
+            if (auto* line = qobject_cast<QLineEdit*>(w)) return !line->isReadOnly();
+            if (auto* plain = qobject_cast<QPlainTextEdit*>(w)) return !plain->isReadOnly();
+            if (auto* rich = qobject_cast<QTextEdit*>(w)) return !rich->isReadOnly();
+            return w->inherits("QAbstractSpinBox");
+        }
+
+        static bool unmodified(const QKeySequence& key) {
+            if (key.count() != 1) return false;
+            return (key[0].keyboardModifiers() & ~Qt::KeypadModifier) == Qt::NoModifier;
+        }
+
         QAction* action(QMenu* menu, const QString& text, const QKeySequence& key, std::function<void()> fn,
                         const QString& tip = {}) {
             auto* a = menu->addAction(text);
             if (!key.isEmpty()) a->setShortcut(key);
             a->setShortcutContext(Qt::WindowShortcut);
             if (!tip.isEmpty()) a->setStatusTip(tip);
-            if (fn) QObject::connect(a, &QAction::triggered, self, [fn] { fn(); });
+            if (fn) {
+                const bool guard = unmodified(key);
+                QObject::connect(a, &QAction::triggered, self, [fn, guard] {
+                    if (guard && typingSomewhere()) return;
+                    fn();
+                });
+            }
             return a;
         }
 
@@ -340,7 +430,8 @@ namespace sirius::app {
             file->addSeparator();
             exportResult = action(file, QStringLiteral("Export result…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E),
                                   [this] { exportResultDialog(); });
-            exportPython = action(file, QStringLiteral("Export pipeline as Python script"), QKeySequence(), [this] { exportPythonScript(); });
+            exportPython = action(file, QStringLiteral("Export pipeline as Python script…"), QKeySequence(),
+                                  [this] { exportPythonScript(); });
             exportFigure = action(file, QStringLiteral("Export figure (current view)…"), QKeySequence(Qt::ALT | Qt::CTRL | Qt::Key_E),
                                   [this] { exportFigureImage(); });
             file->addSeparator();
@@ -353,18 +444,18 @@ namespace sirius::app {
             undo = action(edit, QStringLiteral("Undo"), QKeySequence::Undo, [this] { wb().undo(); });
             redo = action(edit, QStringLiteral("Redo"), QKeySequence::Redo, [this] { wb().redo(); });
             edit->addSeparator();
-            duplicateStep = action(edit, QStringLiteral("Duplicate step"), QKeySequence(Qt::CTRL | Qt::Key_D),
+            duplicateStep = action(edit, QStringLiteral("Duplicate step"), keys::duplicateStep(),
                                    [this] { wb().duplicateStep(wb().selectedIndex()); });
-            removeStep = action(edit, QStringLiteral("Remove step"), QKeySequence(Qt::Key_Backspace),
-                                [this] { wb().removeStep(wb().selectedIndex()); });
-            enableStep = action(edit, QStringLiteral("Enable / skip step"), QKeySequence(Qt::Key_Space), [this] {
+            removeStep = action(edit, QStringLiteral("Remove step"), keys::removeStep(),
+                                [this] { removeStepAt(wb().selectedIndex()); });
+            enableStep = action(edit, QStringLiteral("Enable / skip step"), keys::enableStep(), [this] {
                 const int i = wb().selectedIndex();
                 if (i > 0 && i < wb().pipeline().size()) wb().setStepEnabled(i, !wb().pipeline().at(i).enabled);
             });
             edit->addSeparator();
-            moveUp = action(edit, QStringLiteral("Move step up"), QKeySequence(Qt::ALT | Qt::Key_Up),
+            moveUp = action(edit, QStringLiteral("Move step up"), keys::moveUp(),
                             [this] { wb().moveStep(wb().selectedIndex(), -1); });
-            moveDown = action(edit, QStringLiteral("Move step down"), QKeySequence(Qt::ALT | Qt::Key_Down),
+            moveDown = action(edit, QStringLiteral("Move step down"), keys::moveDown(),
                               [this] { wb().moveStep(wb().selectedIndex(), +1); });
             edit->addSeparator();
             action(edit, QStringLiteral("Copy parameters"), QKeySequence::Copy, [this] { wb().copyParameters(wb().selectedIndex()); });
@@ -418,10 +509,13 @@ namespace sirius::app {
                 ops->openAddMenu();
             });
             process->addSeparator();
-            runAllAct = action(process, QStringLiteral("Run all enabled"), QKeySequence(Qt::CTRL | Qt::Key_R), [this] { bridge.startRun(-1); });
-            runSelected = action(process, QStringLiteral("Run selected step"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R),
-                                 [this] { bridge.startRun(wb().selectedIndex()); });
-            runTo = action(process, QStringLiteral("Run to selected step"), QKeySequence(), [this] { bridge.startRun(wb().selectedIndex()); });
+            runAllAct = action(process, QStringLiteral("Run all enabled"), keys::runAll(), [this] { bridge.startRun(-1); });
+            runSelected = action(process, QStringLiteral("Run selected step"), keys::runSelected(),
+                                 [this] { runSelectedStep(); },
+                                 QStringLiteral("Run just this step; its input has to be computed already"));
+            runTo = action(process, QStringLiteral("Run to selected step"), QKeySequence(),
+                           [this] { bridge.startRun(wb().selectedIndex()); },
+                           QStringLiteral("Run every enabled step from the top down to this one"));
             cancelRun = action(process, QStringLiteral("Cancel"), QKeySequence(Qt::Key_Escape), [this] {
                 if (bridge.running()) bridge.cancelRun();
                 if (bridge.taskRunning()) bridge.cancelTask();
@@ -462,16 +556,17 @@ namespace sirius::app {
                 wb().setTool(ViewerTool::Paint);
                 wb().setPaintTool(PaintTool::Erase);
             });
-            action(segment, QStringLiteral("Merge selected labels"), QKeySequence(Qt::CTRL | Qt::Key_G), [this] { mergeLabelsDialog(); });
+            labelEdits.push_back(
+                action(segment, QStringLiteral("Merge selected labels"), QKeySequence(Qt::CTRL | Qt::Key_G), [this] { mergeLabelsDialog(); }));
             action(segment, QStringLiteral("Split label"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), [this] {
                 wb().setTool(ViewerTool::Paint);
                 wb().setPaintTool(PaintTool::Split);
                 wb().logLine("Split: click two seeds inside the label in the viewer.");
             });
-            action(segment, QStringLiteral("Delete label"), QKeySequence(Qt::CTRL | Qt::Key_Backspace), [this] {
+            labelEdits.push_back(action(segment, QStringLiteral("Delete label"), QKeySequence(Qt::CTRL | Qt::Key_Backspace), [this] {
                 const std::uint32_t id = wb().viewState().selectedLabel;
                 if (id) wb().deleteLabel(id);
-            });
+            }));
             segment->addSeparator();
             soloLabel = action(segment, QStringLiteral("Only selected label"), QKeySequence(Qt::Key_O), [this] { wb().toggleSoloLabel(); });
             soloLabel->setCheckable(true);
@@ -479,7 +574,8 @@ namespace sirius::app {
             action(segment, QStringLiteral("Next flagged label"), QKeySequence(Qt::Key_Right), [this] { selectFlagged(true); });
             action(segment, QStringLiteral("Previous flagged label"), QKeySequence(Qt::Key_Left), [this] { selectFlagged(false); });
             segment->addSeparator();
-            action(segment, QStringLiteral("Accept all reviewed"), QKeySequence(), [this] { wb().acceptAllReviewed(); });
+            labelEdits.push_back(
+                action(segment, QStringLiteral("Accept all reviewed"), QKeySequence(), [this] { wb().acceptAllReviewed(); }));
             segment->addSeparator();
             action(segment, QStringLiteral("Export labels…"), QKeySequence(), [this] { exportLabels(); });
 
@@ -504,19 +600,37 @@ namespace sirius::app {
                 diagDock->show();
                 diagDock->setFloating(true);
             });
-            action(window, QStringLiteral("Reset layout"), QKeySequence(), [this] { self->restoreState(defaultState); });
-            action(window, QStringLiteral("Save layout…"), QKeySequence(), [this] {
+            // The ⛶ control of the diagnostics header, from the keyboard.
+            maximiseDiag = action(window, QStringLiteral("Maximise diagnostics"), QKeySequence(), [this] {
+                diagDock->show();
+                diagDock->raise();
+                diagnostics->setMaximized(!diagnostics->isMaximized());
+            });
+            maximiseDiag->setCheckable(true);
+            maximiseDiag->setStatusTip(QStringLiteral("Let the diagnostics cover the viewer"));
+            action(window, QStringLiteral("Reset layout"), QKeySequence(), [this] {
+                self->restoreState(defaultState);
+                wb().logLine("Layout reset to the default arrangement.");
+            });
+            // No dialog behind this one, so no ellipsis: it stores the
+            // arrangement as it is, which is also what closing the window does.
+            action(window, QStringLiteral("Save layout as default"), QKeySequence(), [this] {
                 QSettings settings;
                 settings.setValue(QStringLiteral("window/state"), self->saveState());
                 settings.setValue(QStringLiteral("window/geometry"), self->saveGeometry());
-                wb().logLine("Layout saved.");
+                wb().logLine("Saved this layout: the next session opens with it.");
             });
             window->addSeparator();
             assistantAction = assistantDock->toggleViewAction();
             assistantAction->setText(QStringLiteral("Assistant"));
-            assistantAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_5));
+            assistantAction->setShortcut(keys::assistant());
             window->addAction(assistantAction);
             action(window, QStringLiteral("User operations…"), QKeySequence(Qt::ALT | Qt::Key_6), [this] { pluginManager(); });
+            logAction = logDock->toggleViewAction();
+            logAction->setText(QStringLiteral("Log"));
+            logAction->setShortcut(keys::logDock());
+            logAction->setStatusTip(QStringLiteral("Everything this session has reported"));
+            window->addAction(logAction);
 
             // Help
             QMenu* helpMenu = bar->addMenu(QStringLiteral("Help"));
@@ -562,6 +676,9 @@ namespace sirius::app {
             statusDtype = widgets::label(QString(), 11, theme::kNeutral600, -1, left);
             statusZoom = widgets::label(QStringLiteral("zoom 100 %"), 11, theme::kNeutral600, -1, left);
             statusCursor = widgets::label(QString(), 11, theme::kNeutral600, -1, left);
+            // The status bar is nothing but numbers that change under a moving
+            // cursor: tabular figures keep them from jittering.
+            for (QLabel* l : {statusShape, statusDtype, statusZoom, statusCursor}) widgets::useTabularNumbers(l);
             statusProgress = new QWidget(left);
             auto* pl = new QHBoxLayout(statusProgress);
             pl->setContentsMargins(0, 0, 0, 0);
@@ -576,6 +693,12 @@ namespace sirius::app {
             statusProgress->hide();
             statusLog = widgets::label(QString(), 11, theme::kNeutral600, -1, left);
             statusLog->setMaximumWidth(660);
+            // The line is here for four seconds; the whole history is one
+            // click (or the Window ▸ Log shortcut) away.
+            statusLog->setCursor(Qt::PointingHandCursor);
+            statusLog->setAccessibleName(QStringLiteral("Last log line"));
+            statusLog->setAccessibleDescription(QStringLiteral("Click to open the log"));
+            statusLog->installEventFilter(self);
             statusLogTimer.setSingleShot(true);
             QObject::connect(&statusLogTimer, &QTimer::timeout, self, [this] { statusLog->clear(); });
             for (QWidget* w : {static_cast<QWidget*>(statusShape), static_cast<QWidget*>(statusDtype),
@@ -585,6 +708,7 @@ namespace sirius::app {
             ll->addStretch(1);
             sb->addWidget(left, 1);
             statusRight = widgets::label(QString(), 11, theme::kNeutral600, -1, sb);
+            widgets::useTabularNumbers(statusRight);
             statusRight->setContentsMargins(0, 0, 14, 0);
             sb->addPermanentWidget(statusRight);
         }
@@ -619,45 +743,50 @@ namespace sirius::app {
                                      .arg(p.enabledCount())
                                      .arg(p.size())
                                      .arg(lazy ? QStringLiteral("lazy") : QStringLiteral("in memory"))
-                                     .arg(bytesText(w.cachedBytes())));
+                                     .arg(widgets::bytesText(w.cachedBytes())));
         }
 
         void refreshActions() {
-            static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
-            QElapsedTimer clock;
-            if (trace) clock.start();
-            struct Report {
-                bool on;
-                QElapsedTimer& c;
-                ~Report() { if (on) qInfo("refreshActions %lld us", c.nsecsElapsed() / 1000); }
-            } report{trace, clock};
+            const ScopedTrace trace("refreshActions");
             Workbench& w = wb();   // history() is non-const
             const int i = w.selectedIndex();
             const Pipeline& p = w.pipeline();
             const bool stepOk = i >= 0 && i < p.size();
             const bool movable = stepOk && i > 0;
             const bool running = bridge.running();
-            undo->setEnabled(w.history().canUndo());
+            // The workbench refuses every edit while a run is active
+            // (Workbench::canEdit): the menu has to say so rather than let
+            // the user pick an item that quietly does nothing.
+            const bool edit = w.canEdit();
+            const QString frozen = QStringLiteral("Not while a run is in progress — cancel it (Esc) or wait");
+            undo->setEnabled(edit && w.history().canUndo());
             undo->setText(w.history().canUndo() ? QStringLiteral("Undo %1").arg(fromStd(w.history().undoLabel()))
                                                 : QStringLiteral("Undo"));
-            redo->setEnabled(w.history().canRedo());
+            redo->setEnabled(edit && w.history().canRedo());
             redo->setText(w.history().canRedo() ? QStringLiteral("Redo %1").arg(fromStd(w.history().redoLabel()))
                                                 : QStringLiteral("Redo"));
-            pasteParams->setEnabled(w.hasCopiedParameters() && stepOk);
-            duplicateStep->setEnabled(movable);
-            removeStep->setEnabled(movable && !running);
-            enableStep->setEnabled(movable);
-            moveUp->setEnabled(movable && i > 1);
-            moveDown->setEnabled(movable && i < p.size() - 1);
+            pasteParams->setEnabled(edit && w.hasCopiedParameters() && stepOk);
+            duplicateStep->setEnabled(edit && movable);
+            removeStep->setEnabled(edit && movable);
+            enableStep->setEnabled(edit && movable);
+            moveUp->setEnabled(edit && movable && i > 1);
+            moveDown->setEnabled(edit && movable && i < p.size() - 1);
+            for (QAction* a : {undo, redo, pasteParams, duplicateStep, removeStep, enableStep, moveUp, moveDown,
+                               clearCache, clearAll, closeDataset})
+                a->setStatusTip(edit ? QString() : frozen);
+            for (QAction* a : labelEdits) {
+                a->setEnabled(edit);
+                a->setStatusTip(edit ? QString() : frozen);
+            }
             runAllAct->setEnabled(w.hasDataset() && !running);
             runSelected->setEnabled(w.hasDataset() && !running && stepOk);
             runTo->setEnabled(w.hasDataset() && !running && stepOk);
             cancelRun->setEnabled(running || bridge.taskRunning());
-            clearCache->setEnabled(stepOk);
-            clearAll->setEnabled(!running);
+            clearCache->setEnabled(edit && stepOk);
+            clearAll->setEnabled(edit);
             exportResult->setEnabled(w.hasDataset() && !running);
             exportPython->setEnabled(true);
-            closeDataset->setEnabled(w.hasDataset() && !running);
+            closeDataset->setEnabled(edit && w.hasDataset());
             savePipeline->setEnabled(true);
             const ViewState& v = w.viewState();
             viewOrtho->setChecked(v.mode == ViewMode::Ortho);
@@ -694,6 +823,53 @@ namespace sirius::app {
         }
 
         // --- commands -----------------------------------------------------------------
+        // "Run selected step" against "Run to selected step". The executor
+        // only ever walks the pipeline from the top, taking each step's fresh
+        // cache entry as it passes (Executor::run), so the one thing that
+        // separates the two is whether the steps above are already computed:
+        // "Run to" recomputes whatever is stale, "Run selected" is the step
+        // on its own and refuses -- out loud -- when its input is missing,
+        // instead of quietly running the whole chain under the same label.
+        void runSelectedStep() {
+            const int i = wb().selectedIndex();
+            const Pipeline& p = wb().pipeline();
+            if (i < 0 || i >= p.size()) return;
+            for (int j = 0; j < i; ++j) {
+                if (j > 0 && !p.at(j).enabled) continue;
+                if (wb().outputFresh(j)) continue;
+                wb().logLine("Run selected step: step " + Step::number(j) + " " + p.at(j).name +
+                             " above it is not computed yet, so this step has no input. "
+                             "Use Process ▸ Run to selected step (or Run all enabled) instead.");
+                return;
+            }
+            bridge.startRun(i);
+        }
+
+        // Backspace removes a step with no dialog in the way, which is right:
+        // the removal is one undo entry. What was missing is the evidence, so
+        // the log and the status bar name the step and point at Undo. A step
+        // holding a computed output is the one case worth a question: undo
+        // brings the step back but not its cache, and recomputing it can cost
+        // minutes.
+        void removeStepAt(int index) {
+            const Pipeline& p = wb().pipeline();
+            if (index <= 0 || index >= p.size() || !wb().canEdit()) return;
+            const Step& step = p.at(index);
+            const QString name = QStringLiteral("%1 %2").arg(fromStd(Step::number(index)), fromStd(step.name));
+            const std::size_t cached = wb().executor().cachedBytesOf(step.id);
+            if (cached > 64ull * 1024 * 1024) {
+                const auto answer = QMessageBox::question(
+                    self, QStringLiteral("Remove step"),
+                    QStringLiteral("Remove step %1?\n\nIts computed output (%2) is discarded and has to be "
+                                   "recomputed if you bring the step back.")
+                        .arg(name, widgets::bytesText(cached)),
+                    QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
+                if (answer != QMessageBox::Yes) return;
+            }
+            wb().removeStep(index);   // logs "Removed step …" itself
+            wb().logLine("Edit ▸ Undo (" + toStd(shortcutText(keys::undo())) + ") brings step " + toStd(name) + " back.");
+        }
+
         void openDataset() {
             OpenDatasetDialog dialog(bridge, self, wb().hasDataset() ? fromStd(wb().dataset().sourcePath) : QString());
             if (dialog.exec() != QDialog::Accepted) return;
@@ -950,6 +1126,7 @@ namespace sirius::app {
         d.params = new ParamsPanel(bridge, this);
         d.diagnostics = new DiagnosticsPanel(bridge, this);
         d.assistant = new AssistantPanel(bridge, this);
+        d.log = new LogPanel(bridge, this);
         d.help = new HelpWindow(bridge, this);
         d.help->hide();
 
@@ -957,12 +1134,18 @@ namespace sirius::app {
         d.paramsDock = makeDock(QStringLiteral("Parameters"), d.params, this);
         d.diagDock = makeDock(QStringLiteral("Diagnostics"), d.diagnostics, this);
         d.assistantDock = makeDock(QStringLiteral("Assistant"), d.assistant, this);
+        d.logDock = makeDock(QStringLiteral("Log"), d.log, this);
         d.diagnostics->setDock(d.diagDock);
         addDockWidget(Qt::LeftDockWidgetArea, d.opsDock);
         addDockWidget(Qt::RightDockWidgetArea, d.paramsDock);
         addDockWidget(Qt::RightDockWidgetArea, d.assistantDock);
         splitDockWidget(d.paramsDock, d.assistantDock, Qt::Horizontal);
         addDockWidget(Qt::BottomDockWidgetArea, d.diagDock);
+        // The log shares the bottom area with the diagnostics as a tab: same
+        // place, one click away, and it keeps the viewer its full height.
+        addDockWidget(Qt::BottomDockWidgetArea, d.logDock);
+        tabifyDockWidget(d.diagDock, d.logDock);
+        d.diagDock->raise();
         d.assistantDock->hide();
         // Sizing a hidden dock here makes the first layout pass reserve its
         // width and grow the window past 1600 px; the assistant dock is
@@ -988,6 +1171,24 @@ namespace sirius::app {
             impl_->helpPage->setChecked(visible);
         });
         connect(d.assistant, &AssistantPanel::closeRequested, this, [this] { impl_->assistantDock->hide(); });
+        connect(d.ops, &OpsPanel::removeStepRequested, this, [this](int i) { impl_->removeStepAt(i); });
+        connect(d.params, &ParamsPanel::removeStepRequested, this, [this](int i) { impl_->removeStepAt(i); });
+        connect(d.params, &ParamsPanel::runStepRequested, this, [this] { impl_->runSelectedStep(); });
+        // ⛶: the diagnostics take the viewer's room until they are restored.
+        connect(d.diagnostics, &DiagnosticsPanel::maximizedChanged, this, [this](bool on) {
+            Impl& d = *impl_;
+            if (d.maximiseDiag) d.maximiseDiag->setChecked(on);
+            if (on) {
+                d.diagRestoreHeight = std::max(d.diagDock->height(), theme::kDiagnosticsH);
+                d.diagDock->show();
+                d.diagDock->raise();
+                if (QWidget* c = centralWidget()) c->hide();
+                resizeDocks({d.diagDock}, {std::max(height() - theme::kTitleBarH - theme::kStatusBarH, 200)}, Qt::Vertical);
+            } else {
+                if (QWidget* c = centralWidget()) c->show();
+                resizeDocks({d.diagDock}, {d.diagRestoreHeight}, Qt::Vertical);
+            }
+        });
         connect(d.viewer, &ViewerWidget::cursorChanged, this, [this](const QString& t) { impl_->statusCursor->setText(t); });
         connect(d.viewer, &ViewerWidget::zoomChanged, this, [this](const QString& t) {
             impl_->statusZoom->setText(QStringLiteral("zoom %1").arg(t));
@@ -1028,8 +1229,9 @@ namespace sirius::app {
         connect(&bridge, &WorkbenchBridge::runFinished, this, [this](bool ok, const QString& error) {
             impl_->statusProgress->hide();
             refreshAllLater();
-            if (!ok && !error.isEmpty() && error != QLatin1String("cancelled"))
-                QMessageBox::warning(this, QStringLiteral("Run failed"), error);
+            // A cancelled run arrives with an empty error (workbench_bridge),
+            // so there is no message text to recognise here.
+            if (!ok && !error.isEmpty()) QMessageBox::warning(this, QStringLiteral("Run failed"), error);
         });
         connect(&bridge, &WorkbenchBridge::taskStarted, this, [this](const QString& name) {
             impl_->progressClock.start();
@@ -1047,10 +1249,18 @@ namespace sirius::app {
             if (!ok && !error.isEmpty()) QMessageBox::warning(this, impl_->bridge.taskLabel(), error);
         });
         connect(&bridge, &WorkbenchBridge::logged, this, [this](const QString& line) { impl_->showLogLine(line, 4000); });
+        // Both edges of the run: the workbench refuses edits between them, and
+        // every menu item and panel control has to follow.
+        connect(&bridge, &WorkbenchBridge::runStateChanged, this, [this] { impl_->refreshActions(); });
 
+        // The dock arrangement first, the window size second: restoreState()
+        // hands the dock areas their saved extents and the layout then fits
+        // the window around them, so running it after restoreGeometry() can
+        // leave the window shorter than the size that was just restored.
         QSettings settings;
-        if (settings.contains(QStringLiteral("window/geometry"))) restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());
         if (settings.contains(QStringLiteral("window/state"))) restoreState(settings.value(QStringLiteral("window/state")).toByteArray());
+        if (settings.contains(QStringLiteral("window/geometry")))
+            restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());
         refreshAll();
     }
 
@@ -1099,23 +1309,54 @@ namespace sirius::app {
 
     void MainWindow::runAll() { impl_->bridge.startRun(-1); }
 
+    void MainWindow::setUnattended(bool on) { impl_->unattended = on; }
+
     void MainWindow::askAssistant(const QString& text) {
         impl_->assistantDock->show();
         impl_->assistant->ask(text);
     }
 
+    bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+        if (watched == impl_->statusLog && event->type() == QEvent::MouseButtonRelease) {
+            impl_->showLog();
+            return true;
+        }
+        return QMainWindow::eventFilter(watched, event);
+    }
+
     void MainWindow::closeEvent(QCloseEvent* event) {
         if (impl_->bridge.running()) {
-            const auto answer = QMessageBox::question(this, QStringLiteral("Quit"),
-                                                      QStringLiteral("A run is in progress. Cancel it and quit?"));
-            if (answer != QMessageBox::Yes) {
-                event->ignore();
-                return;
+            // Unattended (--screenshot, --quit-after, scripting): there is
+            // nobody to answer, and a modal question here would hold the
+            // application open for ever.
+            if (impl_->unattended) {
+                impl_->bridge.cancelRun();
+            } else {
+                const auto answer = QMessageBox::question(this, QStringLiteral("Quit"),
+                                                          QStringLiteral("A run is in progress. Cancel it and quit?"));
+                if (answer != QMessageBox::Yes) {
+                    event->ignore();
+                    return;
+                }
+                impl_->bridge.cancelRun();
             }
-            impl_->bridge.cancelRun();
         }
+        // Not while the diagnostics cover the viewer: that would save a
+        // hidden central widget as the layout to open with.
+        impl_->diagnostics->setMaximized(false);
         QSettings settings;
-        settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+        // A size the screen imposed is not a size the user chose. On a
+        // display smaller than the window wants (a laptop, or the small
+        // virtual screen of a headless run) Qt clamps the window to the
+        // available area, and saving that is how a window comes back shorter
+        // than it was left on the big monitor. The arrangement of the docks
+        // is worth keeping either way.
+        const QRect available = screen() ? screen()->availableGeometry() : QRect();
+        const QRect frame = frameGeometry();
+        const bool deliberate = isMaximized() || isFullScreen();   // a real choice, and Qt records it as one
+        const bool squeezed = !deliberate && !available.isEmpty() &&
+                              (frame.height() >= available.height() - 2 || frame.width() >= available.width() - 2);
+        if (!squeezed) settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
         settings.setValue(QStringLiteral("window/state"), saveState());
         impl_->help->hide();
         QMainWindow::closeEvent(event);

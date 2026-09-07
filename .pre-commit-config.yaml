@@ -1,0 +1,36 @@
+# pre-commit hooks (pre-commit.com): the checks the CI lint job runs, applied
+# to the files a commit touches. Install once with
+#     pip install pre-commit && pre-commit install
+# clang-format only sees the staged C++/CUDA files, so the untouched tree is
+# never reformatted; ruff lints the Python worker, bindings, benchmarks and
+# plugins with the configuration in pyproject.toml. Versions are pinned to the
+# ones the CI job installs.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+
+  # ruff-format is deliberately absent: it has no options to fit the style
+  # this tree uses (continuations aligned under the open paren, aligned
+  # trailing comments) and would rewrite about a third of models.py,
+  # server.py and workbench.py. `ruff check` covers line length and imports.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v20.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c++, c, cuda]

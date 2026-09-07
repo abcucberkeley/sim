@@ -2,6 +2,10 @@
 Cross-platform SIM reconstruction tool that runs on the CPU, GPU and HPC.
 
 ## Development guide
+
+Branch model, presets, how to run the tests, formatting and the commit style:
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 Fiona
 ```
 module load ninja
@@ -35,14 +39,60 @@ Fiona supports avx2 so make sure to pass `-DSIRIUS_ENABLE_AVX2=ON`; the `fiona-a
 - Remove port overlay after the next nanobind release (due to missing tensor header)
 - TensorStore: remote kvstores (gcs, s3, http) are compiled out; add them behind an option when a cluster needs them
 - Sanitizers.cmake only enables ASan+UBSan for non-MSVC. Add tsan/msan as separate options (mutually exclusive with ASan), and on MSVC, /fsanitize=address doesn't co-exist with /RTC1, which Debug enables by default. Worth a string(REGEX REPLACE) to strip /RTC* when sanitizers are on.
-- cmake install command so the downstream user can simply do
+- MPI: bind each rank to `Device::cuda(localRank % cudaDeviceCount())`, distribute pages via `TiffFile::readPages`, and add a `Buffer`-aware halo exchange
+- nvTIFF encoder (`nvtiffEncode`) for writing stacks straight from device memory; the writers currently stage device buffers through the host
+- GPU reads of Deflate TIFFs need `libnvcomp.so.5` at run time (fetched and linked by default); wheels should bundle it via auditwheel
+
+## Installing SIRIUS and using it from another project
+
+```
+cmake -S . -B build -DSIRIUS_ENABLE_TESTS=OFF
+cmake --build build --config Release
+cmake --install build --config Release --prefix /where/you/want
+```
+
+Downstream, with `/where/you/want` on `CMAKE_PREFIX_PATH`:
+
 ```cmake
 find_package(SIRIUS CONFIG REQUIRED)
 target_link_libraries(myapp PRIVATE sirius::sirius)
 ```
-- MPI: bind each rank to `Device::cuda(localRank % cudaDeviceCount())`, distribute pages via `TiffFile::readPages`, and add a `Buffer`-aware halo exchange
-- nvTIFF encoder (`nvtiffEncode`) for writing stacks straight from device memory; the writers currently stage device buffers through the host
-- GPU reads of Deflate TIFFs need `libnvcomp.so.5` at run time (fetched and linked by default); wheels should bundle it via auditwheel
+
+That is the whole story for a consumer: include path, bundled Eigen and the
+complete link line come with the target. `SIRIUSConfig.cmake` re-finds only what
+SIRIUS took from the *system* rather than from FetchContent -- OpenMP, and the
+CUDA toolkit for a CUDA build -- and records how the copy was built, so a
+consumer can query `SIRIUS_WITH_CUDA`, `SIRIUS_WITH_TENSORSTORE`,
+`SIRIUS_WITH_MPI`, `SIRIUS_VERSION`.
+
+**Why the install tree carries dependencies.** Eigen, zlib, libtiff, FFTW,
+toml++ and nlohmann/json are fetched and built in-tree at pinned revisions
+(`cmake/Dependencies.cmake`), so they are not packages a downstream user could
+`find_package()`; and because `sirius` is a *static* library, even its private
+dependencies are still needed at the consumer's link step. Rather than ask
+everyone to install the same six projects at the same versions, the install is
+self-contained:
+
+| path | contents |
+| --- | --- |
+| `include/sirius/` | the public headers |
+| `include/sirius-vendor/eigen3/` | Eigen 3.4.0 headers, bundled because Eigen is part of the public API (`<sirius/buffer.hpp>` includes `<unsupported/Eigen/CXX11/Tensor>`); added to the consumer's include path as a SYSTEM directory |
+| `lib/` | `libsirius.a` / `sirius.lib` |
+| `lib/sirius/` | the static libtiff, zlib and FFTW archives it was linked against, exported as `sirius::tiff`, `sirius::zlibstatic`, `sirius::fftw3` |
+| `lib/cmake/SIRIUS/` | `SIRIUSConfig.cmake`, the version file and the `sirius::` export set |
+
+toml++ and nlohmann/json are header-only and used only inside the library's
+`.cpp` files, so they vanish at the library boundary and are neither installed
+nor exported. If your project also uses Eigen, put your copy on the include
+path first and check it is the same version: Eigen is header-only, and one
+translation unit must not mix two of them.
+
+What does not work yet: builds with nvTIFF, nvCOMP or TensorStore have no
+install rules at all (`SIRIUS_ENABLE_INSTALL` turns itself off, see
+`cmake/ProjectOptions.cmake`) because those are NVIDIA redistributables and a
+40-dependency Bazel build that SIRIUS does not install; and a Debug and a
+Release install into the same prefix overwrite each other's `sirius.lib`, so
+give each configuration its own prefix.
 
 ## CPU / GPU execution model
 
@@ -502,6 +552,14 @@ parameter keys are documented in [app/python/README.md](app/python/README.md).
 python -m sirius_worker --host 127.0.0.1 --port 0 --token X --device auto   # prints {"port": N, ...}
 python -m unittest discover -s app/python/tests -v
 ```
+
+**Read [app/python/SECURITY.md](app/python/SECURITY.md) before you expose a
+worker.** Whoever holds the token can run code on the worker's host: plugins
+are imported from directories the client names, `--allow-install` (off unless
+passed) lets it run pip or conda, and model / flat-field / OTF specs read
+arbitrary paths. There is no TLS -- always set a token, bind to `127.0.0.1`
+and reach a remote worker through an SSH tunnel. `--token ""` turns
+authentication off completely.
 
 Every step the worker can run is implemented once, in
 `sirius.workbench` (`bindings/python/sirius/workbench.py`); the worker

@@ -1,0 +1,207 @@
+// Numeric parity fixtures for the Python mirror of the operations.
+//
+// bindings/python/sirius/workbench.py reimplements a dozen of the built-in
+// steps for the exported scripts and the HPC backend. test_app_schema.cpp
+// checks their *parameter keys* against a committed snapshot; nothing checked
+// that the two implementations produce the same *numbers*, which is the
+// failure that would corrupt someone's results without saying anything.
+//
+// This case runs a fixed list of (kind, params) through the real Operation on
+// one deterministic synthetic array and writes every result as raw float32
+// with a JSON sidecar. bindings/tests/test_parity.py replays the same list
+// through sirius.workbench.run_step on the same input and compares.
+//
+//     SIRIUS_PARITY_OUT=<dir> sirius_tests "[parity]"
+//     SIRIUS_PARITY_DIR=<dir> python -m unittest bindings.tests.test_parity
+//
+// The tag is hidden ("[.parity]"), so the normal test run neither runs it nor
+// pays for it; without SIRIUS_PARITY_OUT it skips.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "core/operation.hpp"
+#include "core/ops/builtin.hpp"
+
+using namespace sirius;
+using namespace sirius::app;
+using nlohmann::json;
+
+namespace {
+
+    // (c, t, z, y, x) chosen small enough to compare voxel by voxel and odd
+    // enough that a transposed axis or an off-by-one stride cannot hide.
+    constexpr Index kC = 2, kT = 3, kZ = 4, kY = 9, kX = 11;
+
+    // Three Gaussian blobs on a deterministic hash noise floor: smooth enough
+    // that resampling means something, lumpy enough that a threshold finds
+    // several connected components to label.
+    std::shared_ptr<Array5> syntheticArray(Dims5 d) {
+        auto a = std::make_shared<Array5>(d);
+        const double blobs[3][4] = {{1.0, 2.5, 3.0, 1.0}, {2.5, 6.0, 7.5, 0.8}, {0.5, 7.0, 2.0, 0.6}};
+        for (Index c = 0; c < d.c; ++c)
+            for (Index t = 0; t < d.t; ++t)
+                for (Index z = 0; z < d.z; ++z)
+                    for (Index y = 0; y < d.y; ++y)
+                        for (Index x = 0; x < d.x; ++x) {
+                            double v = 0.0;
+                            for (const auto& b : blobs) {
+                                const double dz = z - b[0], dy = y - b[1], dx = x - b[2];
+                                v += b[3] * std::exp(-(dz * dz / 2.0 + dy * dy / 6.0 + dx * dx / 6.0));
+                            }
+                            v *= 1.0 + 0.15 * c - 0.05 * t;   // channels and time points differ
+                            // integer hash noise: identical on every platform
+                            std::uint32_t h = static_cast<std::uint32_t>(((c * 31 + t) * 31 + z) * 31 + y) * 31u +
+                                              static_cast<std::uint32_t>(x);
+                            h ^= h >> 15;
+                            h *= 0x2c1b3c6du;
+                            h ^= h >> 12;
+                            v += 0.05 * (static_cast<double>(h % 1000u) / 1000.0);
+                            a->at(c, t, z, y, x) = static_cast<float>(v);
+                        }
+        return a;
+    }
+
+    DatasetMeta syntheticMeta(Dims5 d) {
+        DatasetMeta m;
+        m.name = "parity";
+        m.format = "memory";
+        m.dims = d;
+        m.voxelUm = {0.1, 0.1, 0.3};   // x, y, z
+        m.normalizeChannels();
+        return m;
+    }
+
+    void writeFloats(const std::filesystem::path& p, const float* data, std::size_t n) {
+        std::ofstream f(p, std::ios::binary);
+        REQUIRE(f.good());
+        f.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(n * sizeof(float)));
+        REQUIRE(f.good());
+    }
+
+    void writeJson(const std::filesystem::path& p, const json& j) {
+        std::ofstream f(p);
+        REQUIRE(f.good());
+        f << j.dump(2) << '\n';
+        REQUIRE(f.good());
+    }
+
+    json dimsJson(const Dims5& d) { return json::array({d.c, d.t, d.z, d.y, d.x}); }
+
+    struct Case {
+        const char* name;
+        const char* kind;
+        json params;
+    };
+
+    // One case per behaviour the two implementations are meant to share.
+    // Steps left out on purpose: merge (its output is a display RGB blend
+    // whose channel colours come from the metadata, not from the array),
+    // flatfield and load (both read files), and every worker-backed kind.
+    const std::vector<Case> kCases = {
+        {"einsum_mean_t", "einsum", {{"keep", "czyx"}, {"reduction", "mean"}}},
+        {"einsum_sum_zyx", "einsum", {{"keep", "ct"}, {"reduction", "sum"}}},
+        {"einsum_max_c", "einsum", {{"keep", "tzyx"}, {"reduction", "max"}}},
+        {"einsum_min_yx", "einsum", {{"keep", "ctz"}, {"reduction", "min"}}},
+        {"maxproj_z", "maxproj", {{"axis", "z"}}},
+        {"maxproj_t", "maxproj", {{"axis", "t"}}},
+        {"meant", "meant", json::object()},
+        {"contrast_auto", "contrast", {{"min", 0.0}, {"max", 0.0}, {"gamma", 1.0}}},
+        {"contrast_percentiles", "contrast", {{"min", 0.0}, {"max", 0.0}, {"lo_percentile", 5.0}, {"hi_percentile", 95.0}}},
+        {"contrast_manual", "contrast", {{"min", 0.25}, {"max", 0.8}, {"gamma", 1.0}}},
+        {"contrast_gamma", "contrast", {{"min", 0.1}, {"max", 0.9}, {"gamma", 0.45}}},
+        {"croppad_crop", "croppad", {{"z0", 1}, {"y0", 2}, {"x0", 3}, {"z", 2}, {"y", 4}, {"x", 5}}},
+        {"croppad_pad", "croppad", {{"z0", -1}, {"y0", -2}, {"x0", -2}, {"z", 6}, {"y", 12}, {"x", 14}, {"fill", 0.25}}},
+        {"croppad_to_edge", "croppad", {{"z0", 1}, {"y0", 1}, {"x0", 1}}},
+        {"bleach_first_t", "bleach", {{"mode", "Match first frame"}, {"over", "t"}}},
+        {"bleach_mean_t", "bleach", {{"mode", "Match mean"}, {"over", "t"}}},
+        {"bleach_mean_z", "bleach", {{"mode", "Match mean"}, {"over", "z"}}},
+        {"resample_linear", "resample", {{"voxel_x", 0.16}, {"voxel_y", 0.16}, {"voxel_z", 0.2}, {"interpolation", "linear"}}},
+        {"resample_up_linear", "resample", {{"voxel_x", 0.06}, {"voxel_y", 0.08}, {"voxel_z", 0.0}, {"interpolation", "linear"}}},
+        {"resample_cubic", "resample", {{"voxel_x", 0.16}, {"voxel_y", 0.16}, {"voxel_z", 0.2}, {"interpolation", "cubic"}}},
+        {"resample_nearest", "resample", {{"voxel_x", 0.16}, {"voxel_y", 0.16}, {"voxel_z", 0.2}, {"interpolation", "nearest"}}},
+        {"threshold_otsu", "threshold", {{"channel", 0}, {"method", "Otsu"}, {"post", "Connected components"}, {"min_voxels", 0}}},
+        {"threshold_manual", "threshold", {{"channel", 1}, {"method", "Manual"}, {"value", 0.6}, {"post", "Connected components"}, {"min_voxels", 4}}},
+        {"threshold_percentile", "threshold", {{"channel", 0}, {"method", "Percentile"}, {"percentile", 92.0}, {"post", "Connected components"}, {"min_voxels", 0}}},
+    };
+
+    ParamSet paramsOf(const json& j) {
+        ParamSet p;
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (it->is_boolean()) p.set(it.key(), it->get<bool>());
+            else if (it->is_number_integer()) p.set(it.key(), it->get<std::int64_t>());
+            else if (it->is_number_float()) p.set(it.key(), it->get<double>());
+            else p.set(it.key(), it->get<std::string>());
+        }
+        return p;
+    }
+
+} // namespace
+
+TEST_CASE("parity fixtures for the Python mirror of the operations", "[.parity][app]") {
+    const char* outDir = std::getenv("SIRIUS_PARITY_OUT");
+    if (!outDir || !*outDir) SKIP("set SIRIUS_PARITY_OUT to a directory to write the parity fixtures");
+    const std::filesystem::path dir(outDir);
+    std::filesystem::create_directories(dir);
+
+    registerBuiltinOperations();
+    const Dims5 dims{kC, kT, kZ, kY, kX};
+    const DatasetMeta meta = syntheticMeta(dims);
+    const std::shared_ptr<Array5> array = syntheticArray(dims);
+
+    writeFloats(dir / "input.f32", array->data(), static_cast<std::size_t>(array->numel()));
+    writeJson(dir / "input.json", json{{"dims", dimsJson(dims)},
+                                       {"voxel_um", json::array({meta.voxelUm[0], meta.voxelUm[1], meta.voxelUm[2]})}});
+
+    StepContext ctx;
+    ctx.backend = Backend::Cpu;
+    json index = json::array();
+    for (const Case& c : kCases) {
+        INFO("case " << c.name);
+        const Operation* op = findOperation(c.kind);
+        REQUIRE(op != nullptr);
+        // The executor hands every step a fully defaulted parameter set; the
+        // sidecar records the same effective values so the Python side runs
+        // the same step and not its own idea of the defaults.
+        ParamSet params = paramsOf(c.params);
+        params.applyDefaults(op->info().params);
+        StepInput in;
+        in.meta = meta;
+        in.array = array;
+        const StepOutput out = op->run(in, params, ctx);
+        REQUIRE(out.array);
+
+        json entry{{"name", c.name}, {"kind", c.kind}, {"params", params.toJson()}, {"dims", dimsJson(out.meta.dims)},
+                   {"voxel_um", json::array({out.meta.voxelUm[0], out.meta.voxelUm[1], out.meta.voxelUm[2]})},
+                   {"labels", false}};
+        writeFloats(dir / (std::string(c.name) + ".f32"), out.array->data(),
+                    static_cast<std::size_t>(out.array->numel()));
+        if (out.labels && !out.labels->empty()) {
+            entry["labels"] = true;
+            entry["labels_dims"] = json::array({out.labels->t(), out.labels->z(), out.labels->y(), out.labels->x()});
+            std::vector<std::uint32_t> flat;
+            flat.reserve(static_cast<std::size_t>(out.labels->t() * out.labels->z() * out.labels->y() * out.labels->x()));
+            for (Index t = 0; t < out.labels->t(); ++t) {
+                const std::uint32_t* v = out.labels->volume(t);
+                flat.insert(flat.end(), v, v + out.labels->z() * out.labels->y() * out.labels->x());
+            }
+            std::ofstream f(dir / (std::string(c.name) + ".u32"), std::ios::binary);
+            REQUIRE(f.good());
+            f.write(reinterpret_cast<const char*>(flat.data()),
+                    static_cast<std::streamsize>(flat.size() * sizeof(std::uint32_t)));
+            REQUIRE(f.good());
+        }
+        writeJson(dir / (std::string(c.name) + ".json"), entry);
+        index.push_back(entry);
+    }
+    writeJson(dir / "cases.json", json{{"version", 1}, {"cases", index}});
+}

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <stdexcept>
 
+#include "core/cancel.hpp"
 #include "core/ops/builtin.hpp"
 #include "core/ops/plugin.hpp"
 
@@ -157,45 +158,82 @@ namespace sirius::app {
 
     // --- RunJob ------------------------------------------------------------------
 
+    void RunJob::requireFinished(const char* what) const {
+        if (!finished()) throw std::logic_error(std::string("RunJob::") + what + " read before the job finished");
+    }
+
+    void RunJob::connectWorker() {
+        if (backend_ == Backend::Hpc) {
+            progress_.set(0.0, -1, "Connecting to the HPC worker…");
+            ownedRemote_ = RemoteWorker::connect(remoteConfig_.host, remoteConfig_.port, remoteConfig_.token);
+            workerNote_ = "HPC worker: " + ownedRemote_->capabilities().device + " on " + ownedRemote_->capabilities().hostname;
+        } else if (needsWorker_) {
+            if (!launcher_) throw std::runtime_error("no Python worker launcher configured");
+            progress_.set(0.0, -1, "Starting the Python worker…");
+            ownedRemote_ = launcher_();
+            if (!ownedRemote_) throw std::runtime_error("the Python worker did not start");
+            workerNote_ = "Local worker: " + ownedRemote_->capabilities().device;
+        }
+        ctx_.remote = ownedRemote_.get();
+    }
+
     void RunJob::execute() {
         const auto t0 = std::chrono::steady_clock::now();
-        finished_ = false;
+        if (finished()) return;   // runs once
         error_.clear();
+        cancelledResult_ = false;
         reports_.clear();
-        // Steps that will actually run, for an overall progress fraction.
-        int toRun = 0;
-        for (int i = 0; i <= target_; ++i) {
-            const Step& s = pipeline_.at(i);
-            if ((i == 0 || s.enabled) && !executor_->isFresh(pipeline_, i)) ++toRun;
-        }
-        int done = 0;
-        int currentStep = -1;
-        StepContext ctx = ctx_;
-        ctx.progress = [&](double f, const std::string& m) {
-            const double overall = toRun > 0 ? (done + std::clamp(f, 0.0, 1.0)) / toRun : 1.0;
-            progress_.set(overall, currentStep, m);
-        };
-        ctx.cancelled = [this] { return cancelled_.load(); };
-        auto onStep = [&](const StepReport& r) {
-            if (r.note == "running" && !r.ran && r.error.empty()) {
-                currentStep = r.index;
-                progress_.set(toRun > 0 ? static_cast<double>(done) / toRun : 0.0, r.index, "");
-            } else if (r.ran) {
-                ++done;
-                progress_.set(toRun > 0 ? static_cast<double>(done) / toRun : 1.0, r.index, "");
-            }
-        };
+        // The worker first: a process start or a remote handshake can take a
+        // while, and that belongs on this thread, not the GUI's.
         try {
-            output_ = executor_->run(pipeline_, target_, ctx, &reports_, onStep);
+            connectWorker();
         } catch (const std::exception& e) {
-            error_ = e.what();
-        } catch (...) {
-            error_ = "unknown error";
+            error_ = std::string("Worker unavailable: ") + e.what() +
+                     " (Preferences ▸ Worker sets the Python interpreter; Preferences ▸ HPC the remote host).";
         }
-        if (cancelled_.load()) error_ = "cancelled";
+        if (error_.empty()) {
+            // Steps that will actually run, for an overall progress fraction.
+            int toRun = 0;
+            for (int i = 0; i <= target_; ++i) {
+                const Step& s = pipeline_.at(i);
+                if ((i == 0 || s.enabled) && !executor_->isFresh(pipeline_, i)) ++toRun;
+            }
+            int done = 0;
+            int currentStep = -1;
+            StepContext ctx = ctx_;
+            ctx.progress = [&](double f, const std::string& m) {
+                const double overall = toRun > 0 ? (done + std::clamp(f, 0.0, 1.0)) / toRun : 1.0;
+                progress_.set(overall, currentStep, m);
+            };
+            ctx.cancelled = [this] { return cancelled_.load(); };
+            auto onStep = [&](const StepReport& r) {
+                if (r.state == StepReport::State::Running) {
+                    currentStep = r.index;
+                    progress_.set(toRun > 0 ? static_cast<double>(done) / toRun : 0.0, r.index, "");
+                } else if (r.state == StepReport::State::Ran) {
+                    ++done;
+                    progress_.set(toRun > 0 ? static_cast<double>(done) / toRun : 1.0, r.index, "");
+                }
+            };
+            try {
+                output_ = executor_->run(pipeline_, target_, ctx, &reports_, onStep);
+            } catch (const CancelledError&) {
+                cancelledResult_ = true;
+            } catch (const std::exception& e) {
+                // isCancellation also accepts the library's untyped
+                // "cancelled" (see app/core/cancel.hpp); everything else is a
+                // genuine failure and keeps its own message.
+                if (isCancellation(e)) cancelledResult_ = true;
+                else error_ = e.what();
+            } catch (...) {
+                error_ = "unknown error";
+            }
+        }
+        if (cancelled_.load()) cancelledResult_ = true;
+        if (cancelledResult_) error_ = "cancelled";
         seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         progress_.set(1.0, -1, "");
-        finished_ = true;
+        finished_.store(true, std::memory_order_release);
     }
 
     // --- Workbench ---------------------------------------------------------------
@@ -271,41 +309,55 @@ namespace sirius::app {
     }
 
     void Workbench::pushEdit(const std::string& label, const Snapshot& before, const std::string& mergeKey) {
+        // A merged group (slider drag) undoes to the "before" of its first
+        // edit; the history says whether this edit continues the group, so
+        // a group interrupted by any other entry starts afresh.
         Snapshot first = before;
         if (!mergeKey.empty()) {
-            if (lastMergeKey_ == mergeKey && mergeBefore_.count(mergeKey)) first = mergeBefore_[mergeKey];
-            else mergeBefore_[mergeKey] = before;
-        } else {
-            mergeBefore_.clear();
+            if (history_.mergesWith(mergeKey) && mergeFirst_ && mergeFirst_->first == mergeKey) first = mergeFirst_->second;
+            mergeFirst_ = std::make_pair(mergeKey, first);
         }
-        lastMergeKey_ = mergeKey;
         const Snapshot after = snapshot();
         Command c;
         c.label = label;
         c.mergeKey = mergeKey;
         c.undo = [this, first] { restore(first); };
         c.redo = [this, after] { restore(after); };
+        pushCommand(std::move(c));
+    }
+
+    void Workbench::pushCommand(Command c) {
+        if (c.mergeKey.empty() || !(mergeFirst_ && mergeFirst_->first == c.mergeKey)) mergeFirst_.reset();
         history_.push(std::move(c));
         notify(&Observer::historyChanged);
     }
 
     void Workbench::undo() {
+        if (refuseIfRunning("undo")) return;
+        endPaintStroke();
         if (!history_.canUndo()) return;
         const std::string label = history_.undoLabel();
         history_.undo();
-        lastMergeKey_.clear();
-        mergeBefore_.clear();
+        mergeFirst_.reset();
         logLine("Undo: " + label);
         notify(&Observer::historyChanged);
     }
 
     void Workbench::redo() {
+        if (refuseIfRunning("redo")) return;
+        endPaintStroke();
         if (!history_.canRedo()) return;
         const std::string label = history_.redoLabel();
         history_.redo();
-        lastMergeKey_.clear();
+        mergeFirst_.reset();
         logLine("Redo: " + label);
         notify(&Observer::historyChanged);
+    }
+
+    bool Workbench::refuseIfRunning(const char* what) {
+        if (!activeRun_) return false;
+        logLine(std::string("Cannot ") + what + " while a run is in progress: cancel it or wait for it to finish.");
+        return true;
     }
 
     void Workbench::clampSelection() {
@@ -370,30 +422,16 @@ namespace sirius::app {
     }
 
     void Workbench::openDataset(const std::string& path, const OpenOptions& options) {
+        if (refuseIfRunning("open a dataset")) throw std::runtime_error("A run is in progress: cancel it or wait before opening a dataset.");
         OpenResult opened = sirius::app::openDataset(path, options);   // throws with a message
         const Snapshot before = snapshot();
-        source_ = opened.source;
-        datasetMeta_ = opened.meta;
         Step& load = pipeline_.at(0);
-        applyOpenOptions(load.params, path, options, datasetMeta_);
+        applyOpenOptions(load.params, path, options, opened.meta);
         if (const Operation* op = findOperation("load")) {
             load.params.applyDefaults(op->info().params);
             load.params.coerce(op->info().params);
         }
-        executor_.clear();
-        auto out = std::make_shared<StepOutput>();
-        out->meta = datasetMeta_;
-        out->source = source_;
-        if (source_->inMemory()) out->array = source_->readAll();
-        out->note = "opened " + datasetMeta_.format;
-        loadOutput_ = out;
-        executor_.seed(pipeline_, 0, out);
-        view_.channelVisible.assign(static_cast<std::size_t>(std::max<Index>(datasetMeta_.dims.c, 1)), true);
-        view_.z = std::min<Index>(view_.z, std::max<Index>(datasetMeta_.dims.z - 1, 0));
-        view_.t = std::min<Index>(view_.t, std::max<Index>(datasetMeta_.dims.t - 1, 0));
-        view_.cx = datasetMeta_.dims.x / 2;
-        view_.cy = datasetMeta_.dims.y / 2;
-        view_.z = datasetMeta_.dims.z / 2;
+        installDataset(opened.source, opened.meta, "opened " + opened.meta.format);
         pushEdit("Open " + datasetMeta_.name, before);
         logLine("Opened " + path + " · " + datasetMeta_.shapeString() + " · " + opened.metadataSummary);
         notify(&Observer::datasetChanged);
@@ -404,27 +442,15 @@ namespace sirius::app {
     }
 
     void Workbench::setDataset(std::shared_ptr<ArraySource> source) {
+        if (refuseIfRunning("set the dataset")) return;
         if (!source) {
             closeDataset();
             return;
         }
         const Snapshot before = snapshot();
-        source_ = std::move(source);
-        datasetMeta_ = source_->meta();
-        Step& load = pipeline_.at(0);
-        load.params.set("path", datasetMeta_.sourcePath);
-        executor_.clear();
-        auto out = std::make_shared<StepOutput>();
-        out->meta = datasetMeta_;
-        out->source = source_;
-        if (source_->inMemory()) out->array = source_->readAll();
-        loadOutput_ = out;
-        executor_.seed(pipeline_, 0, out);
-        view_.channelVisible.assign(static_cast<std::size_t>(std::max<Index>(datasetMeta_.dims.c, 1)), true);
-        view_.cx = datasetMeta_.dims.x / 2;
-        view_.cy = datasetMeta_.dims.y / 2;
-        view_.z = datasetMeta_.dims.z / 2;
-        view_.t = 0;
+        DatasetMeta meta = source->meta();
+        pipeline_.at(0).params.set("path", meta.sourcePath);
+        installDataset(std::move(source), std::move(meta), {});
         pushEdit("Set dataset", before);
         notify(&Observer::datasetChanged);
         notify(&Observer::pipelineChanged);
@@ -432,8 +458,31 @@ namespace sirius::app {
         notify(&Observer::outputsChanged);
     }
 
+    void Workbench::installDataset(std::shared_ptr<ArraySource> source, DatasetMeta meta, std::string note) {
+        // The part open and set share: the source becomes the Load step's
+        // output, the caches start over and the view centres on the data.
+        endPaintStroke();
+        source_ = std::move(source);
+        datasetMeta_ = std::move(meta);
+        executor_.clear();
+        auto out = std::make_shared<StepOutput>();
+        out->meta = datasetMeta_;
+        out->source = source_;
+        if (source_->inMemory()) out->array = source_->readAll();
+        out->note = std::move(note);
+        loadOutput_ = out;
+        executor_.seed(pipeline_, 0, out);
+        view_.channelVisible.assign(static_cast<std::size_t>(std::max<Index>(datasetMeta_.dims.c, 1)), true);
+        view_.cx = datasetMeta_.dims.x / 2;
+        view_.cy = datasetMeta_.dims.y / 2;
+        view_.z = datasetMeta_.dims.z / 2;
+        view_.t = 0;
+    }
+
     void Workbench::closeDataset() {
+        if (refuseIfRunning("close the dataset")) return;
         if (!source_) return;
+        endPaintStroke();
         source_.reset();
         loadOutput_.reset();
         datasetMeta_ = DatasetMeta{};
@@ -450,6 +499,7 @@ namespace sirius::app {
     // --- pipeline edits -------------------------------------------------------------
 
     StepId Workbench::addStep(const std::string& kind, int at) {
+        if (refuseIfRunning("add a step")) return 0;
         const Snapshot before = snapshot();
         const StepId id = pipeline_.add(kind, at);
         const int index = pipeline_.indexOf(id);
@@ -475,6 +525,8 @@ namespace sirius::app {
 
     void Workbench::removeStep(int index) {
         if (index < 1 || index >= pipeline_.size()) return;
+        if (refuseIfRunning("remove a step")) return;
+        endPaintStroke();
         const Snapshot before = snapshot();
         const std::string name = pipeline_.at(index).name;
         const StepId id = pipeline_.at(index).id;
@@ -492,6 +544,7 @@ namespace sirius::app {
     }
 
     bool Workbench::moveStep(int index, int delta) {
+        if (refuseIfRunning("move a step")) return false;
         const Snapshot before = snapshot();
         if (!pipeline_.move(index, delta)) return false;
         const int j = index + delta;
@@ -508,6 +561,7 @@ namespace sirius::app {
 
     StepId Workbench::duplicateStep(int index) {
         if (index < 1 || index >= pipeline_.size()) return 0;
+        if (refuseIfRunning("duplicate a step")) return 0;
         const Snapshot before = snapshot();
         const StepId id = pipeline_.duplicate(index);
         selected_ = pipeline_.indexOf(id);
@@ -519,6 +573,7 @@ namespace sirius::app {
 
     void Workbench::setStepEnabled(int index, bool on) {
         if (index < 1 || index >= pipeline_.size() || pipeline_.at(index).enabled == on) return;
+        if (refuseIfRunning("enable or skip a step")) return;
         const Snapshot before = snapshot();
         pipeline_.setEnabled(index, on);
         pushEdit(std::string(on ? "Enable " : "Skip ") + pipeline_.at(index).name, before);
@@ -530,6 +585,7 @@ namespace sirius::app {
     void Workbench::setStepParams(int index, const ParamSet& params, const std::string& label,
                                   const std::string& mergeKey) {
         if (index < 0 || index >= pipeline_.size()) return;
+        if (refuseIfRunning("edit parameters")) return;
         const Snapshot before = snapshot();
         pipeline_.setParams(index, params);
         if (pipeline_.at(index).params == ParamSet::fromJson(before.pipeline["steps"][static_cast<std::size_t>(index)]["params"]))
@@ -554,6 +610,7 @@ namespace sirius::app {
 
     void Workbench::setStepCache(int index, CachePolicy policy) {
         if (index < 0 || index >= pipeline_.size() || pipeline_.at(index).cache == policy) return;
+        if (refuseIfRunning("change a cache policy")) return;
         const Snapshot before = snapshot();
         pipeline_.setCache(index, policy);
         pushEdit(std::string("Cache ") + pipeline_.at(index).name + " · " + toString(policy), before);
@@ -562,6 +619,7 @@ namespace sirius::app {
 
     void Workbench::renameStep(int index, const std::string& name) {
         if (index < 0 || index >= pipeline_.size()) return;
+        if (refuseIfRunning("rename a step")) return;
         const Snapshot before = snapshot();
         pipeline_.rename(index, name);
         pushEdit("Rename step " + Step::number(index), before);
@@ -570,6 +628,8 @@ namespace sirius::app {
     }
 
     void Workbench::replacePipeline(const Pipeline& p, const std::string& label) {
+        if (refuseIfRunning("replace the pipeline")) return;
+        endPaintStroke();
         const Snapshot before = snapshot();
         std::vector<Step> steps = p.steps();
         // Keep our Load step (its params describe the open dataset) unless the
@@ -590,6 +650,7 @@ namespace sirius::app {
     }
 
     void Workbench::loadPipeline(const std::string& path) {
+        if (refuseIfRunning("load a pipeline")) throw std::runtime_error("A run is in progress: cancel it or wait before loading a pipeline.");
         Pipeline p = Pipeline::load(path);
         // Relative Path parameters (OTF, parameter file, model, flat field)
         // are relative to the pipeline file, so pipelines travel with their data.
@@ -634,6 +695,7 @@ namespace sirius::app {
     }
 
     void Workbench::loadExamplePipeline() {
+        if (refuseIfRunning("load the example pipeline")) return;
         replacePipeline(Pipeline::example(), "Load example pipeline");
         logLine("Loaded the example pipeline");
     }
@@ -646,6 +708,7 @@ namespace sirius::app {
     bool Workbench::pasteParameters(int index) {
         if (!clipboard_ || index < 0 || index >= pipeline_.size()) return false;
         if (pipeline_.at(index).kind != clipboard_->first) return false;
+        if (refuseIfRunning("paste parameters")) return false;
         setStepParams(index, clipboard_->second, "Paste parameters into " + pipeline_.at(index).name);
         return true;
     }
@@ -771,6 +834,7 @@ namespace sirius::app {
     }
 
     bool Workbench::centreOnLabel(std::uint32_t id) {
+        endPaintStroke();   // the statistics must include the stroke
         auto labels = viewedLabels();
         const LabelStats* st = labels ? labels->statsOf(id) : nullptr;
         if (!st) return false;
@@ -954,12 +1018,16 @@ namespace sirius::app {
 
     void Workbench::clearCache(int index) {
         if (index < 1 || index >= pipeline_.size()) return;
+        if (refuseIfRunning("clear a cache")) return;
+        endPaintStroke();
         executor_.invalidate(pipeline_.at(index).id);
         logLine("Cleared cache of " + pipeline_.at(index).name);
         notify(&Observer::outputsChanged);
     }
 
     void Workbench::clearAllCaches() {
+        if (refuseIfRunning("clear the caches")) return;
+        endPaintStroke();
         executor_.clear();
         if (source_) executor_.seed(pipeline_, 0, loadOutput_);
         logLine("Cleared all caches");
@@ -988,11 +1056,14 @@ namespace sirius::app {
     }
 
     int Workbench::loadPlugins(bool reload) {
+        if (refuseIfRunning("load plugins")) return 0;
         if (!launcher_) {
             logLine("Plugins: no Python worker launcher configured.");
             return 0;
         }
         try {
+            logLine(std::string("Plugins: ") + (reload ? "reloading" : "loading") +
+                    " through the Python worker (starting it first when it is not running)…");
             std::unique_ptr<RemoteWorker> worker = launcher_();
             if (!worker) throw std::runtime_error("the Python worker did not start");
             const PluginLoadResult r = registerPluginOperations(*worker, reload);
@@ -1033,6 +1104,7 @@ namespace sirius::app {
             }
             if (s.op().info().remoteCapable && !executor_.isFresh(pipeline_, i)) needsWorker = true;
         }
+        endPaintStroke();
         auto job = std::make_shared<RunJob>();
         job->pipeline_ = pipeline_;
         job->target_ = target;
@@ -1040,23 +1112,15 @@ namespace sirius::app {
         job->ctx_.backend = backend_;
         job->ctx_.device = (backend_ == Backend::Cuda && cudaAvailable()) ? Device::cuda(cudaDevice_) : Device::cpu();
         job->ctx_.scratchDir = executor_.scratchDir();
-        try {
-            if (backend_ == Backend::Hpc) {
-                job->ownedRemote_ = RemoteWorker::connect(remote_.host, remote_.port, remote_.token);
-                logLine("HPC worker: " + job->ownedRemote_->capabilities().device + " on " +
-                        job->ownedRemote_->capabilities().hostname);
-            } else if (needsWorker) {
-                if (!launcher_) throw std::runtime_error("no Python worker launcher configured");
-                job->ownedRemote_ = launcher_();
-                if (!job->ownedRemote_) throw std::runtime_error("the Python worker did not start");
-                logLine("Local worker: " + job->ownedRemote_->capabilities().device);
-            }
-        } catch (const std::exception& e) {
-            logLine(std::string("Worker unavailable: ") + e.what() +
-                    " (Preferences ▸ Worker sets the Python interpreter; Preferences ▸ HPC the remote host).");
+        // The worker itself is obtained by execute(), on the run's thread.
+        job->backend_ = backend_;
+        job->needsWorker_ = needsWorker;
+        job->launcher_ = launcher_;
+        job->remoteConfig_ = remote_;
+        if (backend_ != Backend::Hpc && needsWorker && !launcher_) {
+            logLine("Worker unavailable: no Python worker launcher configured (Preferences ▸ Worker sets the interpreter).");
             return nullptr;
         }
-        job->ctx_.remote = job->ownedRemote_.get();
         activeRun_ = job;
         logLine("Run to step " + Step::number(target) + " on " + toString(backend_));
         notify(&Observer::runStateChanged);
@@ -1066,22 +1130,39 @@ namespace sirius::app {
     void Workbench::finishRun(const std::shared_ptr<RunJob>& job) {
         if (!job) return;
         if (activeRun_ == job) activeRun_.reset();
+        if (!job->finished()) {
+            // never executed (or still executing, which the caller must not do)
+            job->cancel();
+            logLine("Run abandoned before it finished");
+            notify(&Observer::runStateChanged);
+            return;
+        }
+        if (!job->workerNote_.empty()) logLine(job->workerNote_);
+        // Reports name steps by id: the pipeline is frozen during a run, but
+        // an index would still be the wrong thing to trust here.
         for (const StepReport& r : job->reports()) {
-            if (r.index < 0 || r.index >= pipeline_.size()) continue;
-            const std::string name = Step::number(r.index) + " " + pipeline_.at(r.index).name;
-            if (!r.error.empty()) logLine("Step " + name + " failed: " + r.error);
-            else if (r.ran) {
-                char buf[32];
-                std::snprintf(buf, sizeof buf, "%.1f s", r.seconds);
-                logLine("Step " + name + " · " + buf + (r.note.empty() ? "" : " · " + r.note));
-            } else if (r.skipped) logLine("Step " + name + " skipped");
+            const int index = pipeline_.indexOf(r.id);
+            const std::string name = index >= 0 ? Step::number(index) + " " + pipeline_.at(index).name
+                                                : "(removed step " + Step::number(r.index) + ")";
+            switch (r.state) {
+                case StepReport::State::Failed: logLine("Step " + name + " failed: " + r.error); break;
+                case StepReport::State::Ran: {
+                    char buf[32];
+                    std::snprintf(buf, sizeof buf, "%.1f s", r.seconds);
+                    logLine("Step " + name + " · " + buf + (r.note.empty() ? "" : " · " + r.note));
+                    break;
+                }
+                case StepReport::State::Skipped: logLine("Step " + name + " skipped"); break;
+                case StepReport::State::Cached:
+                case StepReport::State::Running: break;
+            }
         }
         if (job->succeeded()) {
             char buf[32];
             std::snprintf(buf, sizeof buf, "%.1f s", job->seconds());
             logLine(std::string("Run finished in ") + buf);
         } else {
-            logLine("Run " + (job->error() == "cancelled" ? std::string("cancelled") : "failed: " + job->error()));
+            logLine("Run " + (job->wasCancelled() ? std::string("cancelled") : "failed: " + job->error()));
         }
         job->ownedRemote_.reset();
         const DatasetMeta meta = outputMetaOf(viewed_);
@@ -1107,44 +1188,78 @@ namespace sirius::app {
         return out ? out->labels : nullptr;
     }
 
-    void Workbench::recordLabelDiff(const std::string& label, StepId id, LabelDiff diff) {
-        if (diff.empty()) return;
-        auto labels = viewedLabels();
-        if (!labels) return;
-        std::shared_ptr<LabelDiff> d = std::make_shared<LabelDiff>(std::move(diff));
-        Command c;
-        c.label = label;
-        c.undo = [this, labels, d, id] {
-            labels->apply(*d, false);
-            const std::vector<Observer*> obs = observers_;
-            for (Observer* o : obs) o->labelsChanged(id);
-        };
-        c.redo = [this, labels, d, id] {
-            labels->apply(*d, true);
-            const std::vector<Observer*> obs = observers_;
-            for (Observer* o : obs) o->labelsChanged(id);
-        };
-        history_.push(std::move(c));
-        notify(&Observer::historyChanged);
+    std::shared_ptr<LabelVolume> Workbench::labelsOf(StepId id) const {
+        if (pipeline_.indexOf(id) <= 0) return nullptr;   // Load has none; a removed step neither
+        return executor_.lastLabels(id);
+    }
+
+    std::shared_ptr<LabelVolume> Workbench::editableLabels(StepId* id) {
+        int actual = -1;
+        auto out = displayOutput(&actual);
+        if (id) *id = (out && actual >= 0) ? pipeline_.at(actual).id : 0;
+        return out ? out->labels : nullptr;
+    }
+
+    void Workbench::notifyLabels(StepId id) {
         const std::vector<Observer*> obs = observers_;
         for (Observer* o : obs) o->labelsChanged(id);
     }
 
+    void Workbench::applyLabelDiff(StepId id, const std::weak_ptr<LabelVolume>& target, const LabelDiff& diff, bool forward) {
+        // The edit belongs to one label volume; when the step was re-run
+        // (new labels) or removed since, there is nothing to undo into.
+        std::shared_ptr<LabelVolume> current = labelsOf(id);
+        std::shared_ptr<LabelVolume> expected = target.lock();
+        if (!current || !expected || current != expected) {
+            const int index = pipeline_.indexOf(id);
+            logLine(std::string(forward ? "Redo" : "Undo") + " of a label edit skipped: the labels of " +
+                    (index >= 0 ? "step " + Step::number(index) + " " + pipeline_.at(index).name : "a removed step") +
+                    " have been recomputed since.");
+            return;
+        }
+        current->apply(diff, forward);
+        current->updateStats(diff);
+        notifyLabels(id);
+    }
+
+    void Workbench::pushLabelCommand(const std::string& label, const std::string& mergeKey, StepId id,
+                                     const std::shared_ptr<LabelVolume>& labels, std::shared_ptr<LabelDiff> diff) {
+        std::weak_ptr<LabelVolume> target = labels;
+        Command c;
+        c.label = label;
+        c.mergeKey = mergeKey;
+        c.undo = [this, id, target, diff] { applyLabelDiff(id, target, *diff, false); };
+        c.redo = [this, id, target, diff] { applyLabelDiff(id, target, *diff, true); };
+        pushCommand(std::move(c));
+    }
+
+    void Workbench::recordLabelDiff(const std::string& label, StepId id, const std::shared_ptr<LabelVolume>& labels,
+                                    LabelDiff diff) {
+        if (diff.empty() || !labels) return;
+        labels->updateStats(diff);
+        pushLabelCommand(label, {}, id, labels, std::make_shared<LabelDiff>(std::move(diff)));
+        notifyLabels(id);
+    }
+
     void Workbench::beginPaintStroke() {
+        endPaintStroke();
+        if (refuseIfRunning("paint labels")) return;
         ++strokeCounter_;
         strokeDiff_ = LabelDiff{};
-        int actual = -1;
-        auto out = displayOutput(&actual);
-        strokeStep_ = (out && actual >= 0) ? pipeline_.at(actual).id : 0;
-        if (view_.selectedLabel == 0 && out && out->labels && view_.paintTool == PaintTool::Brush)
-            view_.selectedLabel = out->labels->maxLabel() + 1;
+        strokeLabels_ = editableLabels(&strokeStep_);
+        strokeOpen_ = static_cast<bool>(strokeLabels_);
+        if (view_.selectedLabel == 0 && strokeLabels_ && view_.paintTool == PaintTool::Brush)
+            view_.selectedLabel = strokeLabels_->maxLabel() + 1;
     }
 
     void Workbench::paintLabels(Index z, Index y, Index x, bool erase) {
         static const bool trace = std::getenv("SIRIUS_TRACE_VIEW") != nullptr;
         const auto t0 = std::chrono::steady_clock::now();
-        auto labels = viewedLabels();
-        if (!labels) return;
+        if (!strokeOpen_) beginPaintStroke();
+        if (!strokeOpen_) return;   // nothing to paint on, or a run is active
+        // The stroke edits the volume it started on: a display change in the
+        // middle of a drag must not spill the stroke into another output.
+        const std::shared_ptr<LabelVolume>& labels = strokeLabels_;
         const auto t1 = std::chrono::steady_clock::now();
         struct Report {
             bool on;
@@ -1157,103 +1272,98 @@ namespace sirius::app {
                              static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count()));
             }
         } report{trace, t0, t1};
-        if (strokeCounter_ == 0) beginPaintStroke();
         const double radius = std::max(1.0, view_.brushPx / 2.0);
         const Index zRadius = view_.paint3d ? std::max<Index>(1, view_.brushPx / 6) : 0;
         const std::uint32_t label = erase ? 0u : view_.selectedLabel;
         LabelDiff diff = labels->paint(view_.t, z, y, x, radius, zRadius, label, erase ? view_.selectedLabel : 0u);
         if (diff.empty()) return;
         // One stroke = one undo entry: the accumulated diff replaces the entry
-        // pushed by the previous mouse move (History merges by key).
+        // pushed by the previous mouse move (History merges by key). The
+        // statistics wait for endPaintStroke() so every move stays cheap.
         strokeDiff_.t = diff.t;
         strokeDiff_.indices.insert(strokeDiff_.indices.end(), diff.indices.begin(), diff.indices.end());
         strokeDiff_.before.insert(strokeDiff_.before.end(), diff.before.begin(), diff.before.end());
         strokeDiff_.after.insert(strokeDiff_.after.end(), diff.after.begin(), diff.after.end());
-        auto d = std::make_shared<LabelDiff>(strokeDiff_);
-        const StepId id = strokeStep_;
-        Command c;
-        c.label = erase ? "Erase labels" : "Paint label " + std::to_string(label);
-        c.mergeKey = "stroke#" + std::to_string(strokeCounter_);
-        c.undo = [this, labels, d, id] {
-            labels->apply(*d, false);
-            const std::vector<Observer*> obs = observers_;
-            for (Observer* o : obs) o->labelsChanged(id);
-        };
-        c.redo = [this, labels, d, id] {
-            labels->apply(*d, true);
-            const std::vector<Observer*> obs = observers_;
-            for (Observer* o : obs) o->labelsChanged(id);
-        };
-        history_.push(std::move(c));
-        notify(&Observer::historyChanged);
-        const std::vector<Observer*> obs = observers_;
-        for (Observer* o : obs) o->labelsChanged(id);
+        pushLabelCommand(erase ? "Erase labels" : "Paint label " + std::to_string(label),
+                         "stroke#" + std::to_string(strokeCounter_), strokeStep_, labels,
+                         std::make_shared<LabelDiff>(strokeDiff_));
+        notifyLabels(strokeStep_);
+    }
+
+    void Workbench::endPaintStroke() {
+        if (!strokeOpen_) return;
+        strokeOpen_ = false;
+        std::shared_ptr<LabelVolume> labels = std::move(strokeLabels_);
+        strokeLabels_.reset();
+        if (!labels || strokeDiff_.empty()) return;
+        labels->updateStats(strokeDiff_);
+        strokeDiff_ = LabelDiff{};
+        notifyLabels(strokeStep_);
     }
 
     void Workbench::fillLabel(Index z, Index y, Index x) {
-        auto labels = viewedLabels();
+        endPaintStroke();
+        if (refuseIfRunning("fill a label")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
         if (!labels) return;
-        int actual = -1;
-        displayOutput(&actual);
         const std::uint32_t label = view_.selectedLabel ? view_.selectedLabel : labels->maxLabel() + 1;
-        recordLabelDiff("Fill label " + std::to_string(label), actual >= 0 ? pipeline_.at(actual).id : 0,
-                        labels->fill(view_.t, z, y, x, label));
+        recordLabelDiff("Fill label " + std::to_string(label), id, labels, labels->fill(view_.t, z, y, x, label));
     }
 
     void Workbench::mergeLabels(const std::vector<std::uint32_t>& ids) {
-        auto labels = viewedLabels();
-        if (!labels || ids.size() < 2) return;
-        int actual = -1;
-        displayOutput(&actual);
-        LabelDiff diff = labels->merge(view_.t, ids);
-        labels->recomputeStats(view_.t);
-        recordLabelDiff("Merge labels", actual >= 0 ? pipeline_.at(actual).id : 0, std::move(diff));
+        endPaintStroke();
+        if (ids.size() < 2 || refuseIfRunning("merge labels")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
+        if (!labels) return;
+        recordLabelDiff("Merge labels", id, labels, labels->merge(view_.t, ids));
     }
 
-    void Workbench::splitLabel(std::uint32_t id, std::array<Index, 3> a, std::array<Index, 3> b) {
-        auto labels = viewedLabels();
-        if (!labels || id == 0) return;
-        int actual = -1;
-        displayOutput(&actual);
-        LabelDiff diff = labels->split(view_.t, id, a, b);
-        labels->recomputeStats(view_.t);
-        recordLabelDiff("Split label " + std::to_string(id), actual >= 0 ? pipeline_.at(actual).id : 0, std::move(diff));
+    void Workbench::splitLabel(std::uint32_t label, std::array<Index, 3> a, std::array<Index, 3> b) {
+        endPaintStroke();
+        if (label == 0 || refuseIfRunning("split a label")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
+        if (!labels) return;
+        recordLabelDiff("Split label " + std::to_string(label), id, labels, labels->split(view_.t, label, a, b));
     }
 
-    void Workbench::deleteLabel(std::uint32_t id) {
-        auto labels = viewedLabels();
-        if (!labels || id == 0) return;
-        int actual = -1;
-        displayOutput(&actual);
-        LabelDiff diff = labels->remove(view_.t, id);
-        labels->recomputeStats(view_.t);
-        if (view_.selectedLabel == id) view_.selectedLabel = 0;
-        recordLabelDiff("Delete label " + std::to_string(id), actual >= 0 ? pipeline_.at(actual).id : 0, std::move(diff));
+    void Workbench::deleteLabel(std::uint32_t label) {
+        endPaintStroke();
+        if (label == 0 || refuseIfRunning("delete a label")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
+        if (!labels) return;
+        LabelDiff diff = labels->remove(view_.t, label);
+        if (view_.selectedLabel == label) view_.selectedLabel = 0;
+        recordLabelDiff("Delete label " + std::to_string(label), id, labels, std::move(diff));
     }
 
-    void Workbench::setLabelReviewed(std::uint32_t id, bool reviewed) {
-        auto labels = viewedLabels();
+    void Workbench::setLabelReviewed(std::uint32_t label, bool reviewed) {
+        endPaintStroke();
+        if (refuseIfRunning("mark a label reviewed")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
         if (!labels) return;
         for (LabelStats& s : labels->stats())
-            if (s.id == id) s.reviewed = reviewed;
-        int actual = -1;
-        displayOutput(&actual);
-        const std::vector<Observer*> obs = observers_;
-        for (Observer* o : obs) o->labelsChanged(actual >= 0 ? pipeline_.at(actual).id : 0);
+            if (s.id == label) s.reviewed = reviewed;
+        notifyLabels(id);
     }
 
     void Workbench::acceptAllReviewed() {
-        auto labels = viewedLabels();
+        endPaintStroke();
+        if (refuseIfRunning("accept the labels")) return;
+        StepId id = 0;
+        auto labels = editableLabels(&id);
         if (!labels) return;
         for (LabelStats& s : labels->stats()) s.reviewed = true;
-        int actual = -1;
-        displayOutput(&actual);
         logLine("Accepted all reviewed labels");
-        const std::vector<Observer*> obs = observers_;
-        for (Observer* o : obs) o->labelsChanged(actual >= 0 ? pipeline_.at(actual).id : 0);
+        notifyLabels(id);
     }
 
     std::uint32_t Workbench::nextFlaggedLabel(bool forward) {
+        endPaintStroke();
         auto labels = viewedLabels();
         if (!labels) return 0;
         const auto& stats = labels->stats();

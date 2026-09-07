@@ -42,17 +42,17 @@ namespace sirius::app {
 
     void DisplayModel::setOutput(std::shared_ptr<const StepOutput> out) {
         if (out == out_) return;
-        const bool sameShape = out && out_ && out->meta.dims == out_->meta.dims && out->meta.rgb == out_->meta.rgb;
         out_ = std::move(out);
         meta_ = out_ ? out_->meta : DatasetMeta{};
         volumes_.clear();
         mips_.clear();
+        ranges_.clear();
         planes_.clear();
         tooLarge_ = false;
-        // Every new output gets fresh windows: a step's output can share its
-        // input's shape while living in a different intensity range (Contrast
-        // rescales to 0..1), and a stale window then clips it to white.
-        (void)sameShape;
+        // Every new output gets fresh windows, whatever its shape: a step's
+        // output can share its input's shape while living in a different
+        // intensity range (Contrast rescales to 0..1), and a stale window
+        // then clips it to white.
         windows_.clear();
     }
 
@@ -86,17 +86,12 @@ namespace sirius::app {
     DisplayWindow DisplayModel::computeWindow(Index c, Index t) {
         if (!valid()) return {0.0f, 1.0f};
         const Dims5& d = meta_.dims;
-        if (windowMode_ == WindowMode::Full && out_->array) {
-            // exact range of the in-memory volume (lazy sources use the samples below)
-            const BufferView<const float> v = out_->array->volume(c, t);
-            float lo = std::numeric_limits<float>::infinity(), hi = -lo;
-            for (Index i = 0; i < v.size(); ++i) {
-                const float x = v.data()[i];
-                if (std::isnan(x)) continue;
-                lo = std::min(lo, x);
-                hi = std::max(hi, x);
-            }
-            if (lo <= hi && hi > lo) return {lo, hi};
+        if (windowMode_ == WindowMode::Full) {
+            // The exact range of the whole volume is a scan of every voxel:
+            // ViewerLoader produces it beside the volume it reads, and until
+            // it lands the sampled range below stands in for it.
+            auto rit = ranges_.find(Key{c, t});
+            if (rit != ranges_.end() && rit->second.hi > rit->second.lo) return {rit->second.lo, rit->second.hi};
         }
         std::vector<float> samples;
         constexpr Index kTarget = 1 << 18;
@@ -131,7 +126,7 @@ namespace sirius::app {
         if (out_->array) return out_->array->plane(c, t, z);
         // a cached volume serves planes without touching the disk
         auto vit = volumes_.find(Key{c, t});
-        if (vit != volumes_.end()) return vit->second.data() + z * d.planeSize();
+        if (vit != volumes_.end()) return vit->second->data() + z * d.planeSize();
         const PlaneKey key{c, t, z};
         auto it = planes_.find(c);
         if (it != planes_.end() && it->second.first == key) return it->second.second.data();
@@ -147,51 +142,102 @@ namespace sirius::app {
         return slot.second.data();
     }
 
-    const float* DisplayModel::volume(Index c, Index t) {
+    const float* DisplayModel::volumeIfReady(Index c, Index t) const {
         if (!valid()) return nullptr;
         const Dims5& d = meta_.dims;
         if (c < 0 || c >= d.c || t < 0 || t >= d.t) return nullptr;
         if (out_->array) return out_->array->plane(c, t, 0);
-        const Key key{c, t};
-        auto it = volumes_.find(key);
-        if (it != volumes_.end()) return it->second.data();
-        const std::size_t bytes = static_cast<std::size_t>(d.z * d.planeSize()) * sizeof(float);
-        if (bytes > kVolumeCacheLimit) {
-            tooLarge_ = true;
-            return nullptr;
-        }
+        auto it = volumes_.find(Key{c, t});
+        return it != volumes_.end() ? it->second->data() : nullptr;
+    }
+
+    std::shared_ptr<const Buffer<float>> DisplayModel::volumeHold(Index c, Index t) const {
+        auto it = volumes_.find(Key{c, t});
+        return it != volumes_.end() ? it->second : nullptr;
+    }
+
+    const float* DisplayModel::mipIfReady(Index c, Index t) const {
+        auto it = mips_.find(Key{c, t});
+        return it != mips_.end() ? it->second->data() : nullptr;
+    }
+
+    void DisplayModel::evictOtherTimePoints(Index t) {
         // keep at most the volumes of one time point per channel
         for (auto vit = volumes_.begin(); vit != volumes_.end();)
             vit = vit->first.t != t ? volumes_.erase(vit) : std::next(vit);
         for (auto mit = mips_.begin(); mit != mips_.end();)
             mit = mit->first.t != t ? mips_.erase(mit) : std::next(mit);
-        Buffer<float> buf(Shape{d.z, d.y, d.x});
-        try {
-            out_->source->readVolume(c, t, buf.data());
-        } catch (const std::exception&) {
-            return nullptr;
-        }
-        tooLarge_ = false;
-        return volumes_.emplace(key, std::move(buf)).first->second.data();
+        for (auto rit = ranges_.begin(); rit != ranges_.end();)
+            rit = rit->first.t != t ? ranges_.erase(rit) : std::next(rit);
     }
 
-    const float* DisplayModel::mip(Index c, Index t) {
-        const Key key{c, t};
-        auto it = mips_.find(key);
-        if (it != mips_.end()) return it->second.data();
-        const float* v = volume(c, t);
-        if (!v) return nullptr;
+    DisplayModel::VolumeState DisplayModel::volumeState(Index c, Index t) {
+        if (!valid()) return VolumeState::TooLarge;
         const Dims5& d = meta_.dims;
-        Buffer<float> m(Shape{d.y, d.x});
-        const Index n = d.planeSize();
-        std::copy_n(v, n, m.data());
-        for (Index z = 1; z < d.z; ++z) {
-            const float* p = v + z * n;
-            float* o = m.data();
-            for (Index i = 0; i < n; ++i)
-                if (p[i] > o[i]) o[i] = p[i];
+        if (c < 0 || c >= d.c || t < 0 || t >= d.t) return VolumeState::TooLarge;
+        const Key key{c, t};
+        const bool haveVolume = out_->array || volumes_.count(key) != 0;
+        const bool haveMip = mips_.count(key) != 0;
+        if (haveVolume && haveMip) return VolumeState::Ready;
+        if (!haveVolume) {
+            const std::size_t bytes = static_cast<std::size_t>(d.z * d.planeSize()) * sizeof(float);
+            if (bytes > kVolumeCacheLimit) {
+                tooLarge_ = true;
+                return VolumeState::TooLarge;
+            }
+            tooLarge_ = false;
+            return VolumeState::Wanted;
         }
-        return mips_.emplace(key, std::move(m)).first->second.data();
+        tooLarge_ = false;
+        // in memory and small: the projection costs less than a thread hop
+        if (d.z * d.planeSize() > kInlineProjectVoxels) return VolumeState::Wanted;
+        const float* v = out_->array->plane(c, t, 0);
+        auto m = std::make_shared<Buffer<float>>(Shape{d.y, d.x});
+        const Index n = d.planeSize();
+        float lo = std::numeric_limits<float>::infinity(), hi = -lo;
+        std::fill_n(m->data(), n, -std::numeric_limits<float>::infinity());
+        for (Index z = 0; z < d.z; ++z) {
+            const float* p = v + z * n;
+            float* o = m->data();
+            for (Index i = 0; i < n; ++i) {
+                const float x = p[i];
+                if (std::isnan(x)) continue;
+                if (x > o[i]) o[i] = x;
+                if (x < lo) lo = x;
+                if (x > hi) hi = x;
+            }
+        }
+        if (!(hi > lo)) {
+            lo = std::isfinite(lo) ? lo : 0.0f;
+            hi = lo + 1.0f;
+        }
+        for (Index i = 0; i < n; ++i)
+            if (!std::isfinite(m->data()[i])) m->data()[i] = lo;
+        evictOtherTimePoints(t);
+        mips_[key] = std::move(m);
+        // the same pass gives the exact range the full-range window wants
+        ranges_[key] = Range{lo, hi};
+        if (windowMode_ == WindowMode::Full) windows_.erase(c);
+        return VolumeState::Ready;
+    }
+
+    void DisplayModel::installVolume(Index c, Index t, std::shared_ptr<Buffer<float>> volume,
+                                     std::shared_ptr<Buffer<float>> mip, float lo, float hi) {
+        if (!valid()) return;
+        const Dims5& d = meta_.dims;
+        if (c < 0 || c >= d.c || t < 0 || t >= d.t) return;
+        evictOtherTimePoints(t);
+        const Key key{c, t};
+        if (volume) {
+            volumes_[key] = std::move(volume);
+            tooLarge_ = false;
+        }
+        if (mip) mips_[key] = std::move(mip);
+        if (hi > lo) {
+            ranges_[key] = Range{lo, hi};
+            // the full-range window was standing in on samples until now
+            if (windowMode_ == WindowMode::Full) windows_.erase(c);
+        }
     }
 
     bool DisplayModel::volumeTooLarge() const noexcept { return tooLarge_; }
@@ -207,6 +253,7 @@ namespace sirius::app {
     void DisplayModel::dropVolumeCaches() {
         volumes_.clear();
         mips_.clear();
+        ranges_.clear();
         planes_.clear();
     }
 
@@ -358,7 +405,7 @@ namespace sirius::app {
         y = std::clamp<Index>(y, 0, d.y - 1);
         for (Index c = 0; c < d.c; ++c) {
             if (!vs.channelOn(c)) continue;
-            const float* v = volume(c, t);
+            const float* v = volumeIfReady(c, t);
             chans[static_cast<std::size_t>(k)].data = v ? v + y * d.x : nullptr;
             chans[static_cast<std::size_t>(k)].rowStride = d.y * d.x;   // next z
             ++k;
@@ -375,7 +422,7 @@ namespace sirius::app {
         Index k = 0;
         for (Index c = 0; c < d.c; ++c) {
             if (!vs.channelOn(c)) continue;
-            const float* v = volume(c, t);
+            const float* v = volumeIfReady(c, t);
             float* dst = sliceScratch_.data() + k * d.y * d.z;
             if (v) {
                 for (Index z = 0; z < d.z; ++z) {
@@ -398,7 +445,7 @@ namespace sirius::app {
         Index k = 0;
         for (Index c = 0; c < d.c; ++c) {
             if (!vs.channelOn(c)) continue;
-            chans[static_cast<std::size_t>(k)].data = mip(c, t);
+            chans[static_cast<std::size_t>(k)].data = mipIfReady(c, t);
             chans[static_cast<std::size_t>(k)].rowStride = d.x;
             ++k;
         }

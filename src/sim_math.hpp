@@ -16,6 +16,8 @@
 
 #include <math.h>
 
+#include "sirius/constants.hpp"
+
 #if defined(__CUDACC__)
 #define SIRIUS_HD __host__ __device__ inline
 #else
@@ -321,7 +323,7 @@ namespace sirius::simdetail {
             : rdistabs / c.apocutoff;
         if (rho > 1.0) rho = 1.0;
         double apofact = 1.0;
-        if (c.apodizeOutput == 1) apofact = cos(1.5707963267948966 * rho);
+        if (c.apodizeOutput == 1) apofact = cos(0.5 * kPi * rho);
         else if (c.apodizeOutput == 2) apofact = 1.0 - rho;
         return cscale(scale, apofact);
     }

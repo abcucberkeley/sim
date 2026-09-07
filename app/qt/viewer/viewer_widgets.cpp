@@ -1,145 +1,58 @@
 #include "qt/viewer/viewer_widgets.hpp"
 
 #include <algorithm>
+#include <cmath>
 
+#include <QFocusEvent>
 #include <QFontMetrics>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
     namespace {
-        QFont uiFont(int px, int weight = QFont::Normal) {
-            QFont f(theme::kFontFamily);
-            f.setPixelSize(px);
-            f.setWeight(static_cast<QFont::Weight>(weight));
-            return f;
-        }
         QPen rule(const QColor& c, double w = 1.5) {
             QPen p(c, w);
             p.setJoinStyle(Qt::MiterJoin);
             return p;
+        }
+
+        // The design's focus ring: 2 px accent, on whole device pixels.
+        void drawFocusRing(QPainter& p, const QWidget& w) {
+            if (!w.property("focusVisible").toBool()) return;
+            const qreal dpr = w.devicePixelRatioF();
+            p.save();
+            p.setOpacity(1.0);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(QPen(theme::kAccent, widgets::crispPen(2.0, dpr)));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(widgets::crispRect(QRectF(w.rect()), 2.0, dpr));
+            p.restore();
+        }
+
+        // A rectangle filled on whole device pixels (the range slider's
+        // track and handles, which sit at fractional coordinates).
+        void fillCrisp(QPainter& p, const QRectF& r, const QColor& c, qreal dpr) {
+            if (dpr <= 0.0) dpr = 1.0;
+            const qreal x0 = std::round(r.left() * dpr) / dpr, x1 = std::round(r.right() * dpr) / dpr;
+            const qreal y0 = std::round(r.top() * dpr) / dpr, y1 = std::round(r.bottom() * dpr) / dpr;
+            p.fillRect(QRectF(QPointF(x0, y0), QPointF(std::max(x1, x0 + 1.0 / dpr), std::max(y1, y0 + 1.0 / dpr))), c);
         }
     } // namespace
 
     void drawOverlayText(QPainter& p, const QPointF& topLeft, const QString& text, bool bold, double opacity, int px) {
         p.save();
         p.setOpacity(opacity);
-        p.setFont(uiFont(px, bold ? QFont::ExtraBold : QFont::Normal));
+        p.setFont(theme::font(px, bold ? QFont::ExtraBold : QFont::Normal));
         p.setPen(theme::kViewerText);
         const QFontMetrics fm(p.font());
         p.drawText(QPointF(topLeft.x(), topLeft.y() + fm.ascent()), text);
         p.restore();
-    }
-
-    // --- GlyphButton -----------------------------------------------------------
-
-    GlyphButton::GlyphButton(const QString& glyph, QWidget* parent, QSize size)
-        : QAbstractButton(parent), glyph_(glyph), size_(size), border_(theme::kDivider) {
-        setCursor(Qt::PointingHandCursor);
-        setFocusPolicy(Qt::NoFocus);
-        setFixedSize(size);
-    }
-
-    void GlyphButton::setGlyph(const QString& glyph) {
-        glyph_ = glyph;
-        update();
-    }
-
-    void GlyphButton::paintEvent(QPaintEvent*) {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, false);
-        const QRectF r = QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75);
-        const bool on = isChecked();
-        QColor border = on ? theme::kAccent : (hover_ && isEnabled() ? theme::kAccent : border_);
-        if (onDark_ && !on && !hover_) border = QColor(243, 242, 242, 128);
-        QColor fg = on ? theme::kBg : (onDark_ ? theme::kViewerText : theme::kText);
-        if (!isEnabled()) p.setOpacity(0.35);
-        if (on) p.fillRect(r, theme::kAccent);
-        p.setPen(rule(border));
-        p.drawRect(r);
-        p.setFont(uiFont(glyphPx_));
-        p.setPen(fg);
-        p.drawText(rect(), Qt::AlignCenter, glyph_);
-    }
-
-    // --- SegmentedControl ------------------------------------------------------
-
-    SegmentedControl::SegmentedControl(const QStringList& items, QWidget* parent) : QWidget(parent), items_(items) {
-        setMouseTracking(true);
-        setCursor(Qt::PointingHandCursor);
-        setFixedHeight(26);
-    }
-
-    QSize SegmentedControl::sizeHint() const {
-        const QFontMetrics fm(uiFont(12));
-        int w = 0;
-        for (const QString& s : items_) w += fm.horizontalAdvance(s) + 22;
-        return {w + 2, 26};
-    }
-
-    void SegmentedControl::setCurrent(int index) {
-        if (index < 0 || index >= items_.size() || index == current_) return;
-        current_ = index;
-        update();
-    }
-
-    int SegmentedControl::indexAt(int x) const {
-        const QFontMetrics fm(uiFont(12));
-        int x0 = 1;
-        for (int i = 0; i < items_.size(); ++i) {
-            const int w = fm.horizontalAdvance(items_[i]) + 22;
-            if (x >= x0 && x < x0 + w) return i;
-            x0 += w;
-        }
-        return -1;
-    }
-
-    void SegmentedControl::paintEvent(QPaintEvent*) {
-        QPainter p(this);
-        p.setFont(uiFont(12));
-        const QFontMetrics fm(p.font());
-        const QRectF outer = QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75);
-        p.setPen(rule(theme::kText));
-        p.drawRect(outer);
-        int x0 = 1;
-        for (int i = 0; i < items_.size(); ++i) {
-            const int w = fm.horizontalAdvance(items_[i]) + 22;
-            const QRect seg(x0, 1, w, height() - 2);
-            if (i == current_) {
-                p.fillRect(seg, theme::kText);
-                p.setPen(theme::kBg);
-            } else {
-                if (i == hover_) p.fillRect(seg, theme::kNeutral200);
-                p.setPen(theme::kText);
-            }
-            p.drawText(seg, Qt::AlignCenter, items_[i]);
-            if (i + 1 < items_.size()) {
-                p.setPen(rule(theme::kText, 1.0));
-                p.drawLine(QPointF(x0 + w + 0.5, 1), QPointF(x0 + w + 0.5, height() - 1));
-            }
-            x0 += w;
-        }
-    }
-
-    void SegmentedControl::mousePressEvent(QMouseEvent* e) {
-        const int i = indexAt(static_cast<int>(e->position().x()));
-        if (i >= 0 && i != current_) {
-            current_ = i;
-            update();
-            emit changed(i);
-        }
-    }
-
-    void SegmentedControl::mouseMoveEvent(QMouseEvent* e) {
-        const int i = indexAt(static_cast<int>(e->position().x()));
-        if (i != hover_) {
-            hover_ = i;
-            update();
-        }
     }
 
     // --- TokenCheck -----------------------------------------------------------------
@@ -148,7 +61,9 @@ namespace sirius::app {
         setText(label);
         setCheckable(true);
         setCursor(Qt::PointingHandCursor);
-        setFocusPolicy(Qt::NoFocus);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(label);
+        setAccessibleDescription(QStringLiteral("Space or enter turns %1 on and off.").arg(label));
     }
 
     void TokenCheck::setCaption(const QString& caption) {
@@ -159,10 +74,10 @@ namespace sirius::app {
     }
 
     QSize TokenCheck::sizeHint() const {
-        const QFontMetrics fm(uiFont(12));
+        const QFontMetrics fm(theme::font(12));
         int w = 14 + 8 + fm.horizontalAdvance(text());
         if (!caption_.isEmpty()) {
-            QFont cf = uiFont(10);
+            QFont cf = theme::font(10);
             cf.setLetterSpacing(QFont::PercentageSpacing, 106);
             w += 6 + QFontMetrics(cf).horizontalAdvance(caption_.toUpper()) + 8;
         }
@@ -172,24 +87,45 @@ namespace sirius::app {
     void TokenCheck::paintEvent(QPaintEvent*) {
         QPainter p(this);
         if (!isEnabled()) p.setOpacity(0.45);
-        const QRectF box(0.75, (height() - 14) / 2.0 + 0.75, 12.5, 12.5);
+        const qreal dpr = devicePixelRatioF();
+        const QRectF box = widgets::crispRect(QRectF(0, (height() - 14) / 2.0, 14, 14), 1.5, dpr);
         if (isChecked()) p.fillRect(box, theme::kAccent);
-        p.setPen(rule(theme::kNeutral700));
+        p.setPen(rule(theme::kNeutral700, widgets::crispPen(1.5, dpr)));
         p.drawRect(box);
-        p.setFont(uiFont(12));
+        p.setFont(theme::font(12));
         p.setPen(theme::kText);
         const QFontMetrics fm(p.font());
         int x = 22;
         p.drawText(QPointF(x, (height() + fm.ascent() - fm.descent()) / 2.0), text());
         x += fm.horizontalAdvance(text());
         if (!caption_.isEmpty()) {
-            QFont cf = uiFont(10);
+            QFont cf = theme::font(10);
             cf.setLetterSpacing(QFont::PercentageSpacing, 106);
             p.setFont(cf);
             p.setPen(theme::kNeutral500);
             const QFontMetrics cfm(cf);
             p.drawText(QPointF(x + 6, (height() + cfm.ascent() - cfm.descent()) / 2.0), caption_.toUpper());
         }
+        drawFocusRing(p, *this);
+    }
+
+    void TokenCheck::keyPressEvent(QKeyEvent* e) {
+        if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
+            e->accept();
+            click();
+            return;
+        }
+        QAbstractButton::keyPressEvent(e);
+    }
+
+    void TokenCheck::focusInEvent(QFocusEvent* e) {
+        QAbstractButton::focusInEvent(e);
+        update();
+    }
+
+    void TokenCheck::focusOutEvent(QFocusEvent* e) {
+        QAbstractButton::focusOutEvent(e);
+        update();
     }
 
     // --- ChannelSwatch ----------------------------------------------------------------
@@ -199,20 +135,43 @@ namespace sirius::app {
         setCheckable(true);
         setChecked(true);
         setCursor(Qt::PointingHandCursor);
-        setFocusPolicy(Qt::NoFocus);
+        setFocusPolicy(Qt::StrongFocus);
         setFixedSize(22, 22);
         setToolTip(label);
+        setAccessibleName(QStringLiteral("Channel %1").arg(label));
+        setAccessibleDescription(QStringLiteral("Space or enter shows and hides this channel."));
     }
 
     void ChannelSwatch::paintEvent(QPaintEvent*) {
         QPainter p(this);
-        const QRectF r = QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75);
+        const qreal dpr = devicePixelRatioF();
+        const QRectF r = widgets::crispRect(QRectF(rect()), 1.5, dpr);
         if (isChecked()) p.fillRect(r, color_);
-        p.setPen(rule(color_));
+        p.setPen(rule(color_, widgets::crispPen(1.5, dpr)));
         p.drawRect(r);
-        p.setFont(uiFont(10));
+        p.setFont(theme::font(10));
         p.setPen(isChecked() ? theme::kViewerGround : color_);
         p.drawText(rect(), Qt::AlignCenter, label_);
+        drawFocusRing(p, *this);
+    }
+
+    void ChannelSwatch::keyPressEvent(QKeyEvent* e) {
+        if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
+            e->accept();
+            click();
+            return;
+        }
+        QAbstractButton::keyPressEvent(e);
+    }
+
+    void ChannelSwatch::focusInEvent(QFocusEvent* e) {
+        QAbstractButton::focusInEvent(e);
+        update();
+    }
+
+    void ChannelSwatch::focusOutEvent(QFocusEvent* e) {
+        QAbstractButton::focusOutEvent(e);
+        update();
     }
 
     // --- RangeSlider ---------------------------------------------------------------------
@@ -220,6 +179,17 @@ namespace sirius::app {
     RangeSlider::RangeSlider(QWidget* parent) : QWidget(parent) {
         setFixedSize(120, 14);
         setCursor(Qt::SizeHorCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(QStringLiteral("Clip range"));
+        describe();
+    }
+
+    void RangeSlider::describe() {
+        setAccessibleDescription(QStringLiteral("From %1 % to %2 %. Left and right arrows move the %3 handle, "
+                                                "up and down switch handles.")
+                                     .arg(std::lround(lo_ * 100.0))
+                                     .arg(std::lround(hi_ * 100.0))
+                                     .arg(handle_ == 1 ? QStringLiteral("lower") : QStringLiteral("upper")));
     }
 
     void RangeSlider::setRange(double lo, double hi) {
@@ -228,6 +198,7 @@ namespace sirius::app {
         if (lo == lo_ && hi == hi_) return;
         lo_ = lo;
         hi_ = hi;
+        describe();
         update();
     }
 
@@ -235,18 +206,78 @@ namespace sirius::app {
 
     void RangeSlider::paintEvent(QPaintEvent*) {
         QPainter p(this);
+        const qreal dpr = devicePixelRatioF();
         const double y = height() / 2.0;
-        p.fillRect(QRectF(2, y - 1, width() - 4, 2), QColor(243, 242, 242, 90));
+        fillCrisp(p, QRectF(2, y - 1, width() - 4, 2), QColor(243, 242, 242, 90), dpr);
         const double x0 = 2 + lo_ * (width() - 4), x1 = 2 + hi_ * (width() - 4);
-        p.fillRect(QRectF(x0, y - 1, std::max(1.0, x1 - x0), 2), theme::kAccent);
+        fillCrisp(p, QRectF(x0, y - 1, std::max(1.0, x1 - x0), 2), theme::kAccent, dpr);
         // handles: small squares the design would draw in accent
-        p.fillRect(QRectF(x0 - 2, y - 4, 4, 8), theme::kAccent);
-        p.fillRect(QRectF(x1 - 2, y - 4, 4, 8), theme::kAccent);
+        fillCrisp(p, QRectF(x0 - 2, y - 4, 4, 8), theme::kAccent, dpr);
+        fillCrisp(p, QRectF(x1 - 2, y - 4, 4, 8), theme::kAccent, dpr);
+        // which handle the arrow keys move
+        if (property("focusVisible").toBool()) {
+            const double hx = handle_ == 1 ? x0 : x1;
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(QPen(theme::kViewerText, widgets::crispPen(1.0, dpr)));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(widgets::crispRect(QRectF(hx - 3.5, y - 5.5, 7, 11), 1.0, dpr));
+        }
+        drawFocusRing(p, *this);
+    }
+
+    void RangeSlider::keyPressEvent(QKeyEvent* e) {
+        const double step = e->modifiers().testFlag(Qt::ShiftModifier) ? 0.005 : 0.02;
+        double lo = lo_, hi = hi_;
+        switch (e->key()) {
+            case Qt::Key_Left:
+                if (handle_ == 1) lo = std::max(0.0, lo_ - step);
+                else hi = std::max(lo_, hi_ - step);
+                break;
+            case Qt::Key_Right:
+                if (handle_ == 1) lo = std::min(hi_, lo_ + step);
+                else hi = std::min(1.0, hi_ + step);
+                break;
+            case Qt::Key_Home:
+                if (handle_ == 1) lo = 0.0;
+                else hi = lo_;
+                break;
+            case Qt::Key_End:
+                if (handle_ == 1) lo = hi_;
+                else hi = 1.0;
+                break;
+            case Qt::Key_Up:
+            case Qt::Key_Down:
+            case Qt::Key_Space:
+                handle_ = handle_ == 1 ? 2 : 1;
+                describe();
+                update();
+                e->accept();
+                return;
+            default: QWidget::keyPressEvent(e); return;
+        }
+        e->accept();
+        if (lo == lo_ && hi == hi_) return;
+        lo_ = lo;
+        hi_ = hi;
+        describe();
+        update();
+        emit rangeChanged(lo_, hi_);
+    }
+
+    void RangeSlider::focusInEvent(QFocusEvent* e) {
+        QWidget::focusInEvent(e);
+        update();
+    }
+
+    void RangeSlider::focusOutEvent(QFocusEvent* e) {
+        QWidget::focusOutEvent(e);
+        update();
     }
 
     void RangeSlider::mousePressEvent(QMouseEvent* e) {
         const double v = fromX(e->position().x());
         drag_ = std::abs(v - lo_) <= std::abs(v - hi_) ? 1 : 2;
+        handle_ = drag_;
         mouseMoveEvent(e);
     }
 
@@ -259,6 +290,7 @@ namespace sirius::app {
         if (lo != lo_ || hi != hi_) {
             lo_ = lo;
             hi_ = hi;
+            describe();
             update();
             emit rangeChanged(lo_, hi_);
         }

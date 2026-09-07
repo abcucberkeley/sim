@@ -5,10 +5,23 @@
 // the segmentation steps and edited in the viewer's paint mode. Statistics
 // per label feed the review table (voxels, confidence, flags) and the review
 // queue; every edit returns the voxels it changed so the history can undo it.
+//
+// Ownership rule: a LabelVolume owns its statistics and shares its voxels
+// copy-on-write. share() makes a second volume over the same voxels (the
+// executor carries an input's labels through a step that does not produce
+// its own this way), and the first mutating call on either volume -- the
+// non-const volume() / plane() accessors, the edits, apply() -- gives that
+// volume a private copy while the voxels are still shared. An edit through
+// one step's output therefore never reaches another step's cached output,
+// and an unmodified carry-through costs nothing. Sharing is decided by the
+// thread doing the mutation (shared_ptr::use_count); one volume must not be
+// written from two threads at once, which the workbench guarantees by
+// refusing label edits while a run is active.
 
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,7 +64,7 @@ namespace sirius::app {
 
     class LabelVolume {
     public:
-        LabelVolume() = default;
+        LabelVolume();
         LabelVolume(Index t, Index z, Index y, Index x);   // zero filled
 
         Index t() const noexcept { return t_; }
@@ -59,14 +72,17 @@ namespace sirius::app {
         Index y() const noexcept { return y_; }
         Index x() const noexcept { return x_; }
         Index volumeSize() const noexcept { return z_ * y_ * x_; }
-        bool empty() const noexcept { return data_.empty(); }
+        bool empty() const noexcept { return data_->empty(); }
+        // True while another volume shares these voxels (share()).
+        bool sharesVoxels() const noexcept { return data_.use_count() > 1; }
 
-        std::uint32_t* volume(Index t) noexcept;                 // (z, y, x)
+        // The mutable accessors detach a shared copy first (see the header note).
+        std::uint32_t* volume(Index t);                          // (z, y, x)
         const std::uint32_t* volume(Index t) const noexcept;
-        std::uint32_t* plane(Index t, Index z) noexcept;
+        std::uint32_t* plane(Index t, Index z);
         const std::uint32_t* plane(Index t, Index z) const noexcept;
         std::uint32_t at(Index t, Index z, Index y, Index x) const noexcept;
-        BufferView<const std::uint32_t> view() const noexcept { return data_.view(); }
+        BufferView<const std::uint32_t> view() const noexcept { return data_->view(); }
 
         // Highest id handed out so far: monotonic, so ids never collide with
         // labels that an undo may bring back. After a dense relabel
@@ -76,8 +92,19 @@ namespace sirius::app {
 
         // --- statistics ---------------------------------------------------
         // Recomputed from the voxels; `probabilities` (same (z, y, x) as one
-        // volume, optional) gives per-label mean confidence.
+        // volume, optional) gives per-label mean confidence. The statistics
+        // describe one time point, the last one computed (statsT()).
         void recomputeStats(Index t, const float* probabilities = nullptr);
+        // Brings the statistics up to date after an edit, touching only the
+        // labels the diff changed (each is rescanned within its bounding
+        // box): what the workbench calls at the end of a brush stroke and
+        // after every other edit, undo and redo. Falls back to a full
+        // recompute when the diff is for another time point than the
+        // statistics, or when none were computed yet. Confidence and class
+        // of a known label are kept; new labels start at 1.0 / "object".
+        // The flags are refreshed with the rules of the last applyFlags().
+        void updateStats(const LabelDiff& diff);
+        Index statsT() const noexcept { return statsT_; }   // -1: none computed
         const std::vector<LabelStats>& stats() const noexcept { return stats_; }
         std::vector<LabelStats>& stats() noexcept { return stats_; }
         const LabelStats* statsOf(std::uint32_t id) const noexcept;
@@ -100,12 +127,21 @@ namespace sirius::app {
         // Re-apply / revert a diff.
         void apply(const LabelDiff& diff, bool forward);
 
+        // A deep copy: its own voxels from the start.
         std::shared_ptr<LabelVolume> clone() const;
+        // A volume over the same voxels (and a copy of the statistics) that
+        // takes a private copy on its first write; see the header note.
+        std::shared_ptr<LabelVolume> share() const;
 
     private:
+        void detach();                       // own the voxels before writing
+        LabelStats* mutableStatsOf(std::uint32_t id) noexcept;
+
         Index t_ = 0, z_ = 0, y_ = 0, x_ = 0;
-        Buffer<std::uint32_t> data_;
+        std::shared_ptr<Buffer<std::uint32_t>> data_;   // never null
         std::vector<LabelStats> stats_;
+        Index statsT_ = -1;
+        std::optional<LabelFlagRules> flagRules_;       // the last applyFlags()
         std::uint32_t maxLabel_ = 0;
     };
 

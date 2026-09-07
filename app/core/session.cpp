@@ -194,7 +194,8 @@ namespace sirius::app {
         return {};
     }
 
-    ReconResult ReconSession::reconstruct(Device device, PlanRigor rigor) {
+    ReconResult ReconSession::reconstruct(Device device, PlanRigor rigor,
+                                          std::function<bool()> cancelled) {
         if (const std::string why = validate(); !why.empty()) throw std::runtime_error(why);
         Impl& s = *impl_;
 
@@ -214,6 +215,9 @@ namespace sirius::app {
         }
         Impl::Cache& c = *s.cache;
         c.recon->setCaptureDiagnostics(s.capture);
+        // Bound to this call only: a later one without a predicate must not
+        // inherit the previous caller's.
+        c.recon->setCancelCallback(std::move(cancelled));
 
         BufferView<const double> input = s.raw.view();
         if (device.isCuda()) {

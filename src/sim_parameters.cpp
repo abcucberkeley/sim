@@ -1,4 +1,5 @@
 #include "sirius/sim_parameters.hpp"
+#include "sirius/errors.hpp"
 
 #include <toml++/toml.hpp>
 
@@ -95,7 +96,7 @@ namespace sirius {
 
         std::ofstream file(path);
         if (!file)
-            throw std::runtime_error("Failed to open for writing: " + path);
+            throw IoError("Failed to open for writing: " + path);
         file << tbl;
     }
 
@@ -104,7 +105,7 @@ namespace sirius {
         try {
             tbl = toml::parse_file(path);
         } catch (const toml::parse_error& e) {
-            throw std::runtime_error(std::string("Failed to parse config: ") + e.what());
+            throw IoError(std::string("Failed to parse config: ") + e.what());
         }
 
         SIMParameters p;  // starts from defaults

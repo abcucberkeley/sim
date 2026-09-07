@@ -42,6 +42,10 @@ add_executable(sirius-app WIN32 MACOSX_BUNDLE
     qt/resources/resources.qrc)
 target_include_directories(sirius-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sirius-app PRIVATE sirius::app_core sirius::qt)
+# crypt32: DPAPI (CryptProtectData) behind qt/secret_store.cpp
+if(WIN32)
+    target_link_libraries(sirius-app PRIVATE crypt32)
+endif()
 if(SIRIUS_ENABLE_WARNINGS)
     target_set_warnings(sirius-app)
 endif()

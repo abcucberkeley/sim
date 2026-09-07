@@ -8,6 +8,9 @@
 //
 //   frame := u32 header_len | header (UTF-8 JSON) | u64 payload_len | payload
 //
+// "hello" exchanges kProtocolVersion below; a peer answering with another
+// version is refused, so a framing change is never silently misread.
+//
 // header: {"id": n, "type": "request"|"progress"|"result"|"error",
 //          "method": "...", "params": {...}, "tensors": [{"name", "dtype",
 //          "shape", "offset", "nbytes"}], "message", "fraction"}
@@ -30,6 +33,13 @@
 
 namespace sirius::app::rpc {
 
+    // Version of this wire protocol, sent in "hello" and echoed in its reply.
+    // Both ends must speak the same number; bump it when the framing or the
+    // method set changes in a way an older peer cannot understand. The Python
+    // worker defines the same constant as PROTOCOL_VERSION in
+    // app/python/sirius_worker/protocol.py.
+    inline constexpr int kProtocolVersion = 1;
+
     struct TensorRef {
         std::string name;
         std::string dtype;                 // "float32", "uint32", "uint8", "float64", "int64"
@@ -43,7 +53,7 @@ namespace sirius::app::rpc {
         std::string dtype;
         std::vector<Index> shape;
         std::vector<std::byte> bytes;
-        Index numel() const noexcept;
+        Index numel() const;               // throws std::overflow_error on a wrapped shape
         const float* asFloat32() const;    // throws on dtype mismatch
         const std::uint32_t* asUInt32() const;
     };
@@ -71,7 +81,7 @@ namespace sirius::app::rpc {
         virtual bool isOpen() const noexcept = 0;
     };
 
-    // Blocking TCP client (POSIX / Winsock). Throws std::runtime_error when the
+    // Blocking TCP client (POSIX / Winsock). Throws ProtocolError when the
     // connection fails.
     std::unique_ptr<Transport> connectTcp(const std::string& host, int port, std::chrono::milliseconds timeout);
 
@@ -83,7 +93,8 @@ namespace sirius::app::rpc {
 namespace sirius::app {
 
     struct WorkerCapabilities {
-        std::string version;
+        std::string version;                   // the worker package's version, e.g. "0.1.0"
+        int protocolVersion = 0;               // rpc::kProtocolVersion the worker answered with
         std::vector<std::string> methods;      // "run:torch_segment", "model_info", ...
         bool cuda = false;
         std::string device;                    // "cuda:0 · RTX 4000 · 20 GB"

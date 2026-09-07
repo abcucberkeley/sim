@@ -33,9 +33,16 @@ namespace sirius::app {
         void runAll();
         // Shows the assistant dock and submits `text` (scripting).
         void askAssistant(const QString& text);
+        // Unattended mode: --screenshot, --quit-after and the scripting flags
+        // run with nobody at the keyboard, so closing must not raise the
+        // "a run is in progress" confirmation -- it would wait for an answer
+        // that never comes. The run is cancelled and the window closes.
+        void setUnattended(bool on);
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        // The status bar's log line opens the log dock.
+        bool eventFilter(QObject* watched, QEvent* event) override;
 
     private:
         void refreshAllLater();

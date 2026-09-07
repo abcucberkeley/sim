@@ -1,3 +1,16 @@
+# What every change to dev has to survive.
+#
+#   lint          formatting, ruff, version agreement          (~2 min)
+#   cpp-tests     the library, GCC, warnings are errors        (~10 min)
+#   app-tests     the workbench + a headless run, with worker  (~15 min)
+#   python-tests  the wheel, the binding tests, worker tests   (~15 min)
+#   sanitizers    the library tests under ASan + UBSan         (~20 min)
+#   windows       MSVC + Qt 6, library and workbench           (~35 min)
+#   cuda-build    the CUDA paths compile; GPU cases skip       (~25 min)
+#
+# The formatting checks only look at the files a change touches: the tree
+# predates .clang-format and reformatting it wholesale would bury every diff.
+
 name: Dev tests
 
 on:
@@ -7,10 +20,80 @@ on:
     branches: [dev, main]
   workflow_dispatch:
 
+# One run per branch / PR; a new push cancels the one still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The versions .pre-commit-config.yaml pins, so local hooks and CI agree.
+  RUFF_VERSION: "0.12.0"
+  CLANG_FORMAT_VERSION: "20.1.8"
+
 jobs:
+  lint:
+    name: Lint (ruff, clang-format, versions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history: the formatting steps diff against the PR base
+          # or the previous head of the branch.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the formatters
+        run: pip install "ruff==${RUFF_VERSION}" "clang-format==${CLANG_FORMAT_VERSION}"
+
+      # Lint applies to the whole tree: it is about the code, not its layout.
+      - name: ruff check
+        run: ruff check .
+
+      # Only these trees. Unlike clang-format, ruff format has no knobs to
+      # fit the style the worker and the bindings use (continuations aligned
+      # under the open paren, aligned trailing comments) and would rewrite
+      # about a third of models.py, server.py and workbench.py; there,
+      # `ruff check` is the whole contract -- line length (E501) and import
+      # order (I001). The directories below already match ruff exactly.
+      - name: ruff format (the trees that already match)
+        run: ruff format --check tools bindings/benchmarks app/plugins benchmarks
+
+      - name: Version agreement (CMake, pyproject, sirius_worker)
+        run: python tools/check_versions.py
+
+      # The base to diff against: the PR's merge base on a pull_request, the
+      # branch's previous head on a push. A first push (all-zero "before") or
+      # a base that is not in this clone leaves nothing to check.
+      - name: Resolve the changed files
+        id: changed
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "no usable base commit; skipping the formatting checks"
+            echo "base=" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=$base" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=ACMR "${base}...HEAD" | tee changed.txt
+          fi
+
+      - name: clang-format (files this change touches)
+        if: steps.changed.outputs.base != ''
+        run: |
+          files=$(grep -E '\.(c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx)$' changed.txt || true)
+          if [ -z "$files" ]; then echo "no C++ files changed"; exit 0; fi
+          echo "$files"
+          # --dry-run --Werror reports and fails; the diff shows what to fix.
+          echo "$files" | xargs clang-format --dry-run --Werror
+
   cpp-tests:
     name: C++ tests (Linux, GCC)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -24,8 +107,19 @@ jobs:
             gcc \
             g++
 
+      - uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: cpp-tests-linux-gcc
+
+      # The only job with -Werror: one compiler, one standard library, so a
+      # warning here is a warning in the code and not in someone's toolchain.
+      # It reaches the sirius library and the app core only (cmake/Warnings.cmake).
       - name: Configure
-        run: cmake --preset linux-gcc-dev -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF
+        run: |
+          cmake --preset linux-gcc-dev \
+            -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF \
+            -DSIRIUS_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset linux-gcc-dev
@@ -39,6 +133,7 @@ jobs:
     # build needs nasm and a quarter of an hour; the zarr tests skip.
     name: Workbench build and tests (Linux, Qt 6)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -49,13 +144,39 @@ jobs:
             build-essential cmake ninja-build gcc g++ \
             qt6-base-dev libgl1-mesa-dev libglx-dev libxkbcommon-dev
 
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.11"
+
+      # tests/test_app_rpc.cpp starts `$SIRIUS_PYTHON -m sirius_worker` and
+      # skips when the variable is unset, so the end-to-end worker cases
+      # (hello, a numpy step, worker plugins) only run when it is pointed at
+      # an interpreter that has numpy. The step library is loaded from the
+      # checkout (app/python/sirius_worker/steps.py), so no install is needed;
+      # scipy enables the classical-segmentation steps. torch is not installed
+      # -- the TorchScript segmentation case skips.
+      - name: Install the worker's Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy
+
+      - uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: app-tests-linux-qt6
+
       - name: Configure
-        run: cmake --preset linux-gcc-app-dev -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF -DSIRIUS_ENABLE_TENSORSTORE=OFF
+        run: |
+          cmake --preset linux-gcc-app-dev \
+            -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF -DSIRIUS_ENABLE_TENSORSTORE=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build --preset linux-gcc-app-dev
 
       - name: Test
+        env:
+          SIRIUS_PYTHON: ${{ steps.python.outputs.python-path }}
         run: ctest --preset linux-gcc-app-dev
 
       - name: Headless smoke run
@@ -72,6 +193,7 @@ jobs:
   python-tests:
     name: Python binding tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +208,7 @@ jobs:
             g++
 
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.11"
 
@@ -102,8 +225,114 @@ jobs:
 
       # The worker's own tests: protocol, numpy steps, plugins, model specs
       # (Hugging Face and Cellpose / micro-SAM cases skip without the packages).
+      # SIRIUS_PYTHON names this interpreter so anything that spawns a worker
+      # subprocess uses the environment the packages were installed into.
       - name: Run worker tests
+        env:
+          SIRIUS_PYTHON: ${{ steps.python.outputs.python-path }}
         run: python -m unittest discover -s app/python/tests -v
+
+  sanitizers:
+    # AddressSanitizer + UndefinedBehaviorSanitizer on the library and its
+    # tests (cmake/Sanitizers.cmake; Debug only, and never together with
+    # ThreadSanitizer, which cannot share a process with ASan).
+    name: ASan + UBSan (Linux, Clang)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build clang llvm
+
+      - uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: sanitizers-linux-clang
+
+      - name: Configure
+        run: |
+          cmake --preset linux-clang-dev \
+            -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF \
+            -DSIRIUS_ENABLE_SANITIZERS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build --preset linux-clang-dev
+
+      # detect_leaks: the FFTW and libtiff plans the tests build are freed at
+      # exit by the library, so leaks are ours to fix; halt_on_error keeps the
+      # first UBSan report from scrolling past.
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --preset linux-clang-dev
+
+  windows:
+    # MSVC, the library and the workbench. Configured without a preset: the
+    # checked-in Windows presets pin the Visual Studio generators of the
+    # developer machines (VS 18 / VS 17), which the runner image does not
+    # have. Ninja + the cl from the runner's toolchain instead.
+    name: Build and tests (Windows, MSVC + Qt 6)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.1"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      # No preset, so the cache variables the dev preset would set are spelled
+      # out. TensorStore is off (nasm, ~15 min); the Python bindings are off
+      # (nanobind is fetched from git and adds nothing this job does not
+      # already cover). The dependencies that predate CMake 3.5 set their own
+      # CMAKE_POLICY_VERSION_MINIMUM in cmake/Dependencies.cmake, so no global
+      # override is needed here.
+      - name: Configure
+        run: |
+          cmake -S . -B build/ci-windows -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSIRIUS_ENABLE_TESTS=ON \
+            -DSIRIUS_ENABLE_WARNINGS=ON \
+            -DSIRIUS_ENABLE_PYTHON_BINDINGS=OFF \
+            -DSIRIUS_ENABLE_APP=ON \
+            -DSIRIUS_ENABLE_TENSORSTORE=OFF \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build/ci-windows
+
+      - name: Test
+        run: ctest --test-dir build/ci-windows --output-on-failure -R "^sirius::"
+
+      # The same run as the Linux app job. QT_PLUGIN_PATH comes from
+      # install-qt-action, so the offscreen platform plugin is found whether or
+      # not windeployqt copied it next to the executable.
+      - name: Headless smoke run
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./build/ci-windows/app/sirius-app.exe \
+            --pipeline examples/sim_bundled.sirius.toml --run --screenshot smoke-windows.png
+          test -s smoke-windows.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-smoke-windows
+          path: smoke-windows.png
 
   cuda-build:
     # Hosted runners have no GPU: this compiles the CUDA paths (cuFFT, nvTIFF,
@@ -111,6 +340,7 @@ jobs:
     # the test binary, whose GPU cases SKIP without a device.
     name: CUDA build (compile only, tests skip GPU cases)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container:
       image: nvidia/cuda:13.1.0-devel-ubuntu24.04
     steps:

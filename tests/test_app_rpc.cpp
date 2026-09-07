@@ -10,11 +10,13 @@
 #endif
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <atomic>
 #include <thread>
 
+#include "core/errors.hpp"
 #include "core/rpc.hpp"
 
 using namespace sirius;
@@ -30,9 +32,14 @@ namespace {
         std::atomic<bool> stop{false};
         std::string expectedToken;
         bool slow = false;
+        // What this worker claims in its hello reply; -1 answers without the
+        // field at all, as a worker predating the handshake does.
+        int protocolVersion = rpc::kProtocolVersion;
+        std::atomic<int> sawClientVersion{-1};   // the version the client sent in its hello
 
-        explicit ScriptedWorker(std::unique_ptr<rpc::Transport> transport, std::string token = {}, bool slowRun = false)
-            : t(std::move(transport)), expectedToken(std::move(token)), slow(slowRun) {
+        explicit ScriptedWorker(std::unique_ptr<rpc::Transport> transport, std::string token = {}, bool slowRun = false,
+                                int version = rpc::kProtocolVersion)
+            : t(std::move(transport)), expectedToken(std::move(token)), slow(slowRun), protocolVersion(version) {
             thread = std::thread([this] { loop(); });
         }
         ~ScriptedWorker() {
@@ -55,11 +62,15 @@ namespace {
                     const std::uint64_t id = h.value("id", 0ull);
                     const std::string method = h.value("method", "");
                     if (method == "hello") {
+                        sawClientVersion = h.contains("params") ? h["params"].value("protocol_version", -1) : -1;
                         if (!expectedToken.empty() && h.value("token", "") != expectedToken) {
                             send({{"id", id}, {"type", "error"}, {"message", "bad token"}});
                             continue;
                         }
-                        send({{"id", id}, {"type", "result"}, {"result", {{"version", "test"}, {"methods", {"run:torch_segment", "model_info"}}, {"cuda", false}, {"device", "cpu"}, {"hostname", "loop"}}}});
+                        json caps = {{"version", "test"}, {"methods", {"run:torch_segment", "model_info"}},
+                                     {"cuda", false}, {"device", "cpu"}, {"hostname", "loop"}};
+                        if (protocolVersion >= 0) caps["protocol_version"] = protocolVersion;
+                        send({{"id", id}, {"type", "result"}, {"result", caps}});
                     } else if (method == "cancel") {
                         cancelled = true;
                     } else if (method == "run") {
@@ -137,6 +148,70 @@ TEST_CASE("rpc frames round trip with tensors", "[app][rpc]") {
     }
 }
 
+// Every length in a frame header comes from the peer. Each case below would,
+// without the caps and the checked arithmetic in decodeFrame, wrap an
+// intermediate and let the decoder index past the end of the buffer.
+TEST_CASE("rpc frames with hostile lengths are refused, not wrapped", "[app][rpc]") {
+    auto put32 = [](std::vector<std::byte>& out, std::uint32_t v) {
+        for (int i = 3; i >= 0; --i) out.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xff));
+    };
+    auto put64 = [](std::vector<std::byte>& out, std::uint64_t v) {
+        for (int i = 7; i >= 0; --i) out.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xff));
+    };
+    auto frame = [&](const json& header, std::uint64_t payloadLen) {
+        const std::string h = header.dump();
+        std::vector<std::byte> out;
+        put32(out, static_cast<std::uint32_t>(h.size()));
+        for (char c : h) out.push_back(static_cast<std::byte>(c));
+        put64(out, payloadLen);
+        return out;
+    };
+
+    SECTION("a payload length that would wrap the frame total is rejected") {
+        // 4 + hlen + 8 + plen wraps to a small number for a plen near 2^64,
+        // so "is the whole frame here yet" would say yes on a 30-byte buffer.
+        std::vector<std::byte> f = frame(json{{"id", 1}}, ~0ull - 16);
+        CHECK_THROWS(rpc::decodeFrame(f));
+    }
+    SECTION("an implausible payload length is rejected before allocation") {
+        std::vector<std::byte> f = frame(json{{"id", 1}}, 1ull << 45);
+        CHECK_THROWS(rpc::decodeFrame(f));
+    }
+    SECTION("a tensor shape whose product overflows is rejected") {
+        const json header{{"id", 1},
+                          {"tensors", json::array({json{{"name", "t"},
+                                                        {"dtype", "float32"},
+                                                        {"shape", json::array({1 << 20, 1 << 20, 1 << 20, 1 << 20})},
+                                                        {"offset", 0},
+                                                        {"nbytes", 4}}})}};
+        std::vector<std::byte> f = frame(header, 4);
+        for (int i = 0; i < 4; ++i) f.push_back(std::byte{0});
+        CHECK_THROWS(rpc::decodeFrame(f));
+    }
+    SECTION("a framing failure is a ProtocolError, and still a runtime_error") {
+        // The typed failure is what lets a caller tell "the connection to the
+        // worker broke" from "the step the worker ran failed", which used to
+        // mean noticing that one message starts with "rpc: ".
+        std::vector<std::byte> f = frame(json{{"id", 1}}, 1ull << 45);
+        CHECK_THROWS_AS(rpc::decodeFrame(f), ProtocolError);
+        CHECK_THROWS_AS(rpc::decodeFrame(f), sirius::SiriusError);
+        CHECK_THROWS_AS(rpc::decodeFrame(f), std::runtime_error);
+        CHECK_THROWS_AS(rpc::decodeFrame(f), std::exception);
+        CHECK_THROWS_WITH(rpc::decodeFrame(f), Catch::Matchers::StartsWith("rpc: "));   // the message did not move
+    }
+    SECTION("a tensor whose offset plus size wraps is rejected") {
+        const json header{{"id", 1},
+                          {"tensors", json::array({json{{"name", "t"},
+                                                        {"dtype", "float32"},
+                                                        {"shape", json::array({1})},
+                                                        {"offset", ~0ull - 2},
+                                                        {"nbytes", 8}}})}};
+        std::vector<std::byte> f = frame(header, 4);
+        for (int i = 0; i < 4; ++i) f.push_back(std::byte{0});
+        CHECK_THROWS(rpc::decodeFrame(f));
+    }
+}
+
 TEST_CASE("RemoteWorker talks to a scripted worker over the loopback", "[app][rpc]") {
     auto [client, server] = rpc::loopbackPair();
     ScriptedWorker worker(std::move(server), "secret");
@@ -162,6 +237,35 @@ TEST_CASE("RemoteWorker talks to a scripted worker over the loopback", "[app][rp
                           Catch::Matchers::ContainsSubstring("kaboom"));
         rw.close();
         CHECK_FALSE(rw.isOpen());
+    }
+}
+
+// The version handshake: "hello" carries rpc::kProtocolVersion both ways and
+// the client refuses anything else, naming both numbers so the user knows
+// which end to update. The Python worker enforces the same rule
+// (sirius_worker/protocol.py: PROTOCOL_VERSION).
+TEST_CASE("RemoteWorker refuses a worker speaking another protocol version", "[app][rpc]") {
+    SECTION("a matching version connects and is reported") {
+        auto [client, server] = rpc::loopbackPair();
+        ScriptedWorker worker(std::move(server), "secret");
+        RemoteWorker rw(std::move(client), "secret");
+        CHECK(rw.capabilities().protocolVersion == rpc::kProtocolVersion);
+        CHECK(worker.sawClientVersion.load() == rpc::kProtocolVersion);   // the client sends its own version too
+    }
+    SECTION("a newer worker names both versions and says to update the application") {
+        auto [client, server] = rpc::loopbackPair();
+        ScriptedWorker worker(std::move(server), "secret", false, rpc::kProtocolVersion + 6);
+        CHECK_THROWS_WITH(RemoteWorker(std::move(client), "secret"),
+                          Catch::Matchers::ContainsSubstring("version " + std::to_string(rpc::kProtocolVersion)) &&
+                              Catch::Matchers::ContainsSubstring("version " + std::to_string(rpc::kProtocolVersion + 6)) &&
+                              Catch::Matchers::ContainsSubstring("update SIRIUS"));
+    }
+    SECTION("a worker predating the handshake counts as version 0 and must be updated") {
+        auto [client, server] = rpc::loopbackPair();
+        ScriptedWorker worker(std::move(server), "secret", false, -1);   // no protocol_version field at all
+        CHECK_THROWS_WITH(RemoteWorker(std::move(client), "secret"),
+                          Catch::Matchers::ContainsSubstring("version 0") &&
+                              Catch::Matchers::ContainsSubstring("update sirius_worker"));
     }
 }
 

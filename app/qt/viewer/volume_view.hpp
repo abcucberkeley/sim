@@ -2,11 +2,12 @@
 #define SIRIUS_APP_VIEWER_VOLUME_VIEW_HPP
 
 // The 3D layout: a ray-cast rendering of the current time point in a
-// QOpenGLWidget (OpenGL 3.3 core or ES 3.0). Every visible channel is
-// uploaded as an 8-bit 3D texture of its windowed intensities, down-sampled
-// to at most 256 voxels per axis, and composited front to back through a
-// linear opacity ramp (or as a maximum-intensity projection) in the
-// channel's colour. The bounding box, the corner label, the view presets,
+// QOpenGLWidget (OpenGL 3.3 core or ES 3.0). Every visible channel arrives
+// as an 8-bit brick of its windowed intensities, already down-sampled to at
+// most 256 voxels per axis by ViewerLoader (the reduction is a pass over
+// the whole volume and must not happen inside paintGL), is uploaded as a 3D
+// texture and composited front to back through a linear opacity ramp (or as
+// a maximum-intensity projection) in the channel's colour. The bounding box, the corner label, the view presets,
 // the yaw / pitch sliders and the Z clip range are drawn or laid over the
 // GL surface exactly as in the design.
 
@@ -22,26 +23,27 @@
 
 #include <sirius/buffer.hpp>
 
+#include "qt/viewer/viewer_loader.hpp"
+
 namespace sirius::app {
 
     class VolumeView : public QOpenGLWidget, protected QOpenGLExtraFunctions {
         Q_OBJECT
     public:
-        struct Channel {
-            const float* data = nullptr;     // (z, y, x) host volume
-            Index z = 0, y = 0, x = 0;
-            float lo = 0.0f, hi = 1.0f;      // display window
-            std::array<float, 3> color{1.f, 1.f, 1.f};
-        };
-
         explicit VolumeView(QWidget* parent = nullptr);
         ~VolumeView() override;
 
-        // `key` identifies the (output, t, channels, windows) combination; the
-        // textures are rebuilt only when it changes.
-        void setVolumes(quint64 key, const std::vector<Channel>& channels, const std::array<double, 3>& voxelUm);
+        // The reduced bricks of the visible channels, with the full-resolution
+        // grid they came from (the box keeps the physical aspect). `key`
+        // identifies the (output, t, channels, windows) combination; the
+        // textures are uploaded only when it changes.
+        void setTextures(quint64 key, std::vector<ReducedVolume> channels, const std::array<double, 3>& voxelUm,
+                         Index nz, Index ny, Index nx);
         void clearVolumes();
-        bool hasVolumes() const noexcept { return !channels_.empty(); }
+        bool hasVolumes() const noexcept { return !textures_.empty(); }
+        // Drawn instead of "No volume to render" while the loader is reading
+        // or reducing what this view will show next.
+        void setPreparing(const QString& text);
 
         // Instance labels of the same (z, y, x) grid, composited over the
         // volume in their palette colours; `key` changes with every edit.
@@ -86,7 +88,9 @@ namespace sirius::app {
         void applyOrientation(double yaw, double pitch, bool emitSignal);
 
         std::unique_ptr<Gl> gl_;
-        std::vector<Channel> channels_;
+        std::vector<ReducedVolume> textures_;
+        Index vz_ = 0, vy_ = 0, vx_ = 0;   // full-resolution grid of the bricks
+        QString preparing_;
         quint64 key_ = 0, uploadedKey_ = 0;
         const std::uint32_t* labels_ = nullptr;
         Index lz_ = 0, ly_ = 0, lx_ = 0;

@@ -237,6 +237,24 @@ $$
     CHECK_FALSE(contains(html, "|---|"));
 }
 
+TEST_CASE("an image relative to the page resolves with '/' separators on every platform", "[app][help]") {
+    // The rendered attribute is a URL, so the separator is '/' even where the
+    // native one is '\'; a native join emitted "/base\figure.png" on Windows.
+    const std::string html = helpMarkdownToHtml("![fig](figure.png)", "/base");
+    CHECK(contains(html, "src=\"/base/figure.png\""));
+    CHECK_FALSE(contains(html, "\\"));
+    CHECK(contains(helpMarkdownToHtml("![fig](sub/figure.png)", "/base"), "src=\"/base/sub/figure.png\""));
+    // a real page directory, whichever way this platform spells one
+    const std::string real =
+        helpMarkdownToHtml("![fig](figure.png)", (fs::temp_directory_path() / "sirius-help").string());
+    CHECK_FALSE(contains(real, "\\"));
+    CHECK(contains(real, "sirius-help/figure.png"));
+    // a URL target is passed through untouched
+    CHECK(contains(helpMarkdownToHtml("![f](http://x/y.png)", "/base"), "src=\"http://x/y.png\""));
+    // an empty base directory leaves the target relative
+    CHECK(contains(helpMarkdownToHtml("![f](y.png)", ""), "src=\"y.png\""));
+}
+
 TEST_CASE("helpDirectory honours SIRIUS_HELP_DIR and the hint", "[app][help]") {
     const fs::path tmp = fs::temp_directory_path() / "sirius-help-test-dir";
     fs::create_directories(tmp);

@@ -1,0 +1,88 @@
+# clang-format configuration for SIRIUS (C++17, CUDA, Qt).
+#
+# Written to reproduce the style the tree already uses, so that formatting a
+# file does not turn into a wholesale rewrite: 4-space indentation with the
+# namespace body indented, attached braces, `const T& x` / `T* p`, short
+# functions, ifs and loops on one line where the author put them, generous
+# column limit, includes left in the author's grouping (own header, std,
+# third-party / Qt, sirius, app core). CI formats only the files a change
+# touches (see .github/workflows/dev-tests.yml and .pre-commit-config.yaml).
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++17
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 0
+AccessModifierOffset: -4
+NamespaceIndentation: All
+IndentCaseLabels: true
+IndentPPDirectives: None
+
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+QualifierAlignment: Leave
+
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+AllowShortLambdasOnASingleLine: All
+AllowShortEnumsOnASingleLine: true
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+AlignAfterOpenBracket: Align
+AlignOperands: Align
+AlignTrailingComments:
+  Kind: Leave
+  OverEmptyLines: 0
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveShortCaseStatements:
+  Enabled: false
+AlignEscapedNewlines: Left
+
+BreakTemplateDeclarations: Leave
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers: BinPack
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+Cpp11BracedListStyle: true
+SpaceAfterTemplateKeyword: true
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 1
+SpaceAfterCStyleCast: false
+FixNamespaceComments: true
+CompactNamespaces: false
+ReflowComments: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+InsertBraces: false
+RemoveSemicolon: false
+SeparateDefinitionBlocks: Leave
+EmptyLineBeforeAccessModifier: LogicalBlock
+
+# Includes stay where the author put them; the grouping convention is
+# described in CONTRIBUTING.md and not enforced by re-sorting.
+SortIncludes: Never
+IncludeBlocks: Preserve
+SortUsingDeclarations: Never
+
+# Qt
+StatementMacros:
+  - Q_OBJECT
+  - Q_UNUSED
+  - Q_DECLARE_METATYPE
+ForEachMacros:
+  - foreach
+  - Q_FOREACH
+  - BOOST_FOREACH

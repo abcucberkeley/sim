@@ -7,11 +7,15 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numeric>
+#include <type_traits>
 #include <vector>
 
 #include "sirius/image_ops.hpp"
+#include "downsample.hpp"
 
 using namespace sirius;
 using Catch::Matchers::WithinAbs;
@@ -306,6 +310,96 @@ TEST_CASE("downsampleBox averages full and partial boxes", "[image_ops]") {
     CHECK_THAT(out[2], WithinAbs((5 + 10) / 2.0f, 1e-6));          // partial in x
     CHECK_THAT(out[3], WithinAbs((11 + 12) / 2.0f, 1e-6));         // partial in y
     CHECK_THAT(out[5], WithinAbs(15.0f, 1e-6));                    // corner
+}
+
+namespace {
+    // The definition the TIFF and zarr writers used before sharing one
+    // implementation: walk the input in C order, fold every voxel into its
+    // box, then round the mean for integers and convert it for floats.
+    template <typename T>
+    std::vector<T> referenceBoxMean(const std::vector<T>& in, const std::vector<Index>& shape,
+                                    const std::vector<int>& factors) {
+        const std::size_t r = shape.size();
+        std::vector<Index> outShape(r), outStride(r, 1);
+        for (std::size_t i = 0; i < r; ++i) outShape[i] = (shape[i] + factors[i] - 1) / factors[i];
+        for (std::size_t k = r - 1; k-- > 0;) outStride[k] = outStride[k + 1] * outShape[k + 1];
+        const std::size_t m = static_cast<std::size_t>(detail::elementCount(outShape));
+        std::vector<double> acc(m, 0.0);
+        std::vector<Index> cnt(m, 0), idx(r, 0);
+        for (const T v : in) {
+            Index o = 0;
+            for (std::size_t k = 0; k < r; ++k) o += (idx[k] / factors[k]) * outStride[k];
+            acc[static_cast<std::size_t>(o)] += static_cast<double>(v);
+            ++cnt[static_cast<std::size_t>(o)];
+            for (std::size_t k = r; k-- > 0;) {
+                if (++idx[k] < shape[k]) break;
+                idx[k] = 0;
+            }
+        }
+        std::vector<T> out(m);
+        for (std::size_t i = 0; i < m; ++i) {
+            const double mean = acc[i] / static_cast<double>(cnt[i]);
+            if constexpr (std::is_integral_v<T>) out[i] = static_cast<T>(std::llround(mean));
+            else out[i] = static_cast<T>(mean);
+        }
+        return out;
+    }
+
+    template <typename T>
+    std::vector<T> sharedBoxMean(const std::vector<T>& in, const std::vector<Index>& shape,
+                                 const std::vector<int>& factors) {
+        const std::vector<Index> outShape = detail::downsampledShape(shape, factors);
+        std::vector<T> out(static_cast<std::size_t>(detail::elementCount(outShape)));
+        detail::downsampleBoxMean<T>(in.data(), shape, factors, out.data());
+        return out;
+    }
+}
+
+TEST_CASE("shared box-mean matches the writers' previous behaviour", "[image_ops][downsample]") {
+    SECTION("uint16 rounds the mean to nearest, halves away from zero") {
+        const std::vector<Index> shape{3, 5};
+        std::vector<std::uint16_t> in{1, 2, 7, 9, 100,   //
+                                      2, 2, 8, 9, 101,   //
+                                      5, 6, 3, 4, 65535};
+        const std::vector<std::uint16_t> out = sharedBoxMean(in, shape, {2, 2});
+        REQUIRE(out.size() == 6);
+        CHECK(out[0] == 2);       // (1 + 2 + 2 + 2) / 4 = 1.75
+        CHECK(out[1] == 8);       // (7 + 9 + 8 + 9) / 4 = 8.25
+        CHECK(out[2] == 101);     // (100 + 101) / 2 = 100.5, partial in x
+        CHECK(out[3] == 6);       // (5 + 6) / 2 = 5.5, partial in y
+        CHECK(out[4] == 4);       // (3 + 4) / 2 = 3.5
+        CHECK(out[5] == 65535);   // the corner alone, no overflow
+        CHECK(out == referenceBoxMean(in, shape, {2, 2}));
+    }
+    SECTION("float keeps the mean, odd extents leave partial boxes at the far edges") {
+        const std::vector<Index> shape{5, 7};
+        std::vector<float> in(35);
+        for (std::size_t i = 0; i < in.size(); ++i) in[i] = 0.1f * static_cast<float>(i) - 1.3f;
+        for (int f : {2, 3, 4}) {
+            const std::vector<float> out = sharedBoxMean(in, shape, {f, f});
+            const std::vector<Index> outShape = detail::downsampledShape(shape, {f, f});
+            CHECK(outShape[0] == (5 + f - 1) / f);
+            CHECK(outShape[1] == (7 + f - 1) / f);
+            CHECK(out == referenceBoxMean(in, shape, {f, f}));   // bit-exact, same summation order
+        }
+        // the public 3-D entry point is the same arithmetic
+        std::vector<float> pub(static_cast<std::size_t>(downsampledExtent(5, 2) * downsampledExtent(7, 3)));
+        downsampleBox(in.data(), 1, 5, 7, 1, 2, 3, pub.data());
+        CHECK(pub == referenceBoxMean(in, shape, {2, 3}));
+    }
+    SECTION("axes that do not shrink may sit between those that do, as in an OME-NGFF (c, z, y, x) level") {
+        const std::vector<Index> shape{2, 3, 5, 4};
+        std::vector<std::int32_t> in(120);
+        for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<std::int32_t>((i * 37) % 23) - 11;
+        for (const std::vector<int>& f : {std::vector<int>{1, 2, 2, 2}, std::vector<int>{1, 1, 2, 2}, std::vector<int>{2, 1, 3, 1}})
+            CHECK(sharedBoxMean(in, shape, f) == referenceBoxMean(in, shape, f));
+        // rank 1 and a rank-3 stack of double planes
+        const std::vector<double> line{1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0};
+        CHECK(sharedBoxMean(line, {7}, {3}) == std::vector<double>{7.0 / 3.0, 56.0 / 3.0, 64.0});
+        std::vector<double> stack(3 * 4 * 5);
+        for (std::size_t i = 0; i < stack.size(); ++i) stack[i] = std::sqrt(static_cast<double>(i));
+        CHECK(sharedBoxMean(stack, {3, 4, 5}, {2, 2, 2}) == referenceBoxMean(stack, {3, 4, 5}, {2, 2, 2}));
+    }
 }
 
 TEST_CASE("equalizeFrames and flatField", "[image_ops]") {

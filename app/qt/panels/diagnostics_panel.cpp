@@ -7,7 +7,9 @@
 #include <cmath>
 
 #include <QAbstractButton>
+#include <QApplication>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGridLayout>
 #include <QCheckBox>
@@ -19,7 +21,6 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
-#include <QElapsedTimer>
 #include <QAbstractTableModel>
 #include <QIcon>
 #include <QMouseEvent>
@@ -32,51 +33,42 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "core/ops/builtin.hpp"
 #include "qt/panels/diagnostic_cells.hpp"
+#include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
+#include "qt/trace.hpp"
 #include "qt/widgets/controls.hpp"
 
 namespace sirius::app {
 
+    using widgets::GlyphButton;
+    using widgets::Icon;
+
     namespace {
 
-        // A square glyph button: 1.5 px border, accent fill when active.
-        class GlyphButton : public QAbstractButton {
-        public:
-            GlyphButton(const QString& glyph, const QString& tip, QSize size, QWidget* parent = nullptr)
-                : QAbstractButton(parent), glyph_(glyph) {
-                setFixedSize(size);
-                setToolTip(tip);
-                setCursor(Qt::PointingHandCursor);
-                setCheckable(true);
-                setFocusPolicy(Qt::NoFocus);
-            }
-            void setDimmed(bool dim) {
-                dimmed_ = dim;
-                update();
-            }
+        // A checkable icon square with a tool tip -- the header chrome and
+        // the cleanup tool grid.
+        GlyphButton* iconButton(Icon icon, const QString& tip, QSize size, QWidget* parent) {
+            auto* b = new GlyphButton(icon, size, parent);
+            b->setToolTip(tip);
+            b->setAccessibleName(tip);
+            b->setCheckable(true);
+            return b;
+        }
 
-        protected:
-            void paintEvent(QPaintEvent*) override {
-                QPainter p(this);
-                p.setRenderHint(QPainter::Antialiasing, true);
-                const bool on = isChecked();
-                const QColor border = on ? theme::kAccent : (underMouse() ? theme::kAccent : (dimmed_ ? theme::kNeutral400 : theme::kDivider));
-                p.setPen(QPen(border, 1.5));
-                p.setBrush(on ? QBrush(theme::kAccent) : Qt::NoBrush);
-                p.drawRect(QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75));
-                p.setPen(on ? theme::kBg : (dimmed_ ? theme::kNeutral600 : theme::kText));
-                p.setFont(theme::font(glyphPx_));
-                p.drawText(rect(), Qt::AlignCenter, glyph_);
-            }
-            void enterEvent(QEnterEvent*) override { update(); }
-            void leaveEvent(QEvent*) override { update(); }
+        // The design's 2 px accent focus ring, on the widgets that paint
+        // themselves; theme.cpp's filter stamps "focusVisible" for keyboard
+        // focus only.
+        void drawFocusRing(QPainter& p, const QRectF& box) {
+            p.setPen(QPen(theme::kAccent, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(box);
+        }
 
-        private:
-            QString glyph_;
-            bool dimmed_ = false;
-            int glyphPx_ = 12;
-        };
+        bool focusRingVisible(const QWidget* w) {
+            return w->hasFocus() && w->property("focusVisible").toBool();
+        }
 
         // Tab of the diagnostics header: 12 px text, 2 px accent underline + 800 when active.
         class TabButton : public QAbstractButton {
@@ -85,7 +77,9 @@ namespace sirius::app {
                 setText(text);
                 setCheckable(true);
                 setCursor(Qt::PointingHandCursor);
-                setFocusPolicy(Qt::NoFocus);
+                setFocusPolicy(Qt::StrongFocus);
+                setAccessibleName(text);
+                setAccessibleDescription(QStringLiteral("Diagnostics tab"));
                 const int w = QFontMetrics(theme::heading(12)).horizontalAdvance(text) + 20;
                 setFixedSize(w, 26);
             }
@@ -98,6 +92,14 @@ namespace sirius::app {
                 p.setPen(underMouse() && !on ? theme::kAccent : theme::kText);
                 p.drawText(rect().adjusted(0, 0, 0, -2), Qt::AlignCenter, text());
                 if (on) p.fillRect(QRect(0, height() - 2, width(), 2), theme::kAccent);
+                if (focusRingVisible(this)) drawFocusRing(p, QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0));
+            }
+            void keyPressEvent(QKeyEvent* e) override {
+                if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
+                    click();
+                    return;
+                }
+                QAbstractButton::keyPressEvent(e);
             }
             void enterEvent(QEnterEvent*) override { update(); }
             void leaveEvent(QEvent*) override { update(); }
@@ -118,43 +120,30 @@ namespace sirius::app {
             return s;
         }
 
-        QString bytesText(std::size_t bytes) {
-            const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-            if (gb >= 0.1) return QStringLiteral("%1 GB").arg(gb, 0, 'f', 1);
-            return QStringLiteral("%1 MB").arg(static_cast<double>(bytes) / (1024.0 * 1024.0), 0, 'f', 0);
-        }
-
         QPushButton* styledButton(const QString& text, bool secondary, QWidget* parent) {
             auto* b = new QPushButton(text, parent);
             b->setCursor(Qt::PointingHandCursor);
-            b->setFocusPolicy(Qt::NoFocus);
-            b->setFont(theme::font(theme::kSmallPx));
-            if (secondary)
-                b->setStyleSheet(QStringLiteral("QPushButton { border: 1.5px solid %1; border-radius: 0; padding: 5px 9px;"
-                                                " background: transparent; color: %1; text-align: left; }"
-                                                "QPushButton:hover { border-color: %2; color: %2; }")
-                                     .arg(theme::hex(theme::kText), theme::hex(theme::kAccent)));
-            else
-                b->setStyleSheet(QStringLiteral("QPushButton { border: none; padding: 5px 6px; background: transparent; color: %1; }"
-                                                "QPushButton:hover { color: %2; }")
-                                     .arg(theme::hex(theme::kText), theme::hex(theme::kAccent)));
+            // Keyboard-reachable, with the style sheet's focus ring.
+            b->setFocusPolicy(Qt::StrongFocus);
+            b->setAccessibleName(text);
+            widgets::setButtonClass(b, secondary ? "secondary tiny" : "ghost tiny");
             return b;
         }
 
         struct SegTool {
             PaintTool tool;
-            const char* glyph;
+            Icon icon;
             const char* name;
         };
         constexpr std::array<SegTool, 8> kSegTools{{
-            {PaintTool::Brush, "●", "Brush"},
-            {PaintTool::Erase, "◌", "Erase"},
-            {PaintTool::Fill, "▣", "Fill region"},
-            {PaintTool::Pick, "⌖", "Pick label"},
-            {PaintTool::Merge, "⊕", "Merge labels"},
-            {PaintTool::Split, "⊘", "Split (watershed seed)"},
-            {PaintTool::Delete, "✕", "Delete label"},
-            {PaintTool::Lasso, "◠", "Lasso"},
+            {PaintTool::Brush, Icon::Brush, "Brush"},
+            {PaintTool::Erase, Icon::Erase, "Erase"},
+            {PaintTool::Fill, Icon::Fill, "Fill region"},
+            {PaintTool::Pick, Icon::Pick, "Pick label"},
+            {PaintTool::Merge, Icon::Merge, "Merge labels"},
+            {PaintTool::Split, Icon::Split, "Split (watershed seed)"},
+            {PaintTool::Delete, Icon::Trash, "Delete label"},
+            {PaintTool::Lasso, Icon::Lasso, "Lasso"},
         }};
 
         // --- label table: a model over the label statistics ------------------------
@@ -204,16 +193,16 @@ namespace sirius::app {
                     case Qt::DisplayRole:
                         switch (index.column()) {
                             case 0: return QStringLiteral("%1").arg(s.id, 4, 10, QChar('0'));
-                            case 1: return QString::fromStdString(s.cls);
+                            case 1: return fromStd(s.cls);
                             case 2: return groupThousands(s.voxels);
                             case 3: return QString::number(s.confidence, 'f', 2);
-                            case 4: return QString::fromStdString(s.flagText());
+                            case 4: return fromStd(s.flagText());
                             default: return {};
                         }
                     case Qt::DecorationRole:
                         return index.column() == 0 ? QVariant(chip(s.id)) : QVariant();
                     case Qt::ForegroundRole:
-                        if ((index.column() == 3 && s.confidence < 0.6) || (index.column() == 4 && !s.flags.empty())) return QBrush(theme::kAccent);
+                        if ((index.column() == 3 && s.confidence < 0.6) || (index.column() == 4 && !s.flags.empty())) return QBrush(theme::kAccentText);
                         return {};
                     case Qt::FontRole:
                         if (index.column() == 4 && !s.flags.empty()) return theme::heading(theme::kSmallPx);
@@ -232,7 +221,11 @@ namespace sirius::app {
                 const QRgb key = QColor::fromRgbF(c[0], c[1], c[2]).rgb();
                 auto it = chips_.find(key);
                 if (it == chips_.end()) {
-                    QPixmap pm(10, 10);
+                    // Allocated at the screen's ratio, like widgets::iconPixmap:
+                    // a 10 x 10 device pixmap is blurry at 1.25x / 1.5x / 2x.
+                    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+                    QPixmap pm(qRound(10 * dpr), qRound(10 * dpr));
+                    pm.setDevicePixelRatio(dpr);
                     pm.fill(QColor(key));
                     it = chips_.emplace(key, pm).first;
                 }
@@ -243,8 +236,8 @@ namespace sirius::app {
             mutable std::map<QRgb, QPixmap> chips_;
         };
 
-        // The last column: "merge · split · ✕" painted in accent; a click on a
-        // word calls back with the link and the row's label.
+        // The last column: "merge · split ·" and a bin, painted in accent; a
+        // click on a word (or the bin) calls back with the link and the row's label.
         class LabelActionDelegate : public QStyledItemDelegate {
         public:
             explicit LabelActionDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
@@ -254,14 +247,16 @@ namespace sirius::app {
                 QStyledItemDelegate::paint(p, option, QModelIndex());   // background / selection only
                 p->save();
                 p->setFont(theme::font(theme::kSmallPx));
-                p->setPen(theme::kAccent);
+                p->setPen(theme::kAccentText);
                 const QRect r = option.rect.adjusted(6, 0, -6, 0);
                 p->drawText(r, Qt::AlignLeft | Qt::AlignVCenter, text());
+                const int x = r.left() + QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text());
+                widgets::drawIcon(*p, QRectF(x, r.center().y() - 5.5, 11, 11), Icon::Trash, theme::kAccentText, 1.25);
                 p->restore();
                 (void)index;
             }
             QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const override {
-                return {QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text()) + 12, option.rect.height()};
+                return {QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text()) + 23, option.rect.height()};
             }
             bool editorEvent(QEvent* e, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override {
                 if (e->type() != QEvent::MouseButtonRelease || !onAction) return false;
@@ -281,7 +276,7 @@ namespace sirius::app {
             }
 
         private:
-            static QString text() { return QStringLiteral("merge · split · ✕"); }
+            static QString text() { return QStringLiteral("merge · split · "); }
         };
 
         class LabelTableView : public QTableView {
@@ -290,20 +285,16 @@ namespace sirius::app {
                 setFrameShape(QFrame::NoFrame);
                 setShowGrid(false);
                 setEditTriggers(QAbstractItemView::NoEditTriggers);
-                setFocusPolicy(Qt::NoFocus);
+                setFocusPolicy(Qt::StrongFocus);
+                setAccessibleName(QStringLiteral("Labels"));
+                setAccessibleDescription(QStringLiteral("One row per label: id, class, voxels, confidence, flag"));
                 verticalHeader()->setVisible(false);
                 verticalHeader()->setDefaultSectionSize(22);
                 horizontalHeader()->setStretchLastSection(true);
                 horizontalHeader()->setHighlightSections(false);
                 horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-                setFont(theme::font(theme::kSmallPx));
-                setStyleSheet(QStringLiteral(
-                    "QTableView { background: %1; border: none; selection-background-color: %2; selection-color: %5; }"
-                    "QTableView::item { padding: 2px 6px; border-bottom: 1px solid %3; }"
-                    "QHeaderView::section { background: %1; border: none; border-bottom: 2px solid %3; color: %4;"
-                    " font-size: 10px; padding: 4px 6px; }")
-                                  .arg(theme::hex(theme::kBg), theme::hex(theme::kSurface), theme::hex(theme::kDivider),
-                                       theme::hex(theme::kNeutral600), theme::hex(theme::kText)));
+                setFont(theme::tabular(theme::font(theme::kSmallPx)));
+                widgets::setWidgetClass(this, "dense");
             }
         };
 
@@ -327,6 +318,18 @@ namespace sirius::app {
 
             void refresh() {
                 const ViewState& vs = bridge_.wb().viewState();
+                // Label edits are refused while a run is active, painting
+                // included: the tools say so instead of doing nothing.
+                const bool editable = bridge_.wb().canEdit();
+                const QString frozen = QStringLiteral("Not while a run is in progress — cancel it (Esc) or wait");
+                for (GlyphButton* b : tools_) b->setEnabled(editable);
+                brush_->setEnabled(editable);
+                paint3d_->setEnabled(editable);
+                for (QPushButton* b : {next_, undo_, accept_})
+                    if (b) {
+                        b->setEnabled(editable);
+                        b->setToolTip(editable ? QString() : frozen);
+                    }
                 updating_ = true;
                 for (std::size_t i = 0; i < tools_.size(); ++i) tools_[i]->setChecked(kSegTools[i].tool == vs.paintTool);
                 brush_->setValue(vs.brushPx);
@@ -356,17 +359,22 @@ namespace sirius::app {
 
             QWidget* buildTools() {
                 QWidget* w = cell();
-                w->setFixedWidth(230);
+                // 230 px was narrower than the caption, which then clipped to
+                // "CLEANUP TOOLS · PAINT IN V": the cell takes whichever is
+                // wider.
+                const QString cap = QStringLiteral("CLEANUP TOOLS · PAINT IN VIEWER");
+                w->setFixedWidth(std::max(230, QFontMetrics(theme::caption()).horizontalAdvance(cap) + 30));
                 auto* v = new QVBoxLayout(w);
                 v->setContentsMargins(14, 10, 14, 10);
                 v->setSpacing(8);
-                v->addWidget(caption(QStringLiteral("CLEANUP TOOLS · PAINT IN VIEWER"), w));
+                v->addWidget(caption(cap, w));
                 auto* gridHost = new QWidget(w);
                 auto* grid = new QGridLayout(gridHost);
                 grid->setContentsMargins(0, 0, 0, 0);
                 grid->setSpacing(2);
                 for (std::size_t i = 0; i < kSegTools.size(); ++i) {
-                    auto* b = new GlyphButton(QString::fromUtf8(kSegTools[i].glyph), QString::fromUtf8(kSegTools[i].name), QSize(48, 34), gridHost);
+                    auto* b = iconButton(kSegTools[i].icon, QString::fromUtf8(kSegTools[i].name), QSize(48, 34), gridHost);
+                    b->setIconPx(16);
                     b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
                     b->setMinimumWidth(30);
                     b->setMaximumWidth(1000);
@@ -454,18 +462,21 @@ namespace sirius::app {
                 v->addWidget(caption(QStringLiteral("REVIEW QUEUE"), w));
                 queue_ = new FactsView(w);
                 v->addWidget(queue_, 1);
-                auto* buttons = new QHBoxLayout;
-                buttons->setSpacing(6);
-                auto* next = styledButton(QStringLiteral("Next flagged →"), true, w);
-                QObject::connect(next, &QPushButton::clicked, this, [this] { bridge_.wb().nextFlaggedLabel(true); });
-                auto* undo = styledButton(QStringLiteral("Undo"), false, w);
-                QObject::connect(undo, &QPushButton::clicked, this, [this] { bridge_.wb().undo(); });
-                auto* accept = styledButton(QStringLiteral("Accept all reviewed"), false, w);
-                QObject::connect(accept, &QPushButton::clicked, this, [this] { bridge_.wb().acceptAllReviewed(); });
-                buttons->addWidget(next);
-                buttons->addWidget(undo);
-                buttons->addWidget(accept);
-                buttons->addStretch(1);
+                // Two rows: the three labels never fitted across 280 px, and
+                // "Accept all reviewed" was the one that lost its ending.
+                auto* buttons = new QGridLayout;
+                buttons->setHorizontalSpacing(6);
+                buttons->setVerticalSpacing(6);
+                next_ = styledButton(QStringLiteral("Next flagged →"), true, w);
+                QObject::connect(next_, &QPushButton::clicked, this, [this] { bridge_.wb().nextFlaggedLabel(true); });
+                undo_ = styledButton(QStringLiteral("Undo"), false, w);
+                QObject::connect(undo_, &QPushButton::clicked, this, [this] { bridge_.wb().undo(); });
+                accept_ = styledButton(QStringLiteral("Accept all reviewed"), false, w);
+                QObject::connect(accept_, &QPushButton::clicked, this, [this] { bridge_.wb().acceptAllReviewed(); });
+                buttons->addWidget(next_, 0, 0);
+                buttons->addWidget(undo_, 0, 1);
+                buttons->addWidget(accept_, 1, 0, 1, 2, Qt::AlignLeft);
+                buttons->setColumnStretch(2, 1);
                 v->addLayout(buttons);
                 return w;
             }
@@ -504,6 +515,10 @@ namespace sirius::app {
 
             void act(const QString& link, std::uint32_t id) {
                 Workbench& wb = bridge_.wb();
+                if (!wb.canEdit()) {
+                    wb.logLine("Label edits are refused while a run is in progress.");
+                    return;
+                }
                 if (link == QLatin1String("delete")) {
                     wb.deleteLabel(id);
                 } else if (link == QLatin1String("merge")) {
@@ -542,6 +557,9 @@ namespace sirius::app {
             LabelTableModel* model_ = nullptr;
             std::shared_ptr<LabelVolume> shownLabels_;
             FactsView* queue_ = nullptr;
+            QPushButton* next_ = nullptr;
+            QPushButton* undo_ = nullptr;
+            QPushButton* accept_ = nullptr;
             bool updating_ = false;
         };
 
@@ -636,11 +654,9 @@ namespace sirius::app {
             auto* lh = new QHBoxLayout(left);
             lh->setContentsMargins(0, 0, 0, 0);
             lh->setSpacing(8);
-            toggle = new QLabel(QStringLiteral("▼"), left);
-            toggle->setFont(theme::font(theme::kCaptionPx));
-            QPalette tp = toggle->palette();
-            tp.setColor(QPalette::WindowText, theme::kAccent);
-            toggle->setPalette(tp);
+            toggle = new QLabel(left);
+            toggle->setFixedSize(12, 12);
+            toggle->setPixmap(widgets::iconPixmap(Icon::ChevronDown, 12, theme::kAccent));
             captionLabel = caption(QStringLiteral("DIAGNOSTICS"), left);
             lh->addWidget(toggle);
             lh->addWidget(captionLabel);
@@ -652,7 +668,7 @@ namespace sirius::app {
             tabLayout->setSpacing(2);
             h->addWidget(tabRow);
             // Tabs that do not fit stay reachable through this menu.
-            moreBtn = new GlyphButton(QStringLiteral("…"), QStringLiteral("More tabs"), QSize(24, 22), header);
+            moreBtn = iconButton(Icon::More, QStringLiteral("More tabs"), QSize(24, 22), header);
             moreBtn->hide();
             QObject::connect(moreBtn, &QAbstractButton::clicked, self, [this] {
                 QMenu menu(self);
@@ -677,9 +693,9 @@ namespace sirius::app {
             h->addWidget(hint, 1);
             auto* modes = new QHBoxLayout;
             modes->setSpacing(2);
-            dockBtn = new GlyphButton(QStringLiteral("▁"), QStringLiteral("Dock to bottom"), QSize(24, 22), header);
-            floatBtn = new GlyphButton(QStringLiteral("❐"), QStringLiteral("Undock as floating window"), QSize(24, 22), header);
-            maxBtn = new GlyphButton(QStringLiteral("⛶"), QStringLiteral("Maximize over viewer"), QSize(24, 22), header);
+            dockBtn = iconButton(Icon::Dock, QStringLiteral("Dock to bottom"), QSize(24, 22), header);
+            floatBtn = iconButton(Icon::Float, QStringLiteral("Undock as floating window"), QSize(24, 22), header);
+            maxBtn = iconButton(Icon::Maximize, QStringLiteral("Maximize over viewer"), QSize(24, 22), header);
             for (GlyphButton* b : {dockBtn, floatBtn, maxBtn}) {
                 b->setDimmed(true);
                 modes->addWidget(b);
@@ -734,14 +750,7 @@ namespace sirius::app {
         }
 
         void refresh() {
-            static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
-            QElapsedTimer clock;
-            if (trace) clock.start();
-            struct Report {
-                bool on;
-                QElapsedTimer& c;
-                ~Report() { if (on) qInfo("diagnostics refresh %lld us", c.nsecsElapsed() / 1000); }
-            } report{trace, clock};
+            const ScopedTrace trace("diagnostics refresh");
             const Workbench& wb = bridge.wb();
             const int sel = wb.selectedIndex();
             const Pipeline& p = wb.pipeline();
@@ -753,7 +762,7 @@ namespace sirius::app {
                 return;
             }
             const Step& step = p.at(sel);
-            captionLabel->setText(QStringLiteral("DIAGNOSTICS · %1").arg(QString::fromStdString(step.name).toUpper()));
+            captionLabel->setText(QStringLiteral("DIAGNOSTICS · %1").arg(fromStd(step.name).toUpper()));
             const Operation* op = findOperation(step.kind);
             const DiagnosticsKind kind = op ? op->info().diagnostics : DiagnosticsKind::Generic;
             Diagnostics d;
@@ -774,11 +783,11 @@ namespace sirius::app {
             }
             DiagnosticsBody::Context ctx;
             try {
-                ctx.stepSummary = QString::fromStdString(wb.stepSummary(sel));
-                ctx.inputShape = QString::fromStdString(wb.inputMetaOf(sel).shapeString());
-                ctx.outputShape = QString::fromStdString(wb.outputMetaOf(sel).shapeString());
+                ctx.stepSummary = fromStd(wb.stepSummary(sel));
+                ctx.inputShape = fromStd(wb.inputMetaOf(sel).shapeString());
+                ctx.outputShape = fromStd(wb.outputMetaOf(sel).shapeString());
                 ctx.estimate = QStringLiteral("≈ %1 output · cache %2")
-                                   .arg(bytesText(wb.estimatedBytesOf(sel)), QString::fromUtf8(toString(step.cache)));
+                                   .arg(widgets::bytesText(wb.estimatedBytesOf(sel)), QString::fromUtf8(toString(step.cache)));
             } catch (const std::exception& e) {
                 ctx.stepSummary = QString::fromUtf8(e.what());
             }
@@ -830,6 +839,8 @@ namespace sirius::app {
             if (impl_->stack->currentWidget() == impl_->segment) impl_->segment->refresh();
         });
         connect(&bridge, &WorkbenchBridge::runFinished, this, [this](bool, const QString&) { impl_->refresh(); });
+        // What the cleanup tools may do depends on the run state.
+        connect(&bridge, &WorkbenchBridge::runStateChanged, this, [this] { impl_->refresh(); });
         d.updateModes();
         d.refresh();
     }
@@ -853,7 +864,7 @@ namespace sirius::app {
         Impl& d = *impl_;
         if (d.collapsed == collapsed) return;
         d.collapsed = collapsed;
-        d.toggle->setText(collapsed ? QStringLiteral("▶") : QStringLiteral("▼"));
+        d.toggle->setPixmap(widgets::iconPixmap(collapsed ? Icon::ChevronRight : Icon::ChevronDown, 12, theme::kAccent));
         if (collapsed) {
             d.expandedHeight = std::max(height(), theme::kDiagnosticsHeaderH + 60);
             d.stack->hide();

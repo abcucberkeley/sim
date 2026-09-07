@@ -120,6 +120,7 @@ namespace sirius::app {
                     else if (method == "Percentile")
                         cut = percentiles(vol.data(), vol.size(), 0.0, p.getDouble("percentile", 90.0)).second;
                     post.threshold = cut;
+                    ctx.throwIfCancelled();
                     total += labelsFromProbabilities(vol.data(), nullptr, d.z, d.y, d.x, post, *labels, t);
                     if (t == 0) cuts = formatNumber(cut, 4);
                 }

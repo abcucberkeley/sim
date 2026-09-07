@@ -1,6 +1,7 @@
 #include "sirius/otf.hpp"
 #include "sirius/buffer.hpp"
 #include "sirius/constants.hpp"
+#include "sirius/errors.hpp"
 #include "sirius/fft.hpp"
 #include "sirius/sim_reconstruction.hpp"
 #include "sirius/tiff_io.hpp"
@@ -25,9 +26,9 @@ namespace sirius {
             DoubleTensor raw_data = readTiffStack<double>(filename);
 
             if (raw_data.size() == 0)
-                throw std::runtime_error("Radial OTF is empty: " + filename);
+                throw IoError("Radial OTF is empty: " + filename);
             if (raw_data.dimension(2) % 2 != 0)
-                throw std::runtime_error("Radial OTF - incorrect data format");
+                throw IoError("Radial OTF - incorrect data format");
 
             // complex_otf = raw_data[..., 0::2] + i*raw_data[..., 1::2]
             Eigen::array<Eigen::Index, 3> start_real = {0, 0, 0};
@@ -49,7 +50,7 @@ namespace sirius {
         const auto nkr = data.dimension(1);
         const auto nzotf = data.dimension(2);
         if (nkr < 2)
-            throw std::runtime_error("Radial OTF needs at least 2 radial samples: " + filename);
+            throw IoError("Radial OTF needs at least 2 radial samples: " + filename);
         const double dkrotf = 1.0 / (p.dx * static_cast<double>(nkr - 1) * 2.0);
         const double dkzotf = 1.0 / (p.dz_psf * static_cast<double>(nzotf));
         return OTFRadiallyAveraged(std::move(data), dkrotf, dkzotf);

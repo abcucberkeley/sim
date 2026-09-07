@@ -75,7 +75,7 @@ namespace sirius::simdetail {
 
         __global__ void edgeApodizeXKernel(double* __restrict__ data, IndexT nsec, IndexT ny,
                                            IndexT nx, int napodize, IndexT napY) {
-            const double kHalfPi = 1.5707963267948966;
+            const double kHalfPi = 0.5 * kPi;
             for (IndexT t = blockIdx.x * (IndexT)blockDim.x + threadIdx.x; t < nsec * nx;
                  t += (IndexT)gridDim.x * blockDim.x) {
                 double* img = data + (t / nx) * ny * nx;
@@ -91,7 +91,7 @@ namespace sirius::simdetail {
 
         __global__ void edgeApodizeYKernel(double* __restrict__ data, IndexT nsec, IndexT ny,
                                            IndexT nx, int napodize, IndexT napX) {
-            const double kHalfPi = 1.5707963267948966;
+            const double kHalfPi = 0.5 * kPi;
             for (IndexT t = blockIdx.x * (IndexT)blockDim.x + threadIdx.x; t < nsec * ny;
                  t += (IndexT)gridDim.x * blockDim.x) {
                 double* row = data + (t / ny) * ny * nx + (t % ny) * nx;
@@ -105,7 +105,6 @@ namespace sirius::simdetail {
         }
 
         __global__ void cosineApodizeKernel(double* __restrict__ data, IndexT nsec, IndexT ny, IndexT nx) {
-            const double kPi = 3.14159265358979323846;
             for (IndexT t = blockIdx.x * (IndexT)blockDim.x + threadIdx.x; t < nsec * ny * nx;
                  t += (IndexT)gridDim.x * blockDim.x) {
                 const IndexT x = t % nx;

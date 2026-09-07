@@ -20,10 +20,17 @@ namespace sirius::app {
 
         void openAddMenu();                 // Process ▸ Add operation…
         void refresh();                     // rebuild the rows from the workbench
+        // The design's 290 px, as a preference rather than a floor: the dock
+        // can be narrowed well past it (the rows elide) so the window can be
+        // rebalanced.
+        QSize sizeHint() const override;
 
     signals:
         void exportRequested();
         void managePluginsRequested();      // "Manage user operations…" in the add menu
+        // The window owns removal: it warns about a discarded cache and points
+        // at Undo afterwards.
+        void removeStepRequested(int index);
 
     private:
         struct Impl;

@@ -1,5 +1,6 @@
 #include "qt/dialogs/export_dialog.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include <QBoxLayout>
@@ -44,12 +45,6 @@ namespace sirius::app {
                 {QStringLiteral("Raw float32"), QStringLiteral("No metadata · fastest"), ExportFormat::Raw, false, false, 1},
             };
             return rows;
-        }
-
-        QString bytesText(std::uint64_t bytes) {
-            const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-            if (gb >= 1.0) return QStringLiteral("%1 GB").arg(gb, 0, 'f', 1);
-            return QStringLiteral("%1 MB").arg(static_cast<double>(bytes) / (1024.0 * 1024.0), 0, 'f', 1);
         }
 
         QLabel* fieldLabel(const QString& t, QWidget* parent) { return widgets::label(t, 11, theme::kNeutral600, -1, parent); }
@@ -114,7 +109,9 @@ namespace sirius::app {
     ExportDialog::ExportDialog(WorkbenchBridge& bridge, QWidget* parent)
         : QDialog(parent), impl_(std::make_unique<Impl>(bridge)) {
         setWindowTitle(QStringLiteral("Export result"));
-        setFixedWidth(640);
+        // 640 px is the design's width to open at, not a cage: the format
+        // notes and the destination path are the kind of thing a user widens.
+        setSizeGripEnabled(true);
         const Workbench& wb = bridge.wb();
         auto* root = new QVBoxLayout(this);
         root->setContentsMargins(22, 18, 22, 18);
@@ -342,7 +339,7 @@ namespace sirius::app {
         impl_->sidecarLabels = new QCheckBox(QStringLiteral("Include labels sidecar"), right);
         rl->addWidget(impl_->sidecarPipeline);
         rl->addWidget(impl_->sidecarLabels);
-        impl_->problem = widgets::label(QString(), 11, theme::kAccent, -1, right);
+        impl_->problem = widgets::label(QString(), 11, theme::kAccentText, -1, right);
         impl_->problem->setWordWrap(true);
         impl_->problem->hide();
         rl->addWidget(impl_->problem);
@@ -392,6 +389,7 @@ namespace sirius::app {
         if (dir.isEmpty() || dir == QLatin1String(".")) dir = QDir::homePath();
         impl_->destination->setText(dir + QLatin1Char('/') + base + QStringLiteral("_processed"));
         selectFormat(0);
+        resize(640, std::max(sizeHint().height(), 480));
     }
 
     ExportDialog::~ExportDialog() = default;
@@ -437,7 +435,7 @@ namespace sirius::app {
             probe.tiff.tiled = f.tiled;
             probe.tiff.pyramidLevels = f.pyramid ? f.pyramidLevels : 1;
             probe.zarr.pyramidLevels = f.pyramid ? f.pyramidLevels : 1;
-            impl_->sizes[i]->setText(bytesText(estimateExportBytes(meta.dims, probe)));
+            impl_->sizes[i]->setText(widgets::bytesText(estimateExportBytes(meta.dims, probe)));
         }
         const ExportOptions o = options();
         const bool tiff = o.format == ExportFormat::Tiff;

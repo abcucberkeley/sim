@@ -384,13 +384,13 @@ class TestHubMethods(ServerTestCase, _CacheCase):
     def test_ambiguous_or_empty_repos_are_reported(self):
         original = models.hub_files
         try:
-            models.hub_files = lambda repo: [{"name": "a.pt", "size": 1, "model": True},
-                                             {"name": "b.onnx", "size": 1, "model": True}]
+            models.hub_files = lambda repo, token=None: [{"name": "a.pt", "size": 1, "model": True},
+                                                        {"name": "b.onnx", "size": 1, "model": True}]
             with self.assertRaises(models.ModelError) as cm:
                 models.pick_model_file("owner/two")
             self.assertIn("a.pt", str(cm.exception))
             self.assertIn("b.onnx", str(cm.exception))
-            models.hub_files = lambda repo: [{"name": "README.md", "size": 1, "model": False}]
+            models.hub_files = lambda repo, token=None: [{"name": "README.md", "size": 1, "model": False}]
             with self.assertRaises(models.ModelError) as cm:
                 models.pick_model_file("owner/none")
             self.assertIn("owner/none", str(cm.exception))

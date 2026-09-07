@@ -3,70 +3,24 @@
 
 // Small painted controls of the viewer chrome, drawn straight from the
 // theme tokens so they look right with or without the application
-// stylesheet: glyph squares (tool strip, play button, zoom +/-), the
-// segmented Ortho | 3D | Compare control, the 14 px token checkbox with an
-// optional uppercase caption, the 22 px channel swatch and the two-handle
-// range slider of the 3D clip.
+// stylesheet: the 14 px token checkbox with an optional uppercase caption,
+// the 22 px channel swatch and the two-handle range slider of the 3D clip.
+// The icon squares and the Ortho | 3D | Compare control are the shared
+// widgets::GlyphButton / widgets::SegmentedControl.
+//
+// All three take keyboard focus and draw the design's 2 px accent focus
+// ring: space or enter toggles a check or a swatch, the arrow keys move the
+// range slider's handles.
 
 #include <QAbstractButton>
 #include <QColor>
 #include <QString>
 #include <QWidget>
 
+class QFocusEvent;
+class QKeyEvent;
+
 namespace sirius::app {
-
-    // A square (or given size) button showing one glyph; checked = accent
-    // fill + paper glyph, hover = accent border. `dim` draws it at 35 %.
-    class GlyphButton : public QAbstractButton {
-        Q_OBJECT
-    public:
-        explicit GlyphButton(const QString& glyph, QWidget* parent = nullptr, QSize size = QSize(28, 28));
-        void setGlyph(const QString& glyph);
-        void setGlyphPx(int px) { glyphPx_ = px; update(); }
-        void setBorderColor(const QColor& c) { border_ = c; update(); }
-        // Draw on the viewer ground (light text, translucent border) instead of the panel ground.
-        void setOnDark(bool on) { onDark_ = on; update(); }
-        QSize sizeHint() const override { return size_; }
-        QSize minimumSizeHint() const override { return size_; }
-
-    protected:
-        void paintEvent(QPaintEvent*) override;
-        void enterEvent(QEnterEvent*) override { hover_ = true; update(); }
-        void leaveEvent(QEvent*) override { hover_ = false; update(); }
-
-    private:
-        QString glyph_;
-        QSize size_;
-        int glyphPx_ = 13;
-        QColor border_;
-        bool hover_ = false;
-        bool onDark_ = false;
-    };
-
-    // Ortho | 3D | Compare: outlined row, selected = ink fill, paper text.
-    class SegmentedControl : public QWidget {
-        Q_OBJECT
-    public:
-        explicit SegmentedControl(const QStringList& items, QWidget* parent = nullptr);
-        int current() const noexcept { return current_; }
-        void setCurrent(int index);
-        QSize sizeHint() const override;
-
-    signals:
-        void changed(int index);
-
-    protected:
-        void paintEvent(QPaintEvent*) override;
-        void mousePressEvent(QMouseEvent*) override;
-        void mouseMoveEvent(QMouseEvent*) override;
-        void leaveEvent(QEvent*) override { hover_ = -1; update(); }
-
-    private:
-        int indexAt(int x) const;
-        QStringList items_;
-        int current_ = 0;
-        int hover_ = -1;
-    };
 
     // 14 x 14 square box (accent fill when checked) + 12 px label + optional
     // 10 px uppercase caption ("LOCKED").
@@ -79,6 +33,9 @@ namespace sirius::app {
 
     protected:
         void paintEvent(QPaintEvent*) override;
+        void keyPressEvent(QKeyEvent*) override;
+        void focusInEvent(QFocusEvent*) override;
+        void focusOutEvent(QFocusEvent*) override;
 
     private:
         QString caption_;
@@ -95,6 +52,9 @@ namespace sirius::app {
 
     protected:
         void paintEvent(QPaintEvent*) override;
+        void keyPressEvent(QKeyEvent*) override;
+        void focusInEvent(QFocusEvent*) override;
+        void focusOutEvent(QFocusEvent*) override;
 
     private:
         QString label_;
@@ -120,11 +80,16 @@ namespace sirius::app {
         void mousePressEvent(QMouseEvent*) override;
         void mouseMoveEvent(QMouseEvent*) override;
         void mouseReleaseEvent(QMouseEvent*) override { drag_ = 0; }
+        void keyPressEvent(QKeyEvent*) override;
+        void focusInEvent(QFocusEvent*) override;
+        void focusOutEvent(QFocusEvent*) override;
 
     private:
         double fromX(double x) const;
+        void describe();
         double lo_ = 0.0, hi_ = 1.0;
-        int drag_ = 0;   // 1 = low handle, 2 = high handle
+        int drag_ = 0;      // 1 = low handle, 2 = high handle
+        int handle_ = 1;    // the handle the arrow keys move
     };
 
     // Text drawn like the prototype's overlay labels (11 px, viewer text

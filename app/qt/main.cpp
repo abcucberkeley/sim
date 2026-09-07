@@ -154,6 +154,10 @@ int main(int argc, char** argv) {
         if (parser.isSet(askOpt)) window.askAssistant(parser.value(askOpt));
     };
     const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt) || parser.isSet(strokeOpt) || parser.isSet(wheelOpt);
+    // Nobody is at the keyboard in any of these modes, so the window must not
+    // ask whether to cancel a running job on the way out (see
+    // MainWindow::setUnattended).
+    if (scripted || parser.isSet(screenshotOpt) || parser.isSet(quitAfterOpt)) window.setUnattended(true);
     const int settle = parser.isSet(settleOpt) ? parser.value(settleOpt).toInt() : 600;
     if (parser.isSet(screenshotOpt) || scripted) {
         const QString path = parser.value(screenshotOpt);

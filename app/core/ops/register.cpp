@@ -114,11 +114,13 @@ namespace sirius::app {
                     Buffer<float> moving = input.readVolume(alignTime ? fixedC : movingC, t);
                     Buffer<std::uint8_t> fm = maskOf(fixed, useMask, level), mm = maskOf(moving, useMask, level);
                     TranslationResult r = registerTranslationMasked<float>(fixed.view(), moving.view(), fm.view(), mm.view(), opts);
+                    ctx.throwIfCancelled();
                     results.push_back(r);
                     pairNames.push_back(alignTime ? "t " + std::to_string(t) : "t " + std::to_string(t) + " · c " + std::to_string(movingC));
                     if (!r.valid) continue;
                     if (alignTime) {
                         for (Index c = 0; c < d.c; ++c) {
+                            ctx.throwIfCancelled();
                             Buffer<float> vol = input.readVolume(c, t);
                             shiftInto(vol.data(), result->volume(c, t).data(), r.integerShift);
                         }

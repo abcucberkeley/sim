@@ -8,6 +8,7 @@
 // never both at once).
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -112,7 +113,14 @@ namespace sirius::app {
         // CUDA device the device copy of the raw stack, are kept between calls
         // and rebuilt only when the parameters, OTF or device changed, so
         // repeated runs pay for the FFT planning once. Throws on failure.
-        ReconResult reconstruct(Device device, PlanRigor rigor = PlanRigor::Measure);
+        //
+        // `cancelled` is handed to SimReconstructor::setCancelCallback for
+        // this call: it is polled at the reconstruction's stage boundaries
+        // and a true return aborts by throwing (the message "cancelled",
+        // which isCancellation() recognises). The session keeps no partial
+        // result -- nothing is written until reconstruct() returns.
+        ReconResult reconstruct(Device device, PlanRigor rigor = PlanRigor::Measure,
+                                std::function<bool()> cancelled = {});
 
     private:
         struct Impl;

@@ -28,7 +28,16 @@ namespace sirius::app::theme {
     inline const QColor kNeutral300{0xd7, 0xd3, 0xd3};
     inline const QColor kNeutral400{0xba, 0xb6, 0xb6};
     inline const QColor kNeutral500{0x9b, 0x97, 0x97};
-    inline const QColor kNeutral600{0x7d, 0x79, 0x79};
+    // The design's neutral-600 is #7d7979, which is 3.9:1 on the background
+    // and 3.6:1 on surface -- below the 4.5:1 WCAG AA asks of the 10-12 px
+    // captions, hints and secondary labels that use it everywhere. Darkened
+    // to 5.0:1 / 4.6:1; it stays lighter than neutral-700, so the ramp still
+    // reads as a ramp.
+    inline const QColor kNeutral600{0x6b, 0x67, 0x67};
+    // Text that has to stay the accent (11 px errors, links, the parameters
+    // kicker): the accent itself is 3.8:1 on the background. Same red, dark
+    // enough to pass (5.2:1 / 4.8:1). Fills, borders and rules keep kAccent.
+    inline const QColor kAccentText{0xc6, 0x22, 0x00};
     inline const QColor kNeutral700{0x60, 0x5d, 0x5d};
     inline const QColor kNeutral800{0x44, 0x41, 0x41};
     inline const QColor kNeutral900{0x2d, 0x2b, 0x2b};
@@ -49,12 +58,14 @@ namespace sirius::app::theme {
     QFont heading(int px);                               // weight 800
     QFont caption();                                     // 10 px uppercase tracking
     QFont mono(int px = kMonoPx);
+    // Tabular ("tnum") figures, so every numeric readout lines up in columns.
+    QFont tabular(QFont f);
 
     // --- metrics -------------------------------------------------------------
     constexpr int kTitleBarH = 38;
     constexpr int kViewerToolbarH = 40;
     constexpr int kStatusBarH = 26;
-    constexpr int kOpsDockW = 340;
+    constexpr int kOpsDockW = 290;
     constexpr int kParamsDockW = 320;
     constexpr int kAssistantW = 330;
     constexpr int kToolStripW = 36;
@@ -65,6 +76,11 @@ namespace sirius::app::theme {
 
     // The complete application stylesheet (QSS) generated from the tokens.
     QString styleSheet();
+    // Focus rings are keyboard-only (the design's focus-visible): this
+    // filter stamps the "focusVisible" property the stylesheet keys on.
+    // applyTheme() installs it; tests that build a QApplication by hand can
+    // call it themselves.
+    void installFocusVisibleFilter(QApplication& app);
     // Loads the bundled Archivo faces, sets the default font and palette and
     // installs the stylesheet.
     void applyTheme(QApplication& app);

@@ -340,6 +340,8 @@ namespace sirius {
     std::array<Index, 3> MaskedCorrelator::paddedExtent() const noexcept { return impl_->padExt; }
 
     std::size_t MaskedCorrelator::workingBytes() const noexcept {
+        // Buffer::bytes() is overflow-checked, but these three were allocated
+        // through that same check, so their byte counts are known to fit.
         return impl_->real.bytes() + impl_->spec.bytes() + impl_->denom.bytes();
     }
 

@@ -9,7 +9,9 @@
 // spilled to the scratch directory and reloaded on demand.
 //
 // Threading: run() executes on the calling (worker) thread; every query is
-// safe to call from another thread while a run is in progress.
+// safe to call from another thread while a run is in progress. The mutex
+// guards only the entry table: a disk spill is written to its file before
+// the lock is taken, so a query blocks for a pointer swap, never for I/O.
 
 #include <cstdint>
 #include <filesystem>
@@ -27,14 +29,21 @@
 namespace sirius::app {
 
     struct StepReport {
+        // Running is only ever seen by the onStep callback, before the step
+        // starts; the reports collected by run() hold the other states.
+        enum class State { Running, Ran, Cached, Skipped, Failed };
         StepId id = 0;
         int index = -1;
-        bool ran = false;                // false when served from the cache or skipped
-        bool skipped = false;            // disabled: input passed through
+        State state = State::Running;
         double seconds = 0.0;
-        std::string note;
-        std::string error;               // non-empty when the step failed
+        std::string note;                // the operation's one-liner (Ran only)
+        std::string error;               // the message (Failed only)
+
+        bool ran() const noexcept { return state == State::Ran; }
+        bool skipped() const noexcept { return state == State::Skipped; }
+        bool failed() const noexcept { return state == State::Failed; }
     };
+    const char* toString(StepReport::State s) noexcept;   // "running" "ran" "cached" "skipped" "failed"
 
     class Executor {
     public:
@@ -49,6 +58,8 @@ namespace sirius::app {
         // Last output computed for a step, fresh or not (what the viewer shows
         // while the user edits parameters).
         std::shared_ptr<const StepOutput> lastOutput(StepId id) const;
+        // The labels of that output, without restoring a spilled array.
+        std::shared_ptr<LabelVolume> lastLabels(StepId id) const;
 
         // Output of the pipeline at step `index`, running every stale enabled
         // step from the top down to it (skipped steps pass their input on).
@@ -73,16 +84,22 @@ namespace sirius::app {
         // Spill / restore for CachePolicy::Disk (also used by tests).
         static void writeArrayFile(const std::filesystem::path& path, const Array5& a);
         static std::shared_ptr<Array5> readArrayFile(const std::filesystem::path& path);
+        // Test seam: called after a spill file is written and before the
+        // entry is published, with no lock held.
+        void setSpillObserver(std::function<void(const std::filesystem::path&)> f) { spillObserver_ = std::move(f); }
 
     private:
         struct Entry;
         std::shared_ptr<const StepOutput> load(Entry& e) const;
         void store(const Step& step, const std::string& fp, std::shared_ptr<const StepOutput> out);
         void refreshPolicies(const Pipeline& p);   // caller holds mutex_
+        void evictRecomputeExcept(StepId keep);    // caller holds mutex_
 
         std::filesystem::path scratch_;
         mutable std::mutex mutex_;
         std::unordered_map<StepId, std::unique_ptr<Entry>> entries_;
+        unsigned spillCounter_ = 0;        // touched by the running thread only
+        std::function<void(const std::filesystem::path&)> spillObserver_;
     };
 
     // Hash helper shared with the tool API (stable across runs).

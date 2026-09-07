@@ -19,9 +19,13 @@ namespace sirius::app {
         ~ParamsPanel() override;
 
         void setHelpOpen(bool open);        // accent-fills the ? button
+        // The design's 320 px as a preference, not a floor (see OpsPanel).
+        QSize sizeHint() const override;
 
     signals:
         void helpRequested(bool open);      // ? clicked (toggle)
+        void removeStepRequested(int index);
+        void runStepRequested(int index);   // "Run step": the window checks the input first
 
     protected:
         bool eventFilter(QObject* watched, QEvent* event) override;

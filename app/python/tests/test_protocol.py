@@ -1,6 +1,7 @@
-"""Tests of the SIRIUS compute worker: frame codec, and hello / model_info /
-run / cancel over a real socket. Torch cases build a tiny scripted model on
-the fly and are skipped when torch is not importable.
+"""Tests of the SIRIUS compute worker: frame codec, the hostile-frame and
+authentication rules of app/python/SECURITY.md, and hello / model_info / run /
+cancel over a real socket. Torch cases build a tiny scripted model on the fly
+and are skipped when torch is not importable.
 
     python -m unittest discover -s app/python/tests
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -85,6 +87,62 @@ class TestFraming(unittest.TestCase):
             protocol.decode_frame(frame)
 
 
+def raw_frame(header: dict, payload: bytes = b"", header_len: int = -1, payload_len: int = -1) -> bytearray:
+    """A frame built by hand, so a test can announce lengths that do not match
+    what it actually sends."""
+    hb = json.dumps(header).encode("utf-8")
+    return bytearray(struct.pack("<I", len(hb) if header_len < 0 else header_len) + hb +
+                     struct.pack("<Q", len(payload) if payload_len < 0 else payload_len) + payload)
+
+
+class TestHostileFrames(unittest.TestCase):
+    """Every length in a frame comes from the peer. None of them may size an
+    allocation or index the payload before it has been checked -- the same
+    cases the C++ decoder is tested against in tests/test_app_rpc.cpp."""
+
+    def test_caps_match_the_cpp_decoder(self):
+        self.assertEqual(protocol.MAX_HEADER, 64 << 20)
+        self.assertEqual(protocol.MAX_PAYLOAD, 32 << 30)
+        self.assertLessEqual(protocol.MAX_PREAUTH_FRAME, 64 << 10)
+
+    def test_an_oversize_header_is_refused(self):
+        frame = raw_frame({"id": 1}, header_len=protocol.MAX_HEADER + 1)
+        with self.assertRaises(protocol.ProtocolError) as e:
+            protocol.decode_frame(frame)
+        self.assertIn("header length", str(e.exception))
+
+    def test_an_oversize_payload_is_refused_before_it_is_waited_for(self):
+        frame = raw_frame({"id": 1}, payload_len=protocol.MAX_PAYLOAD + 1)
+        with self.assertRaises(protocol.ProtocolError) as e:
+            protocol.decode_frame(frame)
+        self.assertIn("payload length", str(e.exception))
+        # ... and a payload length that would wrap a sum on the C++ side
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.decode_frame(raw_frame({"id": 1}, payload_len=(1 << 64) - 17))
+
+    def test_a_tensor_reaching_past_the_payload_is_refused(self):
+        header = {"id": 1, "tensors": [{"name": "x", "dtype": "float32", "shape": [4], "offset": 8, "nbytes": 16}]}
+        with self.assertRaises(protocol.ProtocolError) as e:
+            protocol.decode_frame(raw_frame(header, b"\x00" * 16))
+        self.assertIn("do not fit the payload", str(e.exception))
+
+    def test_a_tensor_offset_that_would_wrap_is_refused(self):
+        header = {"id": 1, "tensors": [{"name": "x", "dtype": "float32", "shape": [1],
+                                        "offset": (1 << 64) - 3, "nbytes": 4}]}
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.decode_frame(raw_frame(header, b"\x00" * 4))
+        header["tensors"][0].update({"offset": -8, "nbytes": 4})
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.decode_frame(raw_frame(header, b"\x00" * 4))
+
+    def test_an_absurd_shape_product_is_refused_before_it_sizes_anything(self):
+        header = {"id": 1, "tensors": [{"name": "x", "dtype": "float32",
+                                        "shape": [1 << 20, 1 << 20, 1 << 20, 1 << 20], "offset": 0, "nbytes": 4}]}
+        with self.assertRaises(protocol.ProtocolError) as e:
+            protocol.decode_frame(raw_frame(header, b"\x00" * 4))
+        self.assertIn("shape", str(e.exception))
+
+
 class _Client:
     """Minimal blocking client used by the socket tests."""
 
@@ -115,8 +173,8 @@ class _Client:
                 continue
             return progress, header, tensors_out
 
-    def hello(self):
-        _, header, _ = self.call("hello", {"token": self.token})
+    def hello(self, version=protocol.PROTOCOL_VERSION):
+        _, header, _ = self.call("hello", {"token": self.token, "protocol_version": version})
         return header
 
     def close(self):
@@ -139,6 +197,33 @@ class ServerTestCase(unittest.TestCase):
         cls.thread.join(timeout=5)
 
 
+class TestListenerRules(unittest.TestCase):
+    """Reaching the port is the whole of the authorisation model, so a port the
+    network can reach must at least require the token (SECURITY.md)."""
+
+    def test_a_public_bind_without_a_token_refuses_to_start(self):
+        for host in ("0.0.0.0", "", "192.0.2.7"):
+            with self.assertRaises(ValueError) as e:
+                WorkerServer(host, 0, "", "cpu").bind()
+            self.assertIn("--token", str(e.exception))
+
+    def test_a_public_bind_with_a_token_is_allowed(self):
+        server = WorkerServer("0.0.0.0", 0, "t", "cpu")
+        try:
+            self.assertGreater(server.bind(), 0)
+        finally:
+            server.close()
+
+    def test_loopback_without_a_token_is_allowed_but_warns(self):
+        server = WorkerServer("127.0.0.1", 0, "", "cpu")
+        try:
+            with self.assertLogs("sirius_worker", level="WARNING") as logs:
+                self.assertGreater(server.bind(), 0)
+            self.assertTrue(any("no token" in line for line in logs.output), logs.output)
+        finally:
+            server.close()
+
+
 class TestServer(ServerTestCase):
     def test_hello_reports_capabilities_and_rejects_bad_token(self):
         c = _Client(self.port, self.token)
@@ -146,6 +231,7 @@ class TestServer(ServerTestCase):
             header = c.hello()
             self.assertEqual(header["type"], "result")
             caps = header["result"]
+            self.assertEqual(caps["protocol_version"], protocol.PROTOCOL_VERSION)
             self.assertIn("run:torch_segment", caps["methods"])
             self.assertIn("run:einsum", caps["methods"])
             self.assertIn("model_info", caps["methods"])
@@ -160,6 +246,57 @@ class TestServer(ServerTestCase):
             self.assertIn("token", header["message"])
         finally:
             bad.close()
+
+    def test_a_client_speaking_another_protocol_version_is_refused(self):
+        for version, fix in ((protocol.PROTOCOL_VERSION + 6, "update sirius_worker"),
+                             (None, "update the SIRIUS application")):
+            c = _Client(self.port, self.token)
+            try:
+                if version is None:   # a client predating the handshake sends no field at all
+                    _, header, _ = c.call("hello", {"token": self.token})
+                else:
+                    header = c.hello(version)
+                self.assertEqual(header["type"], "error", header)
+                self.assertIn(f"version {protocol.PROTOCOL_VERSION}", header["message"])
+                self.assertIn(f"version {version if version is not None else 0}", header["message"])
+                self.assertIn(fix, header["message"])
+            finally:
+                c.close()
+
+    def test_an_oversize_frame_before_hello_is_refused_without_reading_it(self):
+        # 1 MiB is far below MAX_HEADER but far above what a hello may cost, so
+        # only the pre-authentication cap can refuse it -- and it does so on the
+        # length prefix alone, before the announced bytes are read.
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=30)
+        try:
+            sock.sendall(struct.pack("<I", 1 << 20))
+            header, _ = protocol.read_frame(sock)
+            self.assertEqual(header["type"], "error")
+            self.assertIn(str(protocol.MAX_PREAUTH_FRAME), header["message"])
+        finally:
+            sock.close()
+
+    def test_an_oversize_payload_before_hello_is_refused(self):
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=30)
+        try:
+            head = json.dumps({"id": 1, "type": "request", "method": "hello",
+                               "params": {"token": self.token}}).encode("utf-8")
+            sock.sendall(struct.pack("<I", len(head)) + head + struct.pack("<Q", 1 << 30))
+            header, _ = protocol.read_frame(sock)
+            self.assertEqual(header["type"], "error")
+            self.assertIn("payload length", header["message"])
+        finally:
+            sock.close()
+
+    def test_install_is_refused_without_allow_install(self):
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("install", {"family": "cellpose"})
+            self.assertEqual(header["type"], "error", header)
+            self.assertIn("--allow-install", header["message"])
+        finally:
+            c.close()
 
     def test_requests_before_hello_are_refused(self):
         c = _Client(self.port, self.token)
@@ -206,6 +343,38 @@ class TestServer(ServerTestCase):
             self.assertEqual(header["type"], "error")
         finally:
             c.close()
+
+
+class TestOneJobAtATime(unittest.TestCase):
+    def test_a_second_job_while_one_is_in_flight_is_refused_as_busy(self):
+        server = WorkerServer("127.0.0.1", 0, "t", "cpu")
+        release = threading.Event()
+        lock = threading.Lock()
+        sent = []
+
+        def send(header, tensors=None):
+            with lock:
+                sent.append(header)
+
+        def slow(progress, cancel):
+            release.wait(30)
+            return {}, None
+
+        server._start_job(1, "slow", send, slow)
+        try:
+            server._start_job(2, "slow", send, slow)   # the reader thread stays live and answers straight away
+            with lock:
+                frames = list(sent)
+            self.assertEqual(len(frames), 1, frames)
+            self.assertEqual(frames[0]["id"], 2)
+            self.assertEqual(frames[0]["type"], "error")
+            self.assertIn("busy", frames[0]["message"])
+            self.assertIn("1", frames[0]["message"])
+        finally:
+            release.set()
+        job = server._current_job()
+        if job is not None:
+            job["thread"].join(timeout=30)
 
 
 @unittest.skipUnless(HAVE_TORCH, "torch not importable")

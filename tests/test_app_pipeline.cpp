@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/array_source.hpp"
+#include "core/cancel.hpp"
 #include "core/executor.hpp"
 #include "core/history.hpp"
 #include "core/pipeline.hpp"
@@ -127,6 +128,53 @@ namespace {
         }
     };
 
+    // Gives up as soon as it is asked to, by throwing the cancellation type
+    // rather than a message the executor would have to recognise by string.
+    struct CancellingOp final : Operation {
+        OpInfo info_;
+        CancellingOp() {
+            info_.kind = "test_cancel";
+            info_.name = "Cancel";
+            info_.group = "Intensity";
+            info_.kindLabel = "INTENSITY";
+        }
+        const OpInfo& info() const noexcept override { return info_; }
+        StepOutput run(const StepInput&, const ParamSet&, const StepContext&) const override {
+            throw CancelledError();
+        }
+    };
+
+    // Produces a label volume of its own: one small ball at the centre,
+    // with the id the "label" parameter names, so a re-run with another id
+    // is visibly a different volume.
+    struct LabelOp final : Operation {
+        static inline std::atomic<int> runs{0};
+        OpInfo info_;
+        LabelOp() {
+            info_.kind = "test_labels";
+            info_.name = "Label";
+            info_.group = "Segment";
+            info_.kindLabel = "SEGMENT";
+            info_.producesLabels = true;
+            info_.defaultCache = CachePolicy::Memory;
+            info_.params = {intParam("label", "Label", 1)};
+        }
+        const OpInfo& info() const noexcept override { return info_; }
+        StepOutput run(const StepInput& in, const ParamSet& p, const StepContext&) const override {
+            ++runs;
+            const Dims5 d = in.meta.dims;
+            auto labels = std::make_shared<LabelVolume>(d.t, d.z, d.y, d.x);
+            labels->paint(0, d.z / 2, d.y / 2, d.x / 2, 1.5, 0, static_cast<std::uint32_t>(p.getInt("label")));
+            labels->recomputeStats(0);
+            StepOutput o;
+            o.meta = in.meta;
+            o.array = in.materialize();
+            o.labels = labels;
+            o.note = "labelled";
+            return o;
+        }
+    };
+
     void registerTestOps() {
         static bool done = false;
         if (done) return;
@@ -136,6 +184,8 @@ namespace {
         registerOperation(std::make_unique<MaxZOp>());
         registerOperation(std::make_unique<FailingOp>());
         registerOperation(std::make_unique<SlowOp>());
+        registerOperation(std::make_unique<CancellingOp>());
+        registerOperation(std::make_unique<LabelOp>());
     }
 
     std::shared_ptr<MemorySource> syntheticSource(Index c = 2, Index t = 3, Index z = 4, Index y = 8, Index x = 8) {
@@ -174,6 +224,32 @@ namespace {
         void historyChanged() override { ++history; }
         void runStateChanged() override { ++run; }
     };
+
+    Index countLabel(const LabelVolume& v, Index t, std::uint32_t id) {
+        Index n = 0;
+        const std::uint32_t* p = v.volume(t);
+        for (Index i = 0; i < v.volumeSize(); ++i)
+            if (p[i] == id) ++n;
+        return n;
+    }
+
+    bool logContains(const Workbench& wb, const std::string& text) {
+        for (const std::string& line : wb.log())
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    }
+
+    // One small brush dab of `id` on the viewed step, as one undo entry.
+    void paintOne(Workbench& wb, Index z, Index y, Index x, std::uint32_t id) {
+        ViewState s = wb.viewState();
+        s.brushPx = 2;
+        s.paint3d = false;
+        s.selectedLabel = id;
+        wb.setViewState(s);
+        wb.beginPaintStroke();
+        wb.paintLabels(z, y, x, false);
+        wb.endPaintStroke();
+    }
 
     std::shared_ptr<RunJob> runSync(Workbench& wb, int target = -1) {
         auto job = wb.createRun(target);
@@ -300,9 +376,9 @@ TEST_CASE("Executor caches per fingerprint and invalidates downstream only", "[a
     CHECK(out->meta.dims.z == 1);
     CHECK(ScaleOp::runs == 1);
     REQUIRE(reports.size() == 3);
-    CHECK(reports[0].note == "cached");
-    CHECK(reports[1].ran);
-    CHECK(reports[2].ran);
+    CHECK(reports[0].state == StepReport::State::Cached);
+    CHECK(reports[1].ran());
+    CHECK(reports[2].ran());
     // input 0..96 scaled by 2, max over z
     CHECK(out->array->at(0, 0, 0, 0, 0) >= 0.0f);
 
@@ -310,8 +386,8 @@ TEST_CASE("Executor caches per fingerprint and invalidates downstream only", "[a
         reports.clear();
         ex.runAll(p, ctx, &reports);
         CHECK(ScaleOp::runs == 1);
-        CHECK(reports[1].note == "cached");
-        CHECK(reports[2].note == "cached");
+        CHECK(reports[1].state == StepReport::State::Cached);
+        CHECK(reports[2].state == StepReport::State::Cached);
     }
     SECTION("editing step 1 invalidates 1 and 2, not 0") {
         ParamSet q = p.at(1).params;
@@ -330,7 +406,7 @@ TEST_CASE("Executor caches per fingerprint and invalidates downstream only", "[a
         CHECK_FALSE(ex.isFresh(p, 2));
         reports.clear();
         auto o = ex.runAll(p, ctx, &reports);
-        CHECK(reports[1].skipped);
+        CHECK(reports[1].skipped());
         CHECK(ScaleOp::runs == 1);
         // max over z of the unscaled input
         CHECK(o->meta.dims.z == 1);
@@ -396,6 +472,143 @@ TEST_CASE("Executor caches per fingerprint and invalidates downstream only", "[a
         CHECK(b->dims() == a.dims());
         CHECK(b->at(0, 1, 2, 3, 4) == a.at(0, 1, 2, 3, 4));
     }
+}
+
+TEST_CASE("StepReport::State says what happened to each step", "[app][executor]") {
+    registerTestOps();
+    Scratch scratch;
+    Executor ex(scratch.dir / "cache");
+    Pipeline p;
+    p.add("test_scale");      // 1: runs, then is served from the cache
+    p.add("test_maxz");       // 2: disabled below
+    p.add("test_fail");       // 3
+    p.setEnabled(2, false);
+    p.setCache(1, CachePolicy::Memory);
+
+    auto src = syntheticSource(1, 1, 2, 4, 4);
+    auto load = std::make_shared<StepOutput>();
+    load->meta = src->meta();
+    load->source = src;
+    ex.seed(p, 0, load);
+
+    StepContext ctx;
+    std::vector<StepReport> reports;
+    CHECK_THROWS(ex.runAll(p, ctx, &reports));
+    REQUIRE(reports.size() == 4);
+    CHECK(reports[0].state == StepReport::State::Cached);   // the seeded Load
+    CHECK(reports[1].state == StepReport::State::Ran);
+    CHECK(reports[1].note == "scaled");                     // the operation's own text
+    CHECK(reports[1].seconds >= 0.0);
+    CHECK(reports[2].state == StepReport::State::Skipped);
+    CHECK(reports[3].state == StepReport::State::Failed);
+    CHECK(reports[3].error == "boom");
+    CHECK(reports[3].failed());
+    // ids, not indices, are what the workbench maps reports back with
+    CHECK(reports[1].id == p.at(1).id);
+
+    reports.clear();
+    CHECK_THROWS(ex.runAll(p, ctx, &reports));
+    CHECK(reports[1].state == StepReport::State::Cached);
+    CHECK(reports[1].note.empty());                         // no text for a cache hit
+
+    CHECK(std::string(toString(StepReport::State::Running)) == "running");
+    CHECK(std::string(toString(StepReport::State::Ran)) == "ran");
+    CHECK(std::string(toString(StepReport::State::Cached)) == "cached");
+    CHECK(std::string(toString(StepReport::State::Skipped)) == "skipped");
+    CHECK(std::string(toString(StepReport::State::Failed)) == "failed");
+}
+
+TEST_CASE("Cancellation is recognised by type, not by its message", "[app][executor][cancel]") {
+    registerTestOps();
+    CHECK(isCancellation(CancelledError()));
+    CHECK(isCancellation(CancelledError("cancelled: the user asked")));
+    CHECK(isCancellation(std::runtime_error("cancelled")));   // the documented fallback
+    CHECK_FALSE(isCancellation(std::runtime_error("boom")));
+    CHECK_FALSE(isCancellation(std::runtime_error("cancelled the run")));
+
+    Scratch scratch;
+    Executor ex(scratch.dir / "cache");
+    Pipeline p;
+    p.add("test_cancel");
+    auto src = syntheticSource(1, 1, 2, 4, 4);
+    auto load = std::make_shared<StepOutput>();
+    load->meta = src->meta();
+    load->source = src;
+    ex.seed(p, 0, load);
+
+    StepContext ctx;
+    std::vector<StepReport> reports;
+    // A cancelled step is not blamed: the error keeps its type and is not
+    // wrapped with the step's name the way a failure would be.
+    CHECK_THROWS_AS(ex.runAll(p, ctx, &reports), CancelledError);
+    CHECK(reports.size() == 1);   // only the Load report, none for the cancelled step
+
+    SECTION("a step that gives up through the context is cancellation too") {
+        Pipeline q;
+        q.add("test_slow");
+        Executor ex2(scratch.dir / "cache2");
+        ex2.seed(q, 0, load);
+        StepContext c2;
+        c2.cancelled = [] { return true; };
+        CHECK_THROWS_AS(ex2.runAll(q, c2), CancelledError);
+    }
+}
+
+TEST_CASE("A disk spill is written before the entry is published", "[app][executor][spill]") {
+    registerTestOps();
+    Scratch scratch;
+    const auto cacheDir = scratch.dir / "cache";
+    Executor ex(cacheDir);
+    Pipeline p;
+    const StepId scaleId = p.add("test_scale");
+    p.setCache(1, CachePolicy::Disk);
+
+    auto src = syntheticSource(1, 1, 2, 8, 8);
+    auto load = std::make_shared<StepOutput>();
+    load->meta = src->meta();
+    load->source = src;
+    ex.seed(p, 0, load);
+
+    StepContext ctx;
+    int observed = 0;
+    std::filesystem::path firstFile;
+    ex.setSpillObserver([&](const std::filesystem::path& file) {
+        ++observed;
+        // The file is complete here, and the observer runs with no lock
+        // held: querying the executor from this callback answers rather
+        // than waiting for the multi-gigabyte write we have just finished.
+        CHECK(std::filesystem::exists(file));
+        CHECK(std::filesystem::file_size(file) > 0);
+        auto before = ex.lastOutput(scaleId);
+        if (observed == 1) {
+            CHECK_FALSE(before);         // nothing published yet for this step
+            firstFile = file;
+        } else {
+            REQUIRE(before);             // still the previous entry
+            CHECK(before->array->at(0, 0, 0, 0, 1) == 2.0f);
+            CHECK(std::filesystem::exists(firstFile));   // removed only after the swap
+        }
+        CHECK(ex.cachedBytes() >= 0u);
+    });
+    ex.run(p, 1, ctx);
+    CHECK(observed == 1);
+    auto out = ex.cached(p, 1);
+    REQUIRE(out);
+    CHECK(out->array->at(0, 0, 0, 0, 1) == 2.0f);
+
+    // Storing the step again publishes a new file and drops the old one.
+    ParamSet q = p.at(1).params;
+    q.set("factor", 3.0);
+    p.setParams(1, q);
+    out.reset();
+    ex.run(p, 1, ctx);
+    CHECK(observed == 2);
+    CHECK_FALSE(std::filesystem::exists(firstFile));
+    int spills = 0;
+    for (const auto& e : std::filesystem::directory_iterator(cacheDir))
+        if (e.path().extension() == ".sir5") ++spills;
+    CHECK(spills == 1);
+    CHECK(ex.cached(p, 1)->array->at(0, 0, 0, 0, 1) == 3.0f);
 }
 
 // --- Workbench --------------------------------------------------------------------
@@ -645,6 +858,225 @@ TEST_CASE("Painting labels on a disk-cached step edits the volume the viewer sho
     CHECK_FALSE(wb.viewState().soloLabel);
 }
 
+TEST_CASE("Labels carried through a step are copied on the first edit", "[app][workbench][labels]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 16, 16));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_labels");   // 1: makes its own labels
+    wb.addStep("test_scale");    // 2: carries its input's labels through
+    REQUIRE(runSync(wb)->succeeded());
+
+    auto upstream = wb.output(1)->labels;
+    auto downstream = wb.output(2)->labels;
+    REQUIRE(upstream);
+    REQUIRE(downstream);
+    CHECK(upstream != downstream);                                 // each output owns its volume
+    CHECK(upstream->view().data() == downstream->view().data());   // over the same voxels, for now
+    CHECK(upstream->sharesVoxels());
+    CHECK(downstream->sharesVoxels());
+    const std::size_t sharedBytes = wb.cachedBytes();
+
+    wb.view(2);
+    paintOne(wb, 1, 2, 2, 9);
+    CHECK(downstream->at(0, 1, 2, 2) == 9);
+    CHECK(upstream->at(0, 1, 2, 2) == 0);        // the cached input is left alone
+    CHECK(upstream->view().data() != downstream->view().data());
+    CHECK_FALSE(upstream->sharesVoxels());
+    CHECK_FALSE(downstream->sharesVoxels());
+    CHECK(wb.output(1)->labels->at(0, 1, 2, 2) == 0);
+    CHECK(wb.cachedBytes() > sharedBytes);       // two label volumes now, not one shared
+}
+
+TEST_CASE("Label statistics stay in step with the voxels", "[app][workbench][labels]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 16, 16));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_labels");
+    REQUIRE(runSync(wb)->succeeded());
+    wb.view(1);
+    auto labels = wb.viewedLabels();
+    REQUIRE(labels);
+    REQUIRE(labels->statsOf(1));
+    const Index painted = labels->statsOf(1)->voxels;
+    CHECK(painted == countLabel(*labels, 0, 1));
+
+    SECTION("a stroke updates them once, at its end") {
+        ViewState s = wb.viewState();
+        s.brushPx = 2;
+        s.paint3d = false;
+        s.selectedLabel = 1;
+        wb.setViewState(s);
+        wb.beginPaintStroke();
+        wb.paintLabels(2, 8, 11, false);
+        wb.paintLabels(2, 8, 12, false);
+        CHECK(labels->statsOf(1)->voxels == painted);   // not per mouse move
+        wb.endPaintStroke();
+        const LabelStats* st = labels->statsOf(1);
+        REQUIRE(st);
+        CHECK(st->voxels > painted);
+        CHECK(st->voxels == countLabel(*labels, 0, 1));
+        CHECK(st->bbox[5] == 14);                       // the stroke widened the box
+        // the review table and the viewer agree about where the label is
+        CHECK(wb.centreOnLabel(1));
+        CHECK(wb.viewState().cx == (st->bbox[4] + st->bbox[5]) / 2);
+        CHECK(wb.viewState().cy == (st->bbox[2] + st->bbox[3]) / 2);
+    }
+    SECTION("filling recolours the label and both entries follow") {
+        ViewState s = wb.viewState();
+        s.selectedLabel = 5;
+        wb.setViewState(s);
+        wb.fillLabel(2, 8, 8);
+        CHECK(labels->statsOf(1) == nullptr);           // nothing is labelled 1 any more
+        const LabelStats* five = labels->statsOf(5);
+        REQUIRE(five);
+        CHECK(five->voxels == painted);
+        CHECK(five->voxels == countLabel(*labels, 0, 5));
+        CHECK(wb.centreOnLabel(5));
+        CHECK_FALSE(wb.centreOnLabel(1));
+    }
+    SECTION("deleting drops the entry, undo brings it back") {
+        wb.deleteLabel(1);
+        CHECK(labels->statsOf(1) == nullptr);
+        CHECK(countLabel(*labels, 0, 1) == 0);
+        wb.undo();
+        REQUIRE(labels->statsOf(1));
+        CHECK(labels->statsOf(1)->voxels == painted);
+        CHECK(countLabel(*labels, 0, 1) == painted);
+    }
+}
+
+TEST_CASE("Undoing a label edit after the step was re-run is a logged no-op", "[app][workbench][labels]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 16, 16));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_labels");
+    REQUIRE(runSync(wb)->succeeded());
+    wb.view(1);
+    paintOne(wb, 1, 2, 2, 9);
+    auto edited = wb.viewedLabels();
+    REQUIRE(edited);
+    CHECK(edited->at(0, 1, 2, 2) == 9);
+
+    // The step runs again from scratch: its output, and with it its label
+    // volume, is a new object and the undo closure has nothing to undo.
+    wb.clearCache(1);
+    REQUIRE(runSync(wb)->succeeded());
+    auto fresh = wb.viewedLabels();
+    REQUIRE(fresh);
+    CHECK(fresh != edited);
+    CHECK(fresh->at(0, 1, 2, 2) == 0);
+
+    const std::size_t lines = wb.log().size();
+    wb.undo();
+    CHECK(fresh->at(0, 1, 2, 2) == 0);    // the fresh labels are not rewritten
+    CHECK(edited->at(0, 1, 2, 2) == 9);   // nor is the orphaned volume touched
+    CHECK(wb.log().size() > lines);
+    CHECK(logContains(wb, "recomputed since"));
+    wb.redo();
+    CHECK(fresh->at(0, 1, 2, 2) == 0);
+    CHECK(edited->at(0, 1, 2, 2) == 9);
+}
+
+TEST_CASE("Edits are refused while a run is active", "[app][workbench][run]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 2, 8, 8));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_scale");
+    wb.addStep("test_slow");
+    CHECK(wb.canEdit());
+
+    auto job = wb.createRun();
+    REQUIRE(job);
+    CHECK(wb.running());
+    CHECK_FALSE(wb.canEdit());
+    std::thread worker([&] { job->execute(); });
+
+    const int steps = wb.pipeline().size();
+    const std::string name = wb.pipeline().at(1).name;
+    const std::size_t lines = wb.log().size();
+    CHECK(wb.addStep("test_scale") == 0);
+    wb.removeStep(1);
+    wb.setStepParam(1, "factor", 11.0);
+    wb.setStepEnabled(1, false);
+    CHECK_FALSE(wb.moveStep(1, 1));
+    CHECK(wb.duplicateStep(1) == 0);
+    wb.renameStep(1, "renamed");
+    wb.setStepCache(1, CachePolicy::Disk);
+    wb.clearAllCaches();
+    wb.undo();
+    CHECK(wb.pipeline().size() == steps);
+    CHECK(wb.pipeline().at(1).name == name);
+    CHECK(wb.pipeline().at(1).params.getDouble("factor") == 2.0);
+    CHECK(wb.pipeline().at(1).enabled);
+    CHECK(wb.pipeline().at(1).cache != CachePolicy::Disk);
+    CHECK(wb.log().size() > lines);   // each refusal says why
+    CHECK(logContains(wb, "while a run is in progress"));
+    CHECK_THROWS_AS(wb.openDataset("nowhere.tif"), std::runtime_error);
+
+    // selection and view state are not edits: they stay allowed
+    wb.select(1);
+    CHECK(wb.selectedIndex() == 1);
+    wb.view(0);
+    CHECK(wb.viewedIndex() == 0);
+    wb.setZ(1);
+    CHECK(wb.viewState().z == 1);
+
+    wb.cancelRun();
+    worker.join();
+    wb.finishRun(job);
+    CHECK(wb.canEdit());
+    CHECK(job->wasCancelled());
+    CHECK(wb.addStep("test_scale") != 0);
+}
+
+TEST_CASE("A run job publishes its results only once it has finished", "[app][workbench][run]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 2, 4, 4));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_scale");
+
+    auto job = wb.createRun();
+    REQUIRE(job);
+    CHECK_FALSE(job->finished());
+    CHECK_FALSE(job->succeeded());
+    CHECK_THROWS_AS(job->reports(), std::logic_error);
+    CHECK_THROWS_AS(job->output(), std::logic_error);
+    CHECK_THROWS_AS(job->error(), std::logic_error);
+    CHECK_THROWS_AS(job->seconds(), std::logic_error);
+    CHECK_THROWS_AS(job->wasCancelled(), std::logic_error);
+    job->execute();
+    CHECK(job->finished());
+    CHECK_NOTHROW(job->reports());
+    CHECK(job->succeeded());
+    CHECK_FALSE(job->wasCancelled());
+    CHECK(job->output());
+    wb.finishRun(job);
+
+    SECTION("a job that never executed is folded back as abandoned") {
+        auto second = wb.createRun();
+        REQUIRE(second);
+        wb.finishRun(second);
+        CHECK_FALSE(wb.running());
+        CHECK(logContains(wb, "abandoned"));
+        CHECK(second->cancelled());
+    }
+}
+
 TEST_CASE("Workbench loads pipelines and the example without losing the dataset", "[app][workbench]") {
     registerTestOps();
     Scratch scratch;
@@ -766,6 +1198,53 @@ TEST_CASE("History merges by key and clears redo on push", "[app][history]") {
     h.push(cmd(1, 5));
     CHECK_FALSE(h.canRedo());
     CHECK(h.undoLabel() == "1→5");
+
+    SECTION("mergesWith is the single source of truth for what continues a group") {
+        History g;
+        CHECK_FALSE(g.mergesWith("k"));
+        g.push(cmd(0, 1, "k"));
+        CHECK(g.mergesWith("k"));
+        CHECK_FALSE(g.mergesWith(""));      // an empty key never merges
+        CHECK_FALSE(g.mergesWith("other"));
+        g.push(cmd(1, 2));                  // any other entry ends the group
+        CHECK_FALSE(g.mergesWith("k"));
+        g.undo();
+        CHECK_FALSE(g.mergesWith("k"));
+    }
+}
+
+TEST_CASE("A drag interrupted by a label edit starts a new undo group", "[app][workbench][history]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 16, 16));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_labels");   // 1
+    wb.addStep("test_scale");    // 2
+    REQUIRE(runSync(wb)->succeeded());
+    wb.view(2);
+    REQUIRE(wb.pipeline().at(2).params.getDouble("factor") == 2.0);
+
+    // A drag: consecutive edits with the same key are one entry that undoes
+    // to the value the drag started from.
+    const std::size_t entries = wb.history().size();
+    wb.setStepParam(2, "factor", 3.0, "drag");
+    wb.setStepParam(2, "factor", 4.0, "drag");
+    CHECK(wb.history().size() == entries + 1);
+
+    // A label edit goes onto the history without a merge key: the drag that
+    // follows must undo to 4, not back past the label edit to 2.
+    paintOne(wb, 1, 2, 2, 9);
+    wb.setStepParam(2, "factor", 5.0, "drag");
+    CHECK(wb.pipeline().at(2).params.getDouble("factor") == 5.0);
+    wb.undo();
+    CHECK(wb.pipeline().at(2).params.getDouble("factor") == 4.0);
+    wb.undo();   // the label edit
+    CHECK(wb.viewedLabels()->at(0, 1, 2, 2) == 0);
+    CHECK(wb.pipeline().at(2).params.getDouble("factor") == 4.0);
+    wb.undo();   // the drag
+    CHECK(wb.pipeline().at(2).params.getDouble("factor") == 2.0);
 }
 
 TEST_CASE("A live-preview step is displayed on its input until it runs", "[app][workbench][preview]") {
