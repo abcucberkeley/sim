@@ -11,7 +11,9 @@ Slurm job reached through an SSH tunnel (see `slurm/README.md`).
 No third-party dependency is needed for the service itself: the standard
 library plus `numpy`. `torch` enables `model_info` / `torch_segment` /
 `seg`, `scipy` the label post-processing and resampling, the `sirius`
-package SIM reconstruction.
+package SIM reconstruction, `huggingface_hub` the model hub methods,
+`onnxruntime` ONNX models, and `cellpose` / `micro_sam` the model
+families (see *Segmentation models* below).
 
 ```
 python -m sirius_worker [--host 127.0.0.1] [--port 0] [--token T] [--device auto|cuda|cpu] [--log-level INFO]
@@ -55,7 +57,11 @@ uint64 int64`.
 | --- | --- | --- |
 | `hello` | `{token}` | `result`: `{version, methods, cuda, device, hostname, python, torch, sirius, workbench}` |
 | `ping` | | `result`: `{time}` |
-| `model_info` | `{path}` | `result`: `{format, input_shape, output_shape, dtype, size_bytes, channels_out}` |
+| `model_info` | `{spec}` (or `path`) | `result`: `{format, input_shape, output_shape, dtype, size_bytes, channels_out}` for a file; `{format: "cellpose" \| "micro-sam", available, install_hint, returns: "labels"}` for a model family; `{format: "hf", cached: false, repo, file}` for an `hf:` file not downloaded yet |
+| `hub_search` | `{query, limit?, filter?}` | `result`: `{models: [{id, downloads, likes, tags, last_modified, pipeline_tag}]}` (Hugging Face, sorted by downloads) |
+| `hub_files` | `{repo}` | `result`: `{repo, files: [{name, size, model}]}` (`model`: a `.pt` / `.pts` / `.pth` / `.onnx`) |
+| `hub_download` | `{repo, file?}` | `progress`\* then `result`: `{path, bytes, spec}`; cancellable like a run; without `file` the repository's single model file |
+| `models_list` | | `result`: `{cache, models: [{spec, path, bytes, repo, file}]}` -- the local model cache |
 | `run` | `{kind, params, meta?}` + tensors | `progress`\* (`{fraction, message}`) then `result` + tensors, or `error` |
 | `cancel` | `{id}` | `result`: `{cancelled: id}`; the cancelled run replies `error` `"cancelled"` |
 | `shutdown` | | `result` `{}` and the worker exits |
@@ -69,7 +75,7 @@ honoured between tiles / volumes. Every `result` carries `seconds`.
 
 | kind | input tensors | output tensors | result |
 | --- | --- | --- | --- |
-| `torch_segment` | `input` (z, y, x) float32 | `prob` (C, z, y, x) float32 | `{channels, device}` |
+| `torch_segment` | `input` (z, y, x) float32 | `prob` (C, z, y, x) float32 -- or, for a model family, `labels` (z, y, x) uint32 and optionally `prob` (1, z, y, x) | `{channels, device}` / `{labels, format, model, device}` |
 | `sim` | `input` (sections, y, x) or (c, t, sections, y, x) float32 | `output` (same rank, zoomed) | `{meta, info: {fits, wiener, ...}}` |
 | any other kind | `input` (c, t, z, y, x) float32, optional `labels` (t, z, y, x) uint32 | `output` (c', t', z', y', x') float32, optional `labels`, `prob` | `{meta, info}` |
 
@@ -82,11 +88,15 @@ honoured between tiles / volumes. Every `result` carries `seconds`.
 below are canonical (the library accepts a few aliases, see the docstrings
 in `workbench.py`).
 
-* `torch_segment`: `model` (path on the worker's host), `tile` [z, y, x],
+* `torch_segment`: `model` (a model spec, below), `tile` [z, y, x],
   `overlap` (int, or [z, y, x]), `normalize` (percentile 1..99.9 → 0..1,
   default true), `activation` (`auto` | `sigmoid` | `softmax` | `none`),
   `pad_to` (multiple the tile is padded to). TorchScript models take
   (1, 1, z, y, x) float32 and return (1, C, z, y, x); ONNX via `onnxruntime`.
+  Cellpose accepts `diameter`, `do_3d` (default: 3D for stacks, else
+  per-plane with `stitch_threshold` 0.5), `anisotropy`, `flow_threshold`,
+  `cellprob_threshold`; micro-SAM `mode` (`3D` | `2D`, per plane), `amg`
+  (the automatic-mask-generator instead of the decoder), `checkpoint`.
 * `seg` (= `torch_segment` + post-processing, labels out): the above plus
   `channel`, `threshold`, `post` (`Watershed on boundary channel` |
   `Connected components` | `None`), `fg_channel`, `boundary_channel`,
@@ -113,9 +123,34 @@ Kinds the Python side does not implement (`decon`, `deskew`, `volrec`,
 `stitch`, `register`, `label_cleanup`) are reported as unsupported; the
 application runs those natively.
 
+## Segmentation models
+
+The `model` of `torch_segment` / `seg` (the application's Torch
+segmentation step, whose **Hub…** button opens a browser for all of these)
+is a *spec* resolved by `sirius_worker/models.py`:
+
+| spec | what runs | needs |
+| --- | --- | --- |
+| `/path/model.pt` (`.pts`, `.pth`, `.onnx`) | the file, tile-wise, probabilities out | `torch` (`onnxruntime` for ONNX) |
+| `hf:<owner>/<repo>[:<file>]` | the file downloaded once from Hugging Face into the cache; without `<file>` the repository must hold exactly one model file | `huggingface_hub` |
+| `cellpose:<model>` -- `cyto3`, `nuclei`, `cyto2`, ... or a path / `hf:` spec of a custom Cellpose model | `cellpose.models.CellposeModel`, 3D through `do_3D` or per-plane stitching; instance labels out | `pip install cellpose` |
+| `microsam:<model_type>` -- `vit_b_lm`, `vit_l_lm`, `vit_t_lm`, `vit_b_em_organelles`, ... | micro-SAM's automatic instance segmentation, per plane or with its 3D linking; instance labels out | `conda install -c conda-forge micro_sam` |
+
+The cache is `$SIRIUS_MODEL_CACHE` or `~/.sirius/models`
+(`hf/<owner>--<repo>/<file>` for downloads); `models_list` reports it. A
+missing package is reported by `model_info` (`available: false` with an
+`install_hint`) and by `run` as a `NotAvailable` error naming the `pip
+install`; the worker itself starts without any of them. The model
+families skip the application's threshold / watershed stage: their labels
+go straight into the label volume (`min_voxels` still applies, and a
+probability map, when the family provides one, gives the per-label
+confidence). `sirius.workbench.load_model` / `model_info` accept the same
+specs.
+
 ## Tests
 
 ```
 python -m unittest discover -s app/python/tests -v      # protocol, socket, torch (skipped without torch)
+python -m unittest app/python/tests/test_models.py -v   # model specs, cache, hub methods (Hub calls skipped offline)
 python -m unittest bindings/tests/test_workbench.py -v  # run_pipeline / steps
 ```

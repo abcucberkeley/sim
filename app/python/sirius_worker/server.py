@@ -7,15 +7,27 @@ Requests (see protocol.py for the framing):
     ping        {}                          -> {}
     list_plugins   {}                       -> {plugins: [spec + file (+ error)], dirs}
     reload_plugins {}                       -> the same, after re-importing every plugin file
-    model_info  {path}                      -> format, input_shape, output_shape, dtype, size_bytes, channels_out
+    model_info  {path | spec}               -> format, input_shape, output_shape, dtype, size_bytes, channels_out;
+                                               cellpose: / microsam: specs -> {format, available, install_hint}
+    hub_search  {query, limit, filter?}     -> {models: [{id, downloads, likes, tags, last_modified, pipeline_tag}]}
+    hub_files   {repo}                      -> {repo, files: [{name, size, model}]}
+    hub_download {repo, file}               -> "progress"* then {path, bytes, spec} (cancellable like a run)
+    models_list {}                          -> {cache, models: [{spec, path, bytes}]}
     run         {kind, params} + tensors    -> "progress"* then "result" (+ tensors)
     cancel      {id}                        -> {} (the cancelled run replies with an error "cancelled")
     shutdown    {}                          -> {} and the server exits
 
+Model specs (params.model of torch_segment, model_info): a local .pt / .pts /
+.pth / .onnx path; ``hf:<repo>[:<file>]`` (downloaded into $SIRIUS_MODEL_CACHE
+or ~/.sirius/models); ``cellpose:<model>``; ``microsam:<model_type>`` -- see
+models.py.
+
 Run kinds and their tensors:
 
     torch_segment  in  "input" (z, y, x) float32
-                   out "prob"  (C, z, y, x) float32, result {channels, seconds}
+                   out "prob"  (C, z, y, x) float32, result {channels, seconds}   (file / hf models)
+                   out "labels" (z, y, x) uint32 [+ "prob" (1, z, y, x)], result {labels, format}
+                                                                              (cellpose / micro-sam)
     sim            in  "input" (sections, y, x) or (c, t, sections, y, x)
                    out "output" reconstructed, same rank; result {fits, seconds}
     <numpy kinds>  in  "input" (c, t, z, y, x) [+ "labels" (t, z, y, x) uint32]
@@ -44,6 +56,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from . import __version__
+from . import models as model_hub
 from . import plugins as plugin_registry
 from .protocol import ProtocolError, encode_frame, read_frame
 from .steps import workbench
@@ -126,7 +139,8 @@ class WorkerServer:
 
     def capabilities(self) -> Dict[str, Any]:
         wb = workbench()
-        methods = ["hello", "ping", "model_info", "run", "cancel", "shutdown", "list_plugins", "reload_plugins"]
+        methods = ["hello", "ping", "model_info", "run", "cancel", "shutdown", "list_plugins", "reload_plugins",
+                   "hub_search", "hub_files", "hub_download", "models_list"]
         kinds = list(_SPECIAL_KINDS) + [k for k in wb.step_kinds() if k not in _SPECIAL_KINDS] + ["plugin"]
         methods += [f"run:{k}" for k in kinds]
         cuda = False
@@ -221,7 +235,22 @@ class WorkerServer:
                     self.stop()
                     break
                 elif method == "model_info":
-                    reply(rid, workbench().model_info(str(params.get("path", "")), self.resolved_device()))
+                    reply(rid, self.model_info(str(params.get("spec") or params.get("path") or params.get("model") or "")))
+                elif method == "hub_search":
+                    reply(rid, {"models": model_hub.hub_search(str(params.get("query", "")),
+                                                               int(params.get("limit", 25) or 25),
+                                                               str(params.get("filter", "") or ""))})
+                elif method == "hub_files":
+                    repo = str(params.get("repo", ""))
+                    reply(rid, {"repo": repo, "files": model_hub.hub_files(repo)})
+                elif method == "hub_download":
+                    # a job like "run": progress frames stream while the reader keeps taking cancel
+                    repo = str(params.get("repo", ""))
+                    filename = str(params.get("file") or params.get("filename") or "")
+                    self._start_job(rid, f"hub_download {repo}", send,
+                                    lambda progress, cancel: self._download(repo, filename, progress, cancel))
+                elif method == "models_list":
+                    reply(rid, {"cache": str(model_hub.cache_dir()), "models": model_hub.list_cached_models()})
                 elif method in ("list_plugins", "reload_plugins"):
                     reply(rid, self.plugin_list(reload=method == "reload_plugins", extra=params.get("dirs")))
                 elif method == "cancel":
@@ -261,8 +290,13 @@ class WorkerServer:
             log.info("cancel requested for %s", job["id"])
 
     def _start_run(self, rid, params: Dict[str, Any], tensors: Dict[str, np.ndarray], send) -> None:
-        """Run a request on its own thread; `send(header, tensors)` is the
-        connection's locked sender, shared by progress frames and the reply."""
+        self._start_job(rid, str(params.get("kind", "")), send,
+                        lambda progress, cancel: self._execute(rid, params, tensors, cancel, progress))
+
+    def _start_job(self, rid, label: str, send, work) -> None:
+        """Run `work(progress, cancel_event) -> (result, tensors)` on its own
+        thread; `send(header, tensors)` is the connection's locked sender,
+        shared by progress frames and the reply."""
         with self._job_lock:
             if self._job is not None and self._job["thread"].is_alive():
                 send({"id": rid, "type": "error", "message": f"busy: request {self._job['id']} is still running"})
@@ -280,7 +314,7 @@ class WorkerServer:
         def run() -> None:
             t0 = time.time()
             try:
-                result, out = self._execute(rid, params, tensors, cancel, progress)
+                result, out = work(progress, cancel)
                 if cancel.is_set():
                     send({"id": rid, "type": "error", "message": "cancelled"})
                 else:
@@ -290,7 +324,7 @@ class WorkerServer:
                 if cancel.is_set() or isinstance(e, _Cancelled) or e.__class__.__name__ == "Cancelled":
                     message = "cancelled"
                 else:
-                    log.error("run %s failed: %s", params.get("kind"), e)
+                    log.error("%s failed: %s", label, e)
                     log.debug("%s", traceback.format_exc())
                     message = _message(e)
                 try:
@@ -305,6 +339,36 @@ class WorkerServer:
         thread = threading.Thread(target=run, name=f"sirius-run-{rid}", daemon=True)
         job["thread"] = thread
         thread.start()
+
+    # --- models ----------------------------------------------------------------------
+
+    def model_info(self, spec: str) -> Dict[str, Any]:
+        """Facts about a model spec. Family specs report availability; an hf:
+        file not in the cache yet is described without downloading it (the
+        first run, or hub_download, fetches it)."""
+        ms = model_hub.parse_spec(spec)
+        if ms.family in ("cellpose", "microsam"):
+            return model_hub.family_info(spec)
+        if ms.family == "hf":
+            have = model_hub.cached_path(ms.name, ms.filename)
+            if have is None:
+                available, hint = model_hub.family_available("hf")
+                return {"spec": ms.text(), "format": "hf", "repo": ms.name, "file": ms.filename, "cached": False,
+                        "available": available, "install_hint": hint, "path": ""}
+            info = workbench().model_info(have, self.resolved_device())
+            info.update({"spec": ms.text(), "repo": ms.name, "file": ms.filename, "cached": True})
+            return info
+        return workbench().model_info(ms.name, self.resolved_device())
+
+    def _download(self, repo: str, filename: str, progress, cancel: threading.Event):
+        def report(fraction: float, message: str = "") -> None:
+            if cancel.is_set():
+                raise _Cancelled()
+            progress(fraction, message)
+
+        path = model_hub.hub_download(repo, filename, report)
+        return {"path": path, "bytes": os.path.getsize(path), "repo": repo, "file": filename or os.path.basename(path),
+                "spec": f"hf:{repo}:{filename or os.path.basename(path)}"}, None
 
     # --- plugins ---------------------------------------------------------------------
 
@@ -372,7 +436,19 @@ class WorkerServer:
 
         if kind == "torch_segment":
             volume = _tensor(tensors, "input", 3)
-            model = wb.load_model(str(p.get("model") or p.get("model_path") or ""), device)
+            spec = str(p.get("model") or p.get("model_path") or "")
+            if model_hub.is_family_spec(spec):
+                # cellpose / micro-SAM produce instance labels themselves; the
+                # application skips its threshold / watershed stage for these
+                labels, prob = model_hub.run_family(spec, volume, p, device, progress=progress, cancelled=cancelled)
+                check()
+                out_t: Dict[str, np.ndarray] = {"labels": np.ascontiguousarray(labels, dtype=np.uint32)}
+                if prob is not None:
+                    out_t["prob"] = np.ascontiguousarray(prob, dtype=np.float32)
+                return {"labels": int(labels.max()) if labels.size else 0, "model": spec,
+                        "format": model_hub.parse_spec(spec).family, "device": device}, out_t
+            _, path = model_hub.resolve(spec, progress)   # hf: specs download on first use
+            model = wb.load_model(path, device)
             tile = _triple(p.get("tile"), (32, 256, 256))
             ov = p.get("overlap", 32)
             overlap = _triple(ov, (4, 32, 32)) if isinstance(ov, (list, tuple, str)) else (max(1, int(ov) // 8), int(ov), int(ov))

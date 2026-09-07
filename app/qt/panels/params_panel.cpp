@@ -33,6 +33,7 @@
 
 #include "qt/qt_strings.hpp"
 #include "core/ops/builtin.hpp"
+#include "qt/dialogs/model_hub_dialog.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 
@@ -638,7 +639,27 @@ namespace sirius::app {
             std::vector<std::string> done;
             for (const ParamSpec& s : info.params)
                 if (s.type == ParamType::Path && !s.advanced) {
-                    into->addWidget(field(fromStd(s.label), editor(s, step.params, input, body), body));
+                    // the path editor (file + Browse) plus "Hub…": Hugging Face
+                    // downloads, model families and the local cache in one dialog
+                    auto* row = new QWidget(body);
+                    auto* rl = new QHBoxLayout(row);
+                    rl->setContentsMargins(0, 0, 0, 0);
+                    rl->setSpacing(6);
+                    QWidget* pathEditor = editor(s, step.params, input, row);
+                    auto* hub = new QPushButton(QStringLiteral("Hub…"), row);
+                    widgets::setButtonClass(hub, "secondary small");
+                    hub->setToolTip(QStringLiteral("Search Hugging Face, pick a Cellpose / micro-SAM model, or a cached file"));
+                    rl->addWidget(pathEditor, 1);
+                    rl->addWidget(hub);
+                    const std::string key = s.key;
+                    QObject::connect(hub, &QPushButton::clicked, panel, [this, key, pathEditor] {
+                        ModelHubDialog dialog(bridge, panel);
+                        if (dialog.exec() != QDialog::Accepted || dialog.chosenModel().isEmpty()) return;
+                        const QString chosen = dialog.chosenModel();
+                        if (auto* edit = pathEditor->findChild<QLineEdit*>()) edit->setText(chosen);
+                        setParam(key, toStd(chosen), false);
+                    });
+                    into->addWidget(field(fromStd(s.label), row, body));
                     done.push_back(s.key);
                     break;
                 }
