@@ -196,6 +196,7 @@ TEST_CASE("connectTcp reports an unreachable port", "[app][rpc]") {
 #include <filesystem>
 #include <fstream>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include "temp_path.hpp"
 
@@ -235,7 +236,9 @@ TEST_CASE("the bundled Python worker answers hello and runs a numpy step", "[app
 #endif
 
 #ifndef _WIN32
+#include "core/help_pages.hpp"
 #include "core/ops/builtin.hpp"
+#include "core/ops/plugin.hpp"
 #include "core/array_source.hpp"
 
 // End to end: a TorchScript model scripted by the worker's own Python, the
@@ -315,5 +318,80 @@ TEST_CASE("the segmentation step runs a TorchScript model through the worker", "
     (void)worker->call("shutdown", json::object());
     worker->close();
     ::pclose(pipe);
+}
+#endif
+
+#ifndef _WIN32
+TEST_CASE("plugins from the worker become operations and run", "[app][rpc][worker][plugin]") {
+    const char* python = std::getenv("SIRIUS_PYTHON");
+    if (!python || !*python) SKIP("SIRIUS_PYTHON is not set");
+    const std::string dir = workerScriptPath();
+    if (dir.empty()) SKIP("sirius_worker not found");
+    registerBuiltinOperations();
+
+    // a plugin directory of our own: one good file, one broken, one colliding with a built-in
+    const std::filesystem::path pdir = std::filesystem::temp_directory_path() / ("sirius-plugins-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(pdir);
+    {
+        std::ofstream good(pdir / "double_it.py");
+        good << "STEP = {'kind': 'double_it', 'name': 'Double', 'group': 'Intensity',\n"
+                "        'params': [{'key': 'factor', 'type': 'double', 'default': 2.0, 'min': 0, 'max': 10}],\n"
+                "        'separable_over_t': True, 'help': '# Double\\n\\nMultiplies by *factor*.'}\n"
+                "def run(data, params, meta, ctx):\n"
+                "    ctx.progress(0.5, 'half')\n"
+                "    return data * params['factor'], {'facts': {'factor': str(params['factor'])}}\n";
+        std::ofstream bad(pdir / "broken.py");
+        bad << "STEP = {'kind': 'broken', 'params': [{'key': 'x', 'type': 'nope'}]}\ndef run(d, p, m, c): return d\n";
+        std::ofstream clash(pdir / "clash.py");
+        clash << "STEP = {'kind': 'contrast'}\ndef run(d, p, m, c): return d\n";
+    }
+    const std::string cmd = std::string("cd '") + dir + "' && SIRIUS_PLUGIN_DIRS='" + pdir.string() + "' exec '" + python +
+                            "' -m sirius_worker --host 127.0.0.1 --port 0 --token plug --device cpu 2>/dev/null";
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    REQUIRE(pipe);
+    char line[512] = {0};
+    REQUIRE(std::fgets(line, sizeof line, pipe));
+    const int port = json::parse(line).value("port", 0);
+    REQUIRE(port > 0);
+    auto worker = RemoteWorker::connect("127.0.0.1", port, "plug");
+    CHECK(worker->supports("plugin"));
+
+    const PluginLoadResult loaded = registerPluginOperations(*worker, false);
+    CHECK(std::find(loaded.kinds.begin(), loaded.kinds.end(), "double_it") != loaded.kinds.end());
+    CHECK(std::find(loaded.kinds.begin(), loaded.kinds.end(), "contrast") == loaded.kinds.end());
+    CHECK(loaded.errors.size() == 2);   // broken.py and clash.py
+    const Operation* op = findOperation("double_it");
+    REQUIRE(op);
+    CHECK(op->info().plugin);
+    CHECK(op->info().separableOverT);
+    CHECK(op->info().params.size() == 1);
+    CHECK(op->info().params[0].max == 10.0);
+    CHECK(loadHelpPage("double_it").title == "Double");
+
+    const Dims5 dims{1, 2, 2, 4, 4};
+    auto array = std::make_shared<Array5>(Array5::filled(dims, 1.5f));
+    DatasetMeta meta;
+    meta.dims = dims;
+    meta.normalizeChannels();
+    ParamSet p = op->defaults();
+    p.set("factor", 3.0);
+    StepContext ctx;
+    ctx.remote = worker.get();
+    std::vector<std::string> messages;
+    ctx.progress = [&](double, const std::string& m) { if (!m.empty()) messages.push_back(m); };
+    const StepOutput out = op->run(StepInput{meta, array, nullptr, nullptr}, p, ctx);
+    REQUIRE(out.array);
+    CHECK(out.array->dims() == dims);
+    CHECK(out.array->at(0, 1, 1, 2, 3) == 4.5f);
+    CHECK(out.diagnostics.facts.front().value == "3.0");
+    CHECK(std::find(messages.begin(), messages.end(), "half") != messages.end());
+    // without a worker the step explains what to do
+    StepContext none;
+    CHECK_THROWS_WITH(op->run(StepInput{meta, array, nullptr, nullptr}, p, none), Catch::Matchers::ContainsSubstring("worker"));
+
+    (void)worker->call("shutdown", json::object());
+    worker->close();
+    ::pclose(pipe);
+    std::filesystem::remove_all(pdir);
 }
 #endif

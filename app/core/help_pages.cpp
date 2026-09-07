@@ -1030,11 +1030,26 @@ namespace sirius::app {
         return "help";
     }
 
+    namespace {
+        std::map<std::string, std::string>& memoryPages() {
+            static std::map<std::string, std::string> pages;
+            return pages;
+        }
+    } // namespace
+
+    void registerHelpPage(const std::string& kind, const std::string& markdown) { memoryPages()[kind] = markdown; }
+
     HelpPage loadHelpPage(const std::string& kind, const std::string& hint) {
         const fs::path dir = helpDirectory(hint);
         const fs::path file = dir / (kind + ".md");
         std::ifstream in(file);
         if (!in) {
+            auto mem = memoryPages().find(kind);
+            if (mem != memoryPages().end() && !mem->second.empty()) {
+                HelpPage page = parseHelpMarkdown(kind, mem->second);
+                page.path = file.string();   // "Edit page" creates the override here
+                return page;
+            }
             HelpPage page;
             page.kind = kind;
             page.title = kind;

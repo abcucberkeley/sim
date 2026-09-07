@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "core/ops/builtin.hpp"
+#include "core/ops/plugin.hpp"
 
 namespace sirius::app {
 
@@ -951,6 +952,28 @@ namespace sirius::app {
     void Workbench::setRemoteConfig(RemoteConfig c) {
         remote_ = std::move(c);
         notify(&Observer::backendChanged);
+    }
+
+    int Workbench::loadPlugins(bool reload) {
+        if (!launcher_) {
+            logLine("Plugins: no Python worker launcher configured.");
+            return 0;
+        }
+        try {
+            std::unique_ptr<RemoteWorker> worker = launcher_();
+            if (!worker) throw std::runtime_error("the Python worker did not start");
+            const PluginLoadResult r = registerPluginOperations(*worker, reload);
+            for (const std::string& e : r.errors) logLine("Plugin error: " + e);
+            std::string kinds;
+            for (const std::string& k : r.kinds) kinds += (kinds.empty() ? "" : ", ") + k;
+            logLine(r.kinds.empty() ? "Plugins: none found" + (r.dirs.empty() ? std::string() : " in " + r.dirs.back())
+                                    : "Plugins: " + kinds);
+            notify(&Observer::operationsChanged);
+            return static_cast<int>(r.kinds.size());
+        } catch (const std::exception& e) {
+            logLine(std::string("Plugins unavailable: ") + e.what());
+            return 0;
+        }
     }
 
     std::shared_ptr<RunJob> Workbench::createRun(int target) {

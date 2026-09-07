@@ -5,6 +5,8 @@ Requests (see protocol.py for the framing):
 
     hello       {token}                     -> capabilities
     ping        {}                          -> {}
+    list_plugins   {}                       -> {plugins: [spec + file (+ error)], dirs}
+    reload_plugins {}                       -> the same, after re-importing every plugin file
     model_info  {path}                      -> format, input_shape, output_shape, dtype, size_bytes, channels_out
     run         {kind, params} + tensors    -> "progress"* then "result" (+ tensors)
     cancel      {id}                        -> {} (the cancelled run replies with an error "cancelled")
@@ -18,6 +20,8 @@ Run kinds and their tensors:
                    out "output" reconstructed, same rank; result {fits, seconds}
     <numpy kinds>  in  "input" (c, t, z, y, x) [+ "labels" (t, z, y, x) uint32]
                    out "output" (+ "labels", "prob"), result {meta, info, seconds}
+    plugin         params {plugin: kind, params, meta}; in "input" (c, t, z, y, x) [+ "labels"]
+                   out "output" (+ "labels", "image<i>"), result {meta, diagnostics, seconds}
 
 The reader loop runs on the connection's thread and the job on a worker
 thread, so a cancel request is read while a run is in progress. Every reply
@@ -40,6 +44,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from . import __version__
+from . import plugins as plugin_registry
 from .protocol import ProtocolError, encode_frame, read_frame
 from .steps import workbench
 
@@ -121,8 +126,8 @@ class WorkerServer:
 
     def capabilities(self) -> Dict[str, Any]:
         wb = workbench()
-        methods = ["hello", "ping", "model_info", "run", "cancel", "shutdown"]
-        kinds = list(_SPECIAL_KINDS) + [k for k in wb.step_kinds() if k not in _SPECIAL_KINDS]
+        methods = ["hello", "ping", "model_info", "run", "cancel", "shutdown", "list_plugins", "reload_plugins"]
+        kinds = list(_SPECIAL_KINDS) + [k for k in wb.step_kinds() if k not in _SPECIAL_KINDS] + ["plugin"]
         methods += [f"run:{k}" for k in kinds]
         cuda = False
         device = "cpu"
@@ -217,6 +222,8 @@ class WorkerServer:
                     break
                 elif method == "model_info":
                     reply(rid, workbench().model_info(str(params.get("path", "")), self.resolved_device()))
+                elif method in ("list_plugins", "reload_plugins"):
+                    reply(rid, self.plugin_list(reload=method == "reload_plugins", extra=params.get("dirs")))
                 elif method == "cancel":
                     target = params.get("id", header.get("target"))
                     self._cancel(target)
@@ -299,6 +306,34 @@ class WorkerServer:
         job["thread"] = thread
         thread.start()
 
+    # --- plugins ---------------------------------------------------------------------
+
+    def plugin_list(self, reload: bool = False, extra=None) -> Dict[str, Any]:
+        with self._job_lock:
+            cached = getattr(self, "_plugins", None)
+        if cached is None or reload:
+            plugins, dirs = plugin_registry.load_all(list(extra or []))
+            with self._job_lock:
+                self._plugins = plugins
+                self._plugin_dirs = dirs
+            for pl in plugins:
+                if pl.error:
+                    log.warning("plugin %s: %s", pl.file, pl.error.splitlines()[0])
+                else:
+                    log.info("plugin %s from %s", pl.kind, pl.file)
+        return {"plugins": [pl.describe() for pl in self._plugins], "dirs": list(self._plugin_dirs)}
+
+    def _plugin(self, kind: str):
+        if getattr(self, "_plugins", None) is None:
+            self.plugin_list()
+        for pl in self._plugins:
+            if pl.kind == kind and not pl.error:
+                return pl
+        for pl in self._plugins:
+            if pl.kind == kind:
+                raise ValueError(f"plugin '{kind}' failed to load: {pl.error}")
+        raise ValueError(f"unknown plugin '{kind}' (Process ▸ Reload plugins after adding it)")
+
     def _execute(self, rid, params: Dict[str, Any], tensors: Dict[str, np.ndarray], cancel: threading.Event,
                  progress):
         wb = workbench()
@@ -312,6 +347,28 @@ class WorkerServer:
         def check() -> None:
             if cancel.is_set():
                 raise _Cancelled()
+
+        if kind == "plugin":
+            plugin = self._plugin(str(params.get("plugin", "")))
+            arr = tensors.get("input")
+            if arr is None:
+                raise ValueError("run plugin: missing tensor 'input'")
+            out, out_labels, diagnostics, meta_out = plugin_registry.run_plugin(
+                plugin, arr, p, params.get("meta") or {}, tensors.get("labels"), progress=progress, cancelled=cancelled)
+            check()
+            tensors_out: Dict[str, np.ndarray] = {"output": out}
+            if out_labels is not None:
+                tensors_out["labels"] = out_labels
+            images = []
+            for i, im in enumerate(diagnostics.pop("images", []) or []):
+                data = np.ascontiguousarray(np.asarray(im.get("data"), dtype=np.float32))
+                if data.ndim != 2:
+                    continue
+                tensors_out[f"image{i}"] = data
+                images.append({"title": str(im.get("title", f"image {i}")), "meta": str(im.get("meta", "")),
+                               "log": bool(im.get("log", False)), "tensor": f"image{i}"})
+            diagnostics["images"] = images
+            return {"meta": _jsonable(meta_out), "diagnostics": _jsonable(diagnostics), "device": device}, tensors_out
 
         if kind == "torch_segment":
             volume = _tensor(tensors, "input", 3)

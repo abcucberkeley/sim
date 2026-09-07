@@ -323,6 +323,14 @@ diagnostics, add / remove / move / enable steps, set parameters, run, change the
 read help pages); every call is applied through the workbench, undoable, and shown as
 an action card. "Ask before acting" makes mutating calls wait for confirmation.
 
+**User operations**: a Python file per step in `~/.sirius/plugins` (or
+`$SIRIUS_PLUGIN_DIRS`, or `plugins/` beside the application) with a `STEP` spec and a
+`run(data, params, meta, ctx)` function becomes a full step — parameter form, menu
+entry, undo, caching, assistant tools, help page — served by the Python worker
+locally and on the HPC backend alike. [app/plugins/README.md](app/plugins/README.md)
+documents the format; `app/plugins/dog_filter.py` is a complete example.
+Process ▸ Reload plugins picks up edits.
+
 **Pipelines** are TOML (`*.sirius.toml`, File ▸ Save pipeline); relative paths in them
 resolve against the file, and the Load step's path opens the dataset when the pipeline
 is loaded. [examples/sim_bundled.sirius.toml](examples/sim_bundled.sirius.toml)

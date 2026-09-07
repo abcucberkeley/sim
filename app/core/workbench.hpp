@@ -147,6 +147,7 @@ namespace sirius::app {
             virtual void runStateChanged() {}                 // started / finished
             virtual void historyChanged() {}
             virtual void backendChanged() {}
+            virtual void operationsChanged() {}               // plugins (re)loaded
             virtual void logged(const std::string& /*line*/) {}
         };
 
@@ -246,6 +247,10 @@ namespace sirius::app {
         // Qt layer installs one that spawns app/python/sirius_worker.
         using WorkerLauncher = std::function<std::unique_ptr<RemoteWorker>()>;
         void setLocalWorkerLauncher(WorkerLauncher launcher) { launcher_ = std::move(launcher); }
+        // Starts the local worker (through the launcher), registers the user
+        // operations it finds (app/python/sirius_worker/plugins.py) and logs the
+        // outcome; returns the number registered. `reload` re-imports the files.
+        int loadPlugins(bool reload);
         // A job for step `target` (or the last step when -1); null with a log
         // line when nothing can run. The caller executes it and calls finishRun.
         std::shared_ptr<RunJob> createRun(int target = -1);

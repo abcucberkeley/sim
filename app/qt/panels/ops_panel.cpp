@@ -11,6 +11,7 @@
 #include <QPen>
 #include <QEnterEvent>
 #include <QLabel>
+#include <QShowEvent>
 #include <QResizeEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -284,9 +285,32 @@ namespace sirius::app {
                 QPalette p = palette();
                 p.setColor(QPalette::Window, theme::kBg);
                 setPalette(p);
-                auto* layout = new QVBoxLayout(this);
-                layout->setContentsMargins(2, 2, 2, 2);
-                layout->setSpacing(0);
+                layout_ = new QVBoxLayout(this);
+                layout_->setContentsMargins(2, 2, 2, 2);
+                layout_->setSpacing(0);
+                rebuild();
+            }
+
+            // Plugins register operations after start-up: rebuild the list
+            // the next time the menu opens.
+            void markStale() { stale_ = true; }
+
+        protected:
+            void showEvent(QShowEvent* e) override {
+                if (stale_) {
+                    rebuild();
+                    stale_ = false;
+                }
+                QFrame::showEvent(e);
+            }
+
+        private:
+            void rebuild() {
+                QVBoxLayout* layout = layout_;
+                while (QLayoutItem* item = layout->takeAt(0)) {
+                    if (item->widget()) item->widget()->deleteLater();
+                    delete item;
+                }
                 for (const auto& [group, ops] : operationGroups()) {
                     auto* row = new QWidget(this);
                     auto* grid = new QGridLayout(row);
@@ -341,6 +365,9 @@ namespace sirius::app {
             }
 
         private:
+            QVBoxLayout* layout_ = nullptr;
+            bool stale_ = false;
+
             void add(const std::string& kind) {
                 bridge_.wb().addStep(kind);
                 hide();
@@ -429,6 +456,7 @@ namespace sirius::app {
 
         impl_->addMenu = new AddMenu(bridge, content);
         impl_->addMenu->hide();
+        connect(&bridge, &WorkbenchBridge::operationsChanged, this, [this] { impl_->addMenu->markStale(); });
         auto* menuHost = new QWidget(content);
         auto* ml = new QHBoxLayout(menuHost);
         ml->setContentsMargins(10, 0, 14, 10);

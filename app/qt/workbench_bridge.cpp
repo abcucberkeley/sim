@@ -20,6 +20,7 @@ namespace sirius::app {
         void runStateChanged() override { b.runStateChanged(); }
         void historyChanged() override { emit b.historyChanged(); }
         void backendChanged() override { emit b.backendChanged(); }
+        void operationsChanged() override { emit b.operationsChanged(); }
         void logged(const std::string& line) override { emit b.logged(QString::fromStdString(line)); }
     };
 

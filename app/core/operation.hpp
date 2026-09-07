@@ -56,6 +56,8 @@ namespace sirius::app {
         // run or stale, the upstream output is displayed through the step's
         // current parameters and updates live as they change.
         bool livePreview = false;
+        bool plugin = false;              // a user operation served by the Python worker
+        std::string source;               // plugin file
         std::string helpPage;             // markdown file stem under app/help (defaults to kind)
     };
 

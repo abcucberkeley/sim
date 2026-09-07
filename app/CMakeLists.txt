@@ -56,7 +56,9 @@ add_custom_command(TARGET sirius-app POST_BUILD
             ${CMAKE_CURRENT_SOURCE_DIR}/help $<TARGET_FILE_DIR:sirius-app>/help
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/python $<TARGET_FILE_DIR:sirius-app>/python
-    COMMENT "Copying help pages and the Python worker next to sirius-app"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/plugins $<TARGET_FILE_DIR:sirius-app>/plugins
+    COMMENT "Copying help pages, the Python worker and the example plugins next to sirius-app"
     VERBATIM)
 
 # Runtime DLLs on Windows: the NVIDIA libraries (as for the tests and

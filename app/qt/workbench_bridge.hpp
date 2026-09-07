@@ -62,6 +62,7 @@ namespace sirius::app {
         void runFinished(bool ok, const QString& error);
         void historyChanged();
         void backendChanged();
+        void operationsChanged();   // plugins (re)loaded: the operation registry changed
         void logged(const QString& line);
         void taskStarted(const QString& label);
         void taskProgress(double fraction, const QString& message);

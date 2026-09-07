@@ -316,6 +316,8 @@ namespace sirius::app {
             clearCache = action(process, QStringLiteral("Clear cache for step"), QKeySequence(), [this] { wb().clearCache(wb().selectedIndex()); });
             clearAll = action(process, QStringLiteral("Clear all caches"), QKeySequence(), [this] { wb().clearAllCaches(); });
             process->addSeparator();
+            action(process, QStringLiteral("Reload plugins"), QKeySequence(), [this] { wb().loadPlugins(true); });
+            process->addSeparator();
             auto* backends = new QActionGroup(self);
             backendCuda = action(process, QStringLiteral("Backend: CUDA"), QKeySequence(), [this] { wb().setBackend(Backend::Cuda); });
             backendCpu = action(process, QStringLiteral("Backend: CPU"), QKeySequence(), [this] { wb().setBackend(Backend::Cpu); });

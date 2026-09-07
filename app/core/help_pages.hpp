@@ -32,6 +32,9 @@ namespace sirius::app {
     // (typically <exe dir>/help), then the source tree's app/help.
     std::string helpDirectory(const std::string& hint = {});
     HelpPage loadHelpPage(const std::string& kind, const std::string& hint = {});
+    // A page that lives in memory (a plugin's docstring); a file of the same
+    // kind in the help directory still wins so users can override it.
+    void registerHelpPage(const std::string& kind, const std::string& markdown);
     HelpPage parseHelpMarkdown(const std::string& kind, const std::string& markdown);
 
     // LaTeX (the subset the pages use: fractions, sub/superscripts, Greek,

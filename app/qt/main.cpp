@@ -83,6 +83,11 @@ int main(int argc, char** argv) {
                      [&workbench](const QString& line) { workbench.logLine("worker: " + sirius::app::toStd(line)); });
     workbench.setLocalWorkerLauncher([&launcher] { return launcher.connect(); });
     sirius::app::MainWindow window(bridge);
+    // User operations come from the Python worker. A pipeline given on the
+    // command line may use them, so load them first in that case; otherwise
+    // after the window is up so start-up stays quick.
+    if (parser.isSet(pipelineOpt)) workbench.loadPlugins(false);
+    else QTimer::singleShot(400, &window, [&workbench] { workbench.loadPlugins(false); });
     if (parser.isSet(pipelineOpt)) window.openPipelinePath(parser.value(pipelineOpt));
     if (parser.isSet(datasetOpt)) window.openDatasetPath(parser.value(datasetOpt));
     window.show();
