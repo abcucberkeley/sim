@@ -570,7 +570,7 @@ namespace sirius::app {
 
         // --- commands -----------------------------------------------------------------
         void openDataset() {
-            OpenDatasetDialog dialog(self, wb().hasDataset() ? fromStd(wb().dataset().sourcePath) : QString());
+            OpenDatasetDialog dialog(bridge, self, wb().hasDataset() ? fromStd(wb().dataset().sourcePath) : QString());
             if (dialog.exec() != QDialog::Accepted) return;
             openWith(dialog.path(), dialog.options());
         }
