@@ -363,6 +363,8 @@ TEST_CASE("plugins from the worker become operations and run", "[app][rpc][worke
     const Operation* op = findOperation("double_it");
     REQUIRE(op);
     CHECK(op->info().plugin);
+    CHECK(op->info().group == "User");          // every plugin lists under the User section
+    CHECK(op->info().kindLabel == "INTENSITY");  // the declared group survives as the row's label
     CHECK(op->info().separableOverT);
     CHECK(op->info().params.size() == 1);
     CHECK(op->info().params[0].max == 10.0);
