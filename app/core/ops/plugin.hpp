@@ -28,7 +28,13 @@ namespace sirius::app {
         std::vector<std::string> kinds;      // registered (or re-registered) operation kinds
         std::vector<std::string> errors;     // "file: reason" for plugins that did not load
         std::vector<std::string> dirs;       // directories the worker searched
+        struct Entry {
+            std::string kind, name, file, error;
+        };
+        std::vector<Entry> entries;          // every plugin file the worker saw
     };
+    // The per-user plugin directory (~/.sirius/plugins), created when `create`.
+    std::string userPluginDirectory(bool create = false);
     // Asks the worker for its plugins (re-importing them when `reload`) and
     // registers every valid one; a kind that collides with a built-in
     // operation is reported as an error, not registered.

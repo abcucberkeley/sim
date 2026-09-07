@@ -54,6 +54,7 @@ if(SIRIUS_ENABLE_APP)
         test_app_io.cpp
         test_app_rpc.cpp
         test_app_help.cpp
+        test_app_manifest.cpp
     )
     target_link_libraries(sirius_tests PRIVATE sirius::app_core)
 endif()

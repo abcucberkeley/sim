@@ -46,6 +46,14 @@ namespace sirius::app {
         virtual bool inMemory() const noexcept { return false; }
         // Whether the source can feed planes to the GPU decoder (nvTIFF).
         virtual bool gpuDecodable() const noexcept { return false; }
+
+        // --- tiles (multi-file datasets; single-tile sources keep the defaults)
+        virtual Index tileCount() const noexcept { return 1; }
+        virtual Index currentTile() const noexcept { return 0; }
+        // The tile readPlane / readVolume / readAll serve from now on.
+        virtual void selectTile(Index /*tile*/) {}
+        // One (z, y, x) volume of any tile; the default only knows the current one.
+        virtual void readTileVolume(Index tile, Index c, Index t, float* out) const;
     };
 
     // An in-memory array behaving as a source (step outputs, tests).
@@ -72,6 +80,7 @@ namespace sirius::app {
         std::optional<std::vector<ChannelInfo>> channels;
         std::optional<SimLayout> sim;
         bool readAll = false;               // materialize now ("Full load")
+        Index tile = 0;                     // multi-file datasets: the tile to serve
     };
 
     struct OpenResult {
@@ -89,6 +98,8 @@ namespace sirius::app {
 
     // Formats the build can open, as file-dialog filters and extensions.
     std::vector<std::string> readableExtensions();
+    // A folder is a dataset when it holds a manifest (core/manifest.hpp).
+    bool isFolderDataset(const std::string& path);
     bool zarrSupported() noexcept;          // built with TensorStore
 
     // --- metadata helpers (exposed for tests) --------------------------------

@@ -74,6 +74,16 @@ namespace sirius::app {
         }
     }
 
+    std::vector<std::array<double, 3>> DatasetMeta::tilePositionsPx() const {
+        std::vector<std::array<double, 3>> out;
+        out.reserve(tiles.size());
+        for (const TileInfo& t : tiles)
+            out.push_back({voxelUm[2] > 0 ? t.positionUm[0] / voxelUm[2] : 0.0,
+                           voxelUm[1] > 0 ? t.positionUm[1] / voxelUm[1] : 0.0,
+                           voxelUm[0] > 0 ? t.positionUm[2] / voxelUm[0] : 0.0});
+        return out;
+    }
+
     std::string DatasetMeta::shapeString() const {
         if (rgb)
             return "rgb t" + std::to_string(dims.t) + " z" + std::to_string(dims.z) + " y" + std::to_string(dims.y) +

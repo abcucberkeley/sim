@@ -251,6 +251,11 @@ namespace sirius::app {
         // operations it finds (app/python/sirius_worker/plugins.py) and logs the
         // outcome; returns the number registered. `reload` re-imports the files.
         int loadPlugins(bool reload);
+        struct PluginInfo {
+            std::string kind, name, file, error;   // error non-empty when the file did not load
+        };
+        const std::vector<PluginInfo>& plugins() const noexcept { return plugins_; }
+        const std::vector<std::string>& pluginDirs() const noexcept { return pluginDirs_; }
         // A job for step `target` (or the last step when -1); null with a log
         // line when nothing can run. The caller executes it and calls finishRun.
         std::shared_ptr<RunJob> createRun(int target = -1);
@@ -317,6 +322,8 @@ namespace sirius::app {
         std::optional<std::pair<std::string, ParamSet>> clipboard_;
         std::shared_ptr<const StepOutput> loadOutput_;   // the Load step's lazy output
         WorkerLauncher launcher_;
+        std::vector<PluginInfo> plugins_;
+        std::vector<std::string> pluginDirs_;
         std::map<std::string, Snapshot> mergeBefore_;    // first "before" of an open merge group
         std::string lastMergeKey_;
         int strokeCounter_ = 0;

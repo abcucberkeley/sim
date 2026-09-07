@@ -45,6 +45,14 @@ namespace sirius::app {
         Index sectionsPerPlane() const noexcept { return static_cast<Index>(ndirs) * nphases; }
     };
 
+    // One tile of a multi-file dataset (a folder described by a manifest):
+    // every tile has the same (c, t, z, y, x) shape and a nominal origin.
+    struct TileInfo {
+        std::string name;                       // "tile_1_2"
+        std::array<double, 3> positionUm{0, 0, 0};   // nominal origin, z, y, x in micrometres
+        std::array<Index, 3> gridIndex{0, 0, 0};     // z, row, col when the tiles form a grid
+    };
+
     struct DatasetMeta {
         std::string name;                       // display name (file stem)
         std::string sourcePath;                 // file / directory the Load step reads
@@ -60,6 +68,13 @@ namespace sirius::app {
         bool rgb = false;                       // the c axis holds display R, G, B
         bool lightSheet = false;                // acquired at an angle: deskew applies
         double sheetAngleDeg = 0.0;
+        // Multi-file datasets: the tiles the folder holds and the one the
+        // array (dims) describes; every tile has the same dims.
+        std::vector<TileInfo> tiles;
+        Index tileIndex = 0;
+        bool hasTiles() const noexcept { return tiles.size() > 1; }
+        // Nominal tile origins in voxels of this dataset (from positionUm / voxelUm).
+        std::vector<std::array<double, 3>> tilePositionsPx() const;
 
         double dx() const noexcept { return voxelUm[0]; }
         double dy() const noexcept { return voxelUm[1]; }

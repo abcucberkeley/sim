@@ -963,6 +963,9 @@ namespace sirius::app {
             std::unique_ptr<RemoteWorker> worker = launcher_();
             if (!worker) throw std::runtime_error("the Python worker did not start");
             const PluginLoadResult r = registerPluginOperations(*worker, reload);
+            plugins_.clear();
+            for (const PluginLoadResult::Entry& e : r.entries) plugins_.push_back({e.kind, e.name, e.file, e.error});
+            pluginDirs_ = r.dirs;
             for (const std::string& e : r.errors) logLine("Plugin error: " + e);
             std::string kinds;
             for (const std::string& k : r.kinds) kinds += (kinds.empty() ? "" : ", ") + k;

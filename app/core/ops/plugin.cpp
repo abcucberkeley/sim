@@ -1,6 +1,8 @@
 #include "core/ops/plugin.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <cctype>
 #include <cstring>
 #include <mutex>
@@ -316,11 +318,15 @@ namespace sirius::app {
             if (!op->info().plugin) builtins.insert(op->kind());
         for (const json& spec : r.result["plugins"]) {
             const std::string file = spec.value("file", "?");
+            PluginLoadResult::Entry entry{spec.value("kind", ""), spec.value("name", ""), file, ""};
             if (spec.contains("error")) {
                 const std::string err = spec["error"].get<std::string>();
+                entry.error = err;
+                result.entries.push_back(entry);
                 result.errors.push_back(file + ": " + err.substr(0, err.find('\n')));
                 continue;
             }
+            result.entries.push_back(entry);
             try {
                 auto op = makePluginOperation(spec);
                 const std::string kind = op->kind();
@@ -340,6 +346,19 @@ namespace sirius::app {
             }
         }
         return result;
+    }
+
+    std::string userPluginDirectory(bool create) {
+        const char* home = std::getenv("HOME");
+#ifdef _WIN32
+        if (!home) home = std::getenv("USERPROFILE");
+#endif
+        const std::filesystem::path dir = std::filesystem::path(home ? home : ".") / ".sirius" / "plugins";
+        if (create) {
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+        }
+        return dir.string();
     }
 
     std::vector<std::string> pluginKinds() {

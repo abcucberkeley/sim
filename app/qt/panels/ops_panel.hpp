@@ -23,6 +23,7 @@ namespace sirius::app {
 
     signals:
         void exportRequested();
+        void managePluginsRequested();      // "Manage user operations…" in the add menu
 
     private:
         struct Impl;

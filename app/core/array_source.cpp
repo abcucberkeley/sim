@@ -72,6 +72,17 @@ namespace sirius::app {
 
     // --- ArraySource defaults ----------------------------------------------------
 
+    bool isFolderDataset(const std::string& path) {
+        std::error_code ec;
+        return std::filesystem::is_directory(path, ec) && std::filesystem::exists(std::filesystem::path(path) / "sirius-dataset.toml", ec);
+    }
+
+    void ArraySource::readTileVolume(Index tile, Index c, Index t, float* out) const {
+        if (tile != currentTile())
+            throw std::out_of_range("this dataset serves one tile at a time; select tile " + std::to_string(tile) + " first");
+        readVolume(c, t, out);
+    }
+
     void ArraySource::readVolume(Index c, Index t, float* out) const {
         const Dims5& d = dims();
         for (Index z = 0; z < d.z; ++z) readPlane(c, t, z, out + z * d.planeSize());
