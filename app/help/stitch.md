@@ -13,12 +13,15 @@ $$
 
 | Parameter | Explanation |
 |---|---|
-| **Tiles** <br> files + positions | One file per tile with its nominal (z, y, x) origin in voxels, or a layout file. |
+| **Tiles** <br> files · dataset tiles | One multi-page TIFF per tile with its nominal (z, y, x) origin in voxels (*Positions*, or a grid from *Overlap* and *Grid columns*). Left empty, the tiles of the input dataset are stitched: a folder opened with a manifest, whose tile origins the manifest supplies. |
+| **Registration channel / t** <br> dataset tiles | The channel and time point the pairwise registration runs on. The layout it finds is applied to every channel and time point of the dataset. |
 | **Search radius** <br> z, y, x voxels | How far a tile may move from its nominal position; bounds the correlation search, so keep it near the stage's real repeatability. |
 | **Minimum correlation** <br> 0 – 1 | Pair matches scoring below this are dropped from the global fit instead of dragging the mosaic. |
 | **Mask background** <br> on · off | Ignore voxels at or below the background level when correlating: the zero fill of a deskew, unilluminated borders. |
 | **Blend** <br> overwrite · average · feather · maximum | How overlapping voxels are combined on the canvas. Feather (distance-to-border weighted) hides seams. |
 
 ## Note
+
+Stitching a dataset's tiles holds every tile of one (channel, t) plus the canvas in memory, so it suits mosaics whose one-channel volume fits in RAM.
 
 The alignment panel shows a checkerboard of fixed and moving tile in their overlap, the tile map with the selected pair and the pairwise shift statistics (mean and maximum displacement, normalised cross-correlation).

@@ -145,16 +145,45 @@ namespace sirius::app {
             return std::to_string(w) + " x " + std::to_string(h) + " x " + std::to_string(pages) + " pages";
         }
 
+        // Hand-written manifests: a string field may arrive as a number
+        // ("label = 405", "exposure = 8") and a number as a string; anything
+        // else is reported by field name.
+        std::string stringField(const json& j, const char* key, const std::string& fallback = {}) {
+            if (!j.contains(key) || j[key].is_null()) return fallback;
+            const json& v = j[key];
+            if (v.is_string()) return v.get<std::string>();
+            if (v.is_number_integer()) return std::to_string(v.get<long long>());
+            if (v.is_number_float()) {
+                std::ostringstream ss;
+                ss << v.get<double>();
+                return ss.str();
+            }
+            throw std::invalid_argument(std::string("'") + key + "' must be a string, not " + v.type_name());
+        }
+
+        double numberField(const json& j, const char* key, double fallback) {
+            if (!j.contains(key) || j[key].is_null()) return fallback;
+            const json& v = j[key];
+            if (v.is_number()) return v.get<double>();
+            if (v.is_string()) {
+                try {
+                    return std::stod(v.get<std::string>());
+                } catch (const std::exception&) {
+                }
+            }
+            throw std::invalid_argument(std::string("'") + key + "' must be a number, not " + v.type_name());
+        }
+
         json channelToJson(const ChannelInfo& c) {
             return json{{"label", c.label}, {"wavelength_nm", c.wavelengthNm}, {"color", c.hexColor()}, {"exposure", c.exposure}};
         }
 
         ChannelInfo channelFromJson(const json& j) {
             ChannelInfo c;
-            c.label = j.value("label", std::string());
-            c.wavelengthNm = j.value("wavelength_nm", 0.0);
-            c.exposure = j.value("exposure", std::string());
-            const std::string hex = j.value("color", std::string());
+            c.label = stringField(j, "label");
+            c.wavelengthNm = numberField(j, "wavelength_nm", 0.0);
+            c.exposure = stringField(j, "exposure");
+            const std::string hex = stringField(j, "color");
             if (!hex.empty()) c.color = colorFromHex(hex);
             else if (c.wavelengthNm > 0.0) c.color = colorForWavelength(c.wavelengthNm);
             return c;
@@ -168,7 +197,7 @@ namespace sirius::app {
 
         TileInfo tileFromJson(const json& j) {
             TileInfo t;
-            t.name = j.value("name", std::string());
+            t.name = stringField(j, "name");
             if (j.contains("position_um") && j["position_um"].is_array() && j["position_um"].size() == 3)
                 for (std::size_t k = 0; k < 3; ++k) t.positionUm[k] = j["position_um"][k].get<double>();
             if (j.contains("grid") && j["grid"].is_array() && j["grid"].size() == 3)
@@ -235,12 +264,12 @@ namespace sirius::app {
 
     DatasetManifest DatasetManifest::fromJson(const json& j) {
         DatasetManifest m;
-        m.name = j.value("name", std::string());
+        m.name = stringField(j, "name");
         if (j.contains("voxel_um") && j["voxel_um"].is_array() && j["voxel_um"].size() == 3)
             for (std::size_t k = 0; k < 3; ++k) m.voxelUm[k] = j["voxel_um"][k].get<double>();
-        m.frameIntervalS = j.value("frame_interval_s", 0.0);
-        m.acquisition = j.value("acquisition", std::string());
-        m.pattern = j.value("pattern", std::string());
+        m.frameIntervalS = numberField(j, "frame_interval_s", 0.0);
+        m.acquisition = stringField(j, "acquisition");
+        m.pattern = stringField(j, "pattern");
         if (j.contains("sim") && j["sim"].is_object()) {
             const json& s = j["sim"];
             m.sim.present = s.value("present", false);
@@ -255,13 +284,10 @@ namespace sirius::app {
         if (j.contains("files"))
             for (const json& f : j["files"]) {
                 ManifestFile mf;
-                mf.path = f.value("path", std::string());
-                // a hand-written manifest may give the channel as a number
-                mf.channel = f.contains("channel") && f["channel"].is_number()
-                                 ? std::to_string(f["channel"].get<long long>())
-                                 : f.value("channel", std::string());
-                mf.t = f.value("t", Index{0});
-                mf.tile = f.value("tile", std::string());
+                mf.path = stringField(f, "path");
+                mf.channel = stringField(f, "channel");
+                mf.t = static_cast<Index>(numberField(f, "t", 0.0));
+                mf.tile = stringField(f, "tile");
                 m.files.push_back(std::move(mf));
             }
         return m;
@@ -290,7 +316,11 @@ namespace sirius::app {
             ss << source.string() << ": " << e.description() << " (line " << e.source().begin.line << ")";
             throw std::runtime_error(ss.str());
         }
-        return fromJson(tomlToJson(t));
+        try {
+            return fromJson(tomlToJson(t));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(source.string() + ": " + e.what());
+        }
     }
 
     std::vector<std::string> DatasetManifest::validate(const fs::path& folder) const {

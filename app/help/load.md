@@ -14,8 +14,19 @@ $$
 | Parameter | Explanation |
 |---|---|
 | **Source** <br> file or directory | A multi-page TIFF / OME-TIFF (decoded on the GPU by nvTIFF when possible) or a zarr / N5 store. Plain TIFFs without dimension metadata ask how the pages map onto channels, time points and z planes. |
+| **Tile** <br> index | Multi-file datasets only: which tile of the folder is viewed and processed. *Stitch* with no tile files fuses all of them, whatever this is set to. |
 | **Read as** <br> lazy · full | Lazy reads planes on demand and keeps a bounded RAM cache; full load reads everything once — faster scrubbing, but needs the whole dataset in memory. |
 | **SIM layout** <br> directions × phases | For raw structured-illumination stacks: how many pattern directions and phase steps the z axis interleaves, so the SIM step can unmix them. $Z_{\text{file}} = N_{\text{dir}} \cdot N_{\text{phase}} \cdot Z$ |
+
+## Folders of files
+
+An acquisition saved as one file per channel, tile or time point opens as a single dataset through *File ▸ Open folder as dataset…*. A regular expression with named groups — `channel`, `t`, `tile`, `x`, `y`, `z` — parses the file names; the dialog previews the match table and the tile map while the pattern is edited, and presets cover the common layouts. Tile positions come from grid indices with an overlap fraction, or from micron coordinates in the names. The result is written to `sirius-dataset.toml` beside the files, so the folder opens directly next time (the pattern is stored there as well, for editing).
+
+```
+tile_x(?P<x>\d+)_y(?P<y>\d+)_ch(?P<channel>\d+)_t(?P<t>\d+)\.tif
+```
+
+The manifest lists the channels with their names, the tiles with their nominal origins, the voxel size and, per file, the (tile, channel, t) it holds. It can be edited by hand.
 
 ## Note
 

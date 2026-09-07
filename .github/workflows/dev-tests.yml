@@ -100,6 +100,11 @@ jobs:
       - name: Run python tests
         run: python -m unittest discover -s bindings/tests -v
 
+      # The worker's own tests: protocol, numpy steps, plugins, model specs
+      # (Hugging Face and Cellpose / micro-SAM cases skip without the packages).
+      - name: Run worker tests
+        run: python -m unittest discover -s app/python/tests -v
+
   cuda-build:
     # Hosted runners have no GPU: this compiles the CUDA paths (cuFFT, nvTIFF,
     # kernels) inside the same image the containers/ directory uses and runs

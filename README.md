@@ -298,7 +298,8 @@ Max projection, Mean over time · Contrast (percentile window + gamma, live hist
 Flat-field · Bleach correction · Deskew + rotate · Crop / pad · Resample · Merge
 channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Torch
 segmentation (a TorchScript / ONNX model run tile-wise by the Python worker, labels by
-watershed or connected components) · Threshold · Label cleanup. Labels are painted,
+watershed or connected components; or a model family — Cellpose, micro-SAM — that
+returns labels itself) · Threshold · Label cleanup. Labels are painted,
 filled, merged, split and deleted in the viewer; every edit, parameter change and
 assistant action is one undo entry.
 
@@ -310,6 +311,26 @@ selected step reports: SIM spectra and the fitted k₀ / phase / modulation tabl
 deconvolution convergence, contrast histograms, alignment maps, the label review table
 and queue, or a shape preview before a run. `?` / F1 opens the step's help page
 (Markdown + LaTeX in `app/help`, editable, reloaded on save).
+
+**Folder datasets**: an acquisition saved as one file per channel, tile or time
+point opens as one dataset (File ▸ Open folder as dataset…, or the Folder… button in
+Open). A regular expression with named groups (`channel`, `t`, `tile`, `x`, `y`, `z`)
+parses the names — presets cover the usual layouts, the dialog previews the match
+table and the tile map as the pattern is edited — and tile origins come from grid
+indices plus an overlap fraction or from micron coordinates in the names. The result
+is written to `sirius-dataset.toml` beside the files (channels, tile origins, voxel
+size, one row per file with its tile / channel / t), so the folder opens directly from
+then on and the manifest can be edited by hand. The viewer's tile chooser and the Load
+step's Tile parameter pick the tile; Stitch with no tile files fuses all of them,
+registering on one channel and time point and applying that layout to every other.
+
+**Segmentation models**: Segment ▸ Download model… (or Hub… next to the model field)
+searches Hugging Face, downloads a model file with progress into
+`$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points the step at it; the same
+dialog lists the model families and whether their packages are installed on the
+worker (`pip install cellpose`, `pip install micro-sam`) and the locally cached files.
+The model field also takes `hf:<repo>[:<file>]`, `cellpose:<model>` and
+`microsam:<model_type>` specs directly, which the HPC worker resolves on its own host.
 
 **Backends**: CUDA (when the build has it and a device is present), CPU, or HPC — a
 Python worker on a cluster node reached over TCP (see "Python worker and HPC backend").
@@ -329,7 +350,10 @@ an action card. "Ask before acting" makes mutating calls wait for confirmation.
 entry, undo, caching, assistant tools, help page — served by the Python worker
 locally and on the HPC backend alike. [app/plugins/README.md](app/plugins/README.md)
 documents the format; `app/plugins/dog_filter.py` is a complete example.
-Process ▸ Reload plugins picks up edits.
+Window ▸ User operations… (also the link at the foot of the add menu) lists the
+plugin files per folder with their load status, creates new ones from a template
+and edits them in a small Python editor; saving reloads the step. Process ▸ Reload
+plugins picks up edits made elsewhere.
 
 **Pipelines** are TOML (`*.sirius.toml`, File ▸ Save pipeline); relative paths in them
 resolve against the file, and the Load step's path opens the dataset when the pipeline

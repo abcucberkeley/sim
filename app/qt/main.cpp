@@ -13,6 +13,7 @@
 #include <QAction>
 #include <QDir>
 #include <QEventLoop>
+#include <QDialog>
 #include <QFileInfo>
 #include <QMenu>
 #include <QDockWidget>
@@ -89,8 +90,13 @@ int main(int argc, char** argv) {
     if (parser.isSet(pipelineOpt)) workbench.loadPlugins(false);
     else QTimer::singleShot(400, &window, [&workbench] { workbench.loadPlugins(false); });
     if (parser.isSet(pipelineOpt)) window.openPipelinePath(parser.value(pipelineOpt));
-    if (parser.isSet(datasetOpt)) window.openDatasetPath(parser.value(datasetOpt));
     window.show();
+    // Opened from inside the event loop so that a dialog it raises (an error
+    // box, the folder pattern dialog) does not block the scripting timers.
+    if (parser.isSet(datasetOpt)) {
+        const QString dataset = parser.value(datasetOpt);
+        QTimer::singleShot(0, &window, [&window, dataset] { window.openDatasetPath(dataset); });
+    }
     if (parser.isSet(runOpt)) QTimer::singleShot(0, &window, &sirius::app::MainWindow::runAll);
     const QStringList toolCalls = parser.values(toolOpt);
     const QStringList actions = parser.values(actionOpt);
@@ -151,10 +157,13 @@ int main(int argc, char** argv) {
                     QFileInfo fi(path);
                     modal->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral("-dialog.") + fi.suffix());
                 }
+                // tool windows and non-modal dialogs (the plugin manager) beside it too
                 for (QWidget* top : QApplication::topLevelWidgets())
-                    if (top != &window && top->isVisible() && top->isWindow() && !qobject_cast<QMenu*>(top) && top->windowType() == Qt::Tool) {
+                    if (top != &window && top->isVisible() && top->isWindow() && !qobject_cast<QMenu*>(top) &&
+                        top != QApplication::activeModalWidget() && (top->windowType() == Qt::Tool || qobject_cast<QDialog*>(top))) {
                         QFileInfo fi(path);
-                        top->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral("-tool.") + fi.suffix());
+                        const QString tag = top->windowType() == Qt::Tool ? QStringLiteral("-tool.") : QStringLiteral("-dialog.");
+                        top->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + tag + fi.suffix());
                     }
                 while (QWidget* modal = QApplication::activeModalWidget()) modal->close();   // let exec() return
                 app.quit();

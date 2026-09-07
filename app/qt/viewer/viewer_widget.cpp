@@ -255,7 +255,7 @@ namespace sirius::app {
         tileCombo = new QComboBox(tileHost);
         tileCombo->setFocusPolicy(Qt::NoFocus);
         tileCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-        tileCombo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads (Load ▸ tile)"));
+        tileCombo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads (Load ▸ tile); the viewed step is re-run on it"));
         tl->addWidget(tileCombo);
         tileHost->hide();
         bl->addWidget(tileHost);
@@ -265,7 +265,10 @@ namespace sirius::app {
                 wb.setStepParam(0, "tile", static_cast<std::int64_t>(i));
             } catch (const std::exception& e) {
                 wb.logLine(std::string("Tile: ") + e.what());
+                return;
             }
+            // switching tiles is navigation: show the new tile without a manual run
+            if (!bridge.running()) bridge.startRun(wb.viewedIndex());
         });
         // display contrast: the auto percentile window or the full data range
         auto* autoBtn = new QPushButton(QStringLiteral("Auto"), bar);

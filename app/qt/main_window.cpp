@@ -11,6 +11,7 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDockWidget>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QInputDialog>
@@ -935,7 +936,27 @@ namespace sirius::app {
         impl_->refreshActions();
     }
 
-    void MainWindow::openDatasetPath(const QString& path) { impl_->openWith(path, OpenOptions{}); }
+    // A plain folder of files (no manifest, not a zarr / N5 store) goes through
+    // the pattern dialog that builds the manifest; everything else opens directly.
+    void MainWindow::openDatasetPath(const QString& path) {
+        const QFileInfo info(path);
+        if (info.isDir() && !isFolderDataset(toStd(path))) {
+            const QDir dir(path);
+            bool store = false;
+            for (const char* marker : {".zarray", ".zgroup", "zarr.json", "attributes.json"})
+                if (dir.exists(QString::fromLatin1(marker))) store = true;
+            if (!store) {
+                impl_->lastDir = path;
+                // window-modal but not blocking: this also runs before the
+                // event loop when the folder comes from the command line
+                auto* dialog = new FolderDatasetDialog(impl_->bridge, path, this);
+                dialog->setAttribute(Qt::WA_DeleteOnClose);
+                dialog->open();
+                return;
+            }
+        }
+        impl_->openWith(path, OpenOptions{});
+    }
 
     void MainWindow::openPipelinePath(const QString& path) {
         try {

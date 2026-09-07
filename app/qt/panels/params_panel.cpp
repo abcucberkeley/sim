@@ -514,9 +514,11 @@ namespace sirius::app {
                     for (std::size_t i = 0; i < ds.tiles.size(); ++i)
                         combo->addItem(QStringLiteral("%1 · %2").arg(i + 1).arg(fromStd(ds.tiles[i].name)));
                     combo->setCurrentIndex(std::clamp(static_cast<int>(step.params.getInt(key)), 0, combo->count() - 1));
-                    combo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads"));
-                    QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), panel,
-                                     [this, key](int i) { setParam(key, static_cast<std::int64_t>(i), false); });
+                    combo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads; the viewed step is re-run on it"));
+                    QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), panel, [this, key](int i) {
+                        setParam(key, static_cast<std::int64_t>(i), false);
+                        if (!bridge.running()) bridge.startRun(bridge.wb().viewedIndex());
+                    });
                     updaters[key] = [combo, key](const ParamSet& p) {
                         QSignalBlocker b(combo);
                         combo->setCurrentIndex(std::clamp(static_cast<int>(p.getInt(key)), 0, combo->count() - 1));
