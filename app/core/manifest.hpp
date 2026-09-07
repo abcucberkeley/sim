@@ -90,6 +90,9 @@ namespace sirius::app {
     // plain pattern and the group order (name of group 1, 2, ...).
     std::string plainPattern(const std::string& pattern, std::vector<std::string>* groupNames);
 
+    // Where a manifest entry lives: relative paths are taken from the folder.
+    std::filesystem::path manifestFilePath(const std::filesystem::path& folder, const ManifestFile& file);
+
     // Build a manifest for the TIFF files of `folder` (non-recursive) with the
     // rule; tile shapes are probed from one file per tile (all must agree).
     // Files the pattern does not match are listed in `unmatched`.

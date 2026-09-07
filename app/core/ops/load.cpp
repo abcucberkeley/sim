@@ -4,11 +4,13 @@
 // angle.
 #include "core/ops/builtin.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <mutex>
 
 #include "core/array_source.hpp"
+#include "core/manifest.hpp"
 
 namespace sirius::app {
 
@@ -37,8 +39,11 @@ namespace sirius::app {
         // Empty error when the probe succeeded.
         std::string cachedProbe(const std::string& path, DatasetMeta& meta) {
             std::error_code ec;
-            const std::filesystem::path p(path);
+            std::filesystem::path p(path);
             if (path.empty() || !std::filesystem::exists(p, ec)) return "file not found";
+            // a multi-file folder changes when its manifest does: a folder's own
+            // mtime does not move when a file inside it is rewritten
+            if (isFolderDataset(path)) p /= DatasetManifest::kFileName;
             const auto mtime = std::filesystem::last_write_time(p, ec);
             std::uintmax_t size = 0;
             if (std::filesystem::is_regular_file(p, ec)) size = std::filesystem::file_size(p, ec);
@@ -92,7 +97,20 @@ namespace sirius::app {
                 meta.sheetAngleDeg = angle;
                 if (meta.acquisition.empty()) meta.acquisition = "Light-sheet";
             }
+            const Index tile = p.getInt("tile");
+            if (tile >= 0 && tile < static_cast<Index>(meta.tiles.size())) meta.tileIndex = tile;
             meta.normalizeChannels();
+        }
+
+        // Tiles a dataset has for the `tile` parameter: one unless a manifest says more.
+        Index tileCountOf(const DatasetMeta& meta) { return std::max<Index>(1, static_cast<Index>(meta.tiles.size())); }
+
+        // "tile 3/9 · tile_x2_y0" for multi-file datasets, empty otherwise.
+        std::string tileSummary(const DatasetMeta& meta) {
+            if (!meta.hasTiles()) return {};
+            const Index tile = std::clamp<Index>(meta.tileIndex, 0, static_cast<Index>(meta.tiles.size()) - 1);
+            return "tile " + std::to_string(tile + 1) + "/" + std::to_string(meta.tiles.size()) + " · " +
+                   meta.tiles[static_cast<std::size_t>(tile)].name;
         }
 
         class LoadOperation final : public Operation {
@@ -107,9 +125,11 @@ namespace sirius::app {
                 info_.params = {
                     pathParam("path", "Source")
                         .withFilter("Images (*.tif *.tiff *.ome.tif *.zarr *.n5);;All files (*)")
-                        .withHelp("Multi-page TIFF / OME-TIFF, or a zarr / N5 store."),
+                        .withHelp("Multi-page TIFF / OME-TIFF, a zarr / N5 store, or a folder with a sirius-dataset.toml manifest."),
                     choiceParam("read_as", "Read as", {kLazy, kFull}, kLazy)
                         .withHelp("Lazy reads planes on demand; full load reads everything once."),
+                    intParam("tile", "Tile", 0).range(0, 1000000)
+                        .withHelp("Multi-file datasets: the tile to view; Stitch fuses all of them"),
                     stringParam("page_order", "Page order", "czt")
                         .withHelp("Axis order of the pages of a plain TIFF, fastest first (ImageJ: czt).")
                         .asAdvanced(),
@@ -142,7 +162,7 @@ namespace sirius::app {
                 std::string sim;
                 if (meta.sim.present)
                     sim = std::to_string(meta.sim.sectionsPerPlane()) + " phase images per plane";
-                return joinSummary({mode, meta.format, sim.empty() ? meta.shapeString() : sim});
+                return joinSummary({mode, meta.format, sim.empty() ? meta.shapeString() : sim, tileSummary(meta)});
             }
 
             Validation validate(const ParamSet& params, const DatasetMeta&) const override {
@@ -160,6 +180,10 @@ namespace sirius::app {
                 }
                 const Index nd = params.getInt("sim_ndirs"), np = params.getInt("sim_nphases");
                 if ((nd > 0) != (np > 0)) v.errors.push_back("SIM layout needs both angles and phases.");
+                const Index tile = params.getInt("tile");
+                if (tile < 0 || tile >= tileCountOf(meta))
+                    v.errors.push_back("Tile " + std::to_string(tile) + " is out of range: the dataset has " +
+                                       std::to_string(tileCountOf(meta)) + (tileCountOf(meta) == 1 ? " tile." : " tiles."));
                 applyOverrides(params, meta);
                 if (meta.sim.present && meta.dims.z % meta.sim.sectionsPerPlane() != 0)
                     v.warnings.push_back(std::to_string(meta.dims.z) + " sections is not a multiple of " +
@@ -206,6 +230,7 @@ namespace sirius::app {
                     options.sim = sim;
                 }
                 options.readAll = params.getString("read_as") == kFull;
+                options.tile = std::max<Index>(0, params.getInt("tile"));
 
                 ctx.report(0.0, "opening " + std::filesystem::path(path).filename().string());
                 OpenResult opened = openDataset(path, options);
@@ -216,7 +241,7 @@ namespace sirius::app {
                 if (options.readAll) {
                     out.array = opened.source->readAll([&](double f, const std::string& m) { ctx.report(f, m); });
                 }
-                out.note = joinSummary({out.meta.format, out.meta.shapeString(), options.readAll ? "in memory" : "lazy"});
+                out.note = joinSummary({out.meta.format, out.meta.shapeString(), options.readAll ? "in memory" : "lazy", tileSummary(out.meta)});
                 out.ranOn = Backend::Cpu;
                 ctx.report(1.0, "");
                 return out;

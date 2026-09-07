@@ -16,6 +16,8 @@
 #include <sirius/tiff_io.hpp>
 #include <sirius/zarr_io.hpp>
 
+#include "core/manifest.hpp"
+
 namespace sirius::app {
 
     namespace fs = std::filesystem;
@@ -706,6 +708,177 @@ namespace sirius::app {
             return r;
         }
 
+        // --- multi-file folder (manifest) ---------------------------------------------
+
+        // One TIFF stack per (tile, channel, t), mapped by the manifest. Files
+        // open on demand and a handful stay open, because a viewer scrubbing z
+        // hits the same file again and again; pages convert to float32.
+        class FolderArraySource final : public ArraySource {
+        public:
+            FolderArraySource(fs::path folder, const DatasetManifest& manifest, DatasetMeta meta)
+                : folder_(std::move(folder)), meta_(std::move(meta)) {
+                // resolve every (tile, c, t) once: file() is a linear scan
+                tiles_ = static_cast<Index>(manifest.tiles.size());
+                const Dims5& d = meta_.dims;
+                paths_.assign(static_cast<std::size_t>(tiles_ * d.c * d.t), std::string());
+                for (const ManifestFile& f : manifest.files) {
+                    const Index k = manifest.tileIndex(f.tile), c = manifest.channelIndex(f.channel);
+                    if (k < 0 || c < 0 || f.t < 0 || f.t >= d.t || c >= d.c) continue;   // validate() reported these
+                    paths_[slot(k, c, f.t)] = manifestFilePath(folder_, f).string();
+                }
+            }
+
+            const DatasetMeta& meta() const noexcept override { return meta_; }
+            Index tileCount() const noexcept override { return tiles_; }
+            Index currentTile() const noexcept override { return meta_.tileIndex; }
+            void selectTile(Index tile) override {
+                checkTile(tile);
+                meta_.tileIndex = tile;
+            }
+
+            void readPlane(Index c, Index t, Index z, float* out) const override {
+                check(c, t, z);
+                const std::string& path = pathOf(meta_.tileIndex, c, t);
+                std::shared_ptr<TiffFile> file = open(path);
+                Buffer<float> plane = file->readPages<float>(static_cast<std::size_t>(z), 1);
+                copyOut(plane, meta_.dims.planeSize(), out, path);
+            }
+
+            void readVolume(Index c, Index t, float* out) const override { readTileVolume(meta_.tileIndex, c, t, out); }
+
+            void readTileVolume(Index tile, Index c, Index t, float* out) const override {
+                checkTile(tile);
+                check(c, t, 0);
+                const std::string& path = pathOf(tile, c, t);
+                std::shared_ptr<TiffFile> file = open(path);
+                Buffer<float> volume = file->readStack<float>();
+                copyOut(volume, meta_.dims.z * meta_.dims.planeSize(), out, path);
+            }
+
+            std::shared_ptr<Array5> readAll(const ProgressFn& progress) const override {
+                const Dims5& d = meta_.dims;
+                auto out = std::make_shared<Array5>(d);
+                const double total = static_cast<double>(std::max<Index>(1, d.c * d.t));
+                Index done = 0;
+                for (Index c = 0; c < d.c; ++c)
+                    for (Index t = 0; t < d.t; ++t) {
+                        if (progress) progress(done / total, "reading " + fs::path(pathOf(meta_.tileIndex, c, t)).filename().string());
+                        readTileVolume(meta_.tileIndex, c, t, out->plane(c, t, 0));
+                        ++done;
+                    }
+                if (progress) progress(1.0, "read");
+                return out;
+            }
+
+        private:
+            static constexpr std::size_t kOpenFiles = 8;
+
+            std::size_t slot(Index tile, Index c, Index t) const noexcept {
+                const Dims5& d = meta_.dims;
+                return static_cast<std::size_t>((tile * d.c + c) * d.t + t);
+            }
+            void checkTile(Index tile) const {
+                if (tile < 0 || tile >= tiles_)
+                    throw std::out_of_range("tile " + std::to_string(tile) + " of " + std::to_string(tiles_) + " in " + folder_.string());
+            }
+            void check(Index c, Index t, Index z) const {
+                const Dims5& d = meta_.dims;
+                if (c < 0 || c >= d.c || t < 0 || t >= d.t || z < 0 || z >= d.z)
+                    throw std::out_of_range("plane (c " + std::to_string(c) + ", t " + std::to_string(t) + ", z " +
+                                            std::to_string(z) + ") outside " + d.toString());
+            }
+            const std::string& pathOf(Index tile, Index c, Index t) const {
+                const std::string& p = paths_[slot(tile, c, t)];
+                if (p.empty())
+                    throw std::runtime_error("no file for tile " + std::to_string(tile) + ", channel " + std::to_string(c) +
+                                             ", t " + std::to_string(t) + " in " + folder_.string());
+                return p;
+            }
+            // The file may have changed since the manifest was written: its
+            // size must still be the manifest's (z, y, x).
+            static void copyOut(const Buffer<float>& b, Index n, float* out, const std::string& path) {
+                if (b.shape().numel() != n)
+                    throw std::runtime_error(path + ": expected " + std::to_string(n) + " values, the file holds " +
+                                             std::to_string(b.shape().numel()));
+                std::memcpy(out, b.data(), static_cast<std::size_t>(n) * sizeof(float));
+            }
+            std::shared_ptr<TiffFile> open(const std::string& path) const {
+                std::lock_guard<std::mutex> g(mutex_);
+                for (auto it = open_.begin(); it != open_.end(); ++it)
+                    if (it->first == path) {
+                        open_.splice(open_.begin(), open_, it);   // most recently used
+                        return it->second;
+                    }
+                auto file = std::make_shared<TiffFile>(path);
+                open_.emplace_front(path, file);
+                while (open_.size() > kOpenFiles) open_.pop_back();
+                return file;
+            }
+
+            fs::path folder_;
+            DatasetMeta meta_;
+            Index tiles_ = 0;
+            std::vector<std::string> paths_;   // (tile, c, t) -> file, "" when the manifest has none
+            mutable std::mutex mutex_;
+            mutable std::list<std::pair<std::string, std::shared_ptr<TiffFile>>> open_;
+        };
+
+        struct FolderProbe {
+            DatasetManifest manifest;
+            DatasetMeta meta;
+            std::string summary;
+        };
+
+        std::string plural(std::size_t n, const char* noun) {
+            return std::to_string(n) + " " + noun + (n == 1 ? "" : "s");
+        }
+
+        // Load and validate the manifest; dims from the manifest plus one probed
+        // file of the tile being opened.
+        FolderProbe probeFolder(const fs::path& folder, const OpenOptions* options) {
+            FolderProbe p;
+            p.manifest = DatasetManifest::load(folder / DatasetManifest::kFileName);
+            const std::vector<std::string> problems = p.manifest.validate(folder);
+            if (!problems.empty()) {
+                std::string msg = DatasetManifest::kFileName + std::string(": ") + problems.front();
+                if (problems.size() > 1) msg += " (+" + std::to_string(problems.size() - 1) + " more)";
+                throw std::runtime_error(msg);
+            }
+            const DatasetManifest& m = p.manifest;
+            const Index tile = options ? options->tile : 0;
+            if (tile < 0 || tile >= static_cast<Index>(m.tiles.size()))
+                throw std::out_of_range("tile " + std::to_string(tile) + ": the dataset has " + plural(m.tiles.size(), "tile"));
+            const ManifestFile* first = m.file(tile, 0, 0);   // validate() guarantees it
+            if (!first) throw std::runtime_error("no file for the first channel and time point of tile " + m.tiles[static_cast<std::size_t>(tile)].name);
+            const TiffInfo info = inspectTiff(manifestFilePath(folder, *first).string());
+            if (info.pageCount() == 0) throw std::runtime_error(first->path + ": the TIFF has no pages");
+
+            DatasetMeta& meta = p.meta;
+            fs::path named = folder;
+            if (named.filename().empty()) named = named.parent_path();
+            meta.name = m.name.empty() ? named.filename().string() : m.name;
+            meta.sourcePath = folder.string();
+            meta.format = "folder";
+            meta.dims = Dims5{static_cast<Index>(m.channels.size()), m.timePoints(), static_cast<Index>(info.pageCount()),
+                              static_cast<Index>(info.height()), static_cast<Index>(info.width())};
+            meta.sourceType = info.pixelType();
+            std::error_code ec;
+            for (const ManifestFile& f : m.files) {
+                const std::uintmax_t size = fs::file_size(manifestFilePath(folder, f), ec);
+                if (!ec) meta.bytesOnDisk += static_cast<std::uint64_t>(size);
+            }
+            meta.voxelUm = options && options->voxelUm ? *options->voxelUm : m.voxelUm;
+            meta.frameIntervalS = m.frameIntervalS;
+            meta.channels = options && options->channels ? *options->channels : m.channels;
+            meta.acquisition = m.acquisition;
+            meta.sim = options && options->sim ? *options->sim : m.sim;
+            meta.tiles = m.tiles;
+            meta.tileIndex = tile;
+            meta.normalizeChannels();
+            p.summary = plural(m.tiles.size(), "tile") + " · " + plural(m.channels.size(), "channel") + " · manifest";
+            return p;
+        }
+
     } // namespace
 
     // --- public entry points -------------------------------------------------------------
@@ -724,6 +897,7 @@ namespace sirius::app {
     DatasetMeta probeDataset(const std::string& path) {
         std::error_code ec;
         if (!fs::exists(path, ec)) throw std::runtime_error("no such file or directory: " + path);
+        if (isFolderDataset(path)) return probeFolder(path, nullptr).meta;
         if (fs::is_directory(path, ec)) {
             if (!isZarrStore(path)) throw std::runtime_error("not a zarr / N5 store: " + path);
             return probeZarr(path, nullptr).meta;
@@ -735,7 +909,12 @@ namespace sirius::app {
         std::error_code ec;
         if (!fs::exists(path, ec)) throw std::runtime_error("no such file or directory: " + path);
         OpenResult r;
-        if (fs::is_directory(path, ec)) {
+        if (isFolderDataset(path)) {
+            FolderProbe p = probeFolder(path, &options);
+            r.source = std::make_shared<FolderArraySource>(path, p.manifest, p.meta);
+            r.metadataSummary = p.summary;
+            r.dimsFromMetadata = true;
+        } else if (fs::is_directory(path, ec)) {
             if (!isZarrStore(path)) throw std::runtime_error("not a zarr / N5 store: " + path);
             ZarrProbe p = probeZarr(path, &options);
             auto src = std::make_shared<ZarrArraySource>(path, p.meta, p.map);
