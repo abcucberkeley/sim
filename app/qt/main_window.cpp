@@ -11,8 +11,14 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDockWidget>
+#include <QPushButton>
+#include <QWindow>
+#include <QMouseEvent>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
+#include <QTimer>
+#include <QFontMetrics>
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QLabel>
@@ -81,16 +87,79 @@ namespace sirius::app {
             void leaveEvent(QEvent*) override { update(); }
         };
 
+        // The title bar of a floating dock: a handle that moves the window
+        // through the compositor (Qt's own drag moves nothing on Wayland),
+        // Dock to put it back, and close. Docked panels carry their own
+        // headers and show no title bar at all.
+        class FloatingTitle : public QWidget {
+        public:
+            FloatingTitle(QDockWidget* dock, const QString& name) : QWidget(dock), dock_(dock) {
+                setFixedHeight(30);
+                setCursor(Qt::SizeAllCursor);
+                setAutoFillBackground(true);
+                QPalette pal = palette();
+                pal.setColor(QPalette::Window, theme::kSurface);
+                setPalette(pal);
+                auto* h = new QHBoxLayout(this);
+                h->setContentsMargins(12, 0, 6, 0);
+                h->setSpacing(6);
+                h->addWidget(widgets::label(name.toUpper(), 11, theme::kNeutral700, QFont::DemiBold, this));
+                h->addWidget(widgets::label(QStringLiteral("drag to move · double-click or Dock to put back"), 11, theme::kNeutral500, -1, this), 1);
+                auto* back = new QPushButton(QStringLiteral("Dock"), this);
+                widgets::setButtonClass(back, "ghost small");
+                back->setCursor(Qt::PointingHandCursor);
+                QObject::connect(back, &QPushButton::clicked, dock, [dock] { dock->setFloating(false); });
+                auto* close = new QPushButton(QStringLiteral("×"), this);
+                widgets::setButtonClass(close, "ghost small");
+                close->setCursor(Qt::PointingHandCursor);
+                QObject::connect(close, &QPushButton::clicked, dock, &QDockWidget::close);
+                h->addWidget(back);
+                h->addWidget(close);
+            }
+
+        protected:
+            void mousePressEvent(QMouseEvent* e) override {
+                if (e->button() != Qt::LeftButton) return;
+                if (QWindow* w = dock_->windowHandle(); w && w->startSystemMove()) return;
+                drag_ = e->globalPosition().toPoint() - dock_->frameGeometry().topLeft();   // platforms without a system move
+                dragging_ = true;
+            }
+            void mouseMoveEvent(QMouseEvent* e) override {
+                if (dragging_) dock_->move(e->globalPosition().toPoint() - drag_);
+            }
+            void mouseReleaseEvent(QMouseEvent*) override { dragging_ = false; }
+            void mouseDoubleClickEvent(QMouseEvent*) override { dock_->setFloating(false); }
+
+        private:
+            QDockWidget* dock_;
+            QPoint drag_;
+            bool dragging_ = false;
+        };
+
         QDockWidget* makeDock(const QString& name, QWidget* content, QMainWindow* window) {
             auto* dock = new QDockWidget(name, window);
             dock->setObjectName(name);
             dock->setWidget(content);
             dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                               QDockWidget::DockWidgetClosable);
-            // No title bar chrome: the panels carry their own headers.
+            // No title bar chrome while docked: the panels carry their own headers.
             auto* title = new QWidget(dock);
             title->setFixedHeight(0);
             dock->setTitleBarWidget(title);
+            auto* floating = new FloatingTitle(dock, name);
+            floating->hide();
+            QObject::connect(dock, &QDockWidget::topLevelChanged, dock, [dock, title, floating](bool top) {
+                dock->setTitleBarWidget(top ? static_cast<QWidget*>(floating) : title);
+                (top ? static_cast<QWidget*>(floating) : title)->show();
+                if (top) {
+                    // a floating panel starts as a real window of a useful size
+                    dock->setWindowFlags(dock->windowFlags() | Qt::Window);
+                    dock->show();
+                    if (dock->width() < 360 || dock->height() < 240) dock->resize(std::max(dock->width(), 480), std::max(dock->height(), 360));
+                    dock->raise();
+                    dock->activateWindow();
+                }
+            });
             return dock;
         }
 
@@ -139,6 +208,43 @@ namespace sirius::app {
         QWidget* statusProgress = nullptr;
         QProgressBar* progressBar = nullptr;
         QLabel* progressText = nullptr;
+        QLabel* statusLog = nullptr;     // the last log line, cleared after a moment
+        QTimer statusLogTimer;
+
+        // A temporary QStatusBar message would hide the whole left block,
+        // progress bar included, for as long as the worker keeps logging.
+        void showLogLine(const QString& line, int ms) {
+            const QFontMetrics fm(statusLog->font());
+            statusLog->setText(fm.elidedText(line.simplified(), Qt::ElideRight, 640));
+            statusLogTimer.start(ms);
+        }
+        QElapsedTimer progressClock;   // since the run / task started, for the estimate
+        QString progressMessage;       // the step's last message ("cellpose 2/4")
+
+        // "53 % · ~40 s left · cellpose cpsam_v2" from the fraction, the clock
+        // and the last message; the estimate waits until 3 % is done.
+        void showProgress(double f, const QString& message) {
+            statusProgress->show();
+            progressBar->setValue(static_cast<int>(std::clamp(f, 0.0, 1.0) * 1000.0));
+            if (!message.isEmpty()) progressMessage = message;
+            QString text = QStringLiteral("%1 %").arg(static_cast<int>(f * 100.0 + 0.5));
+            const double elapsed = progressClock.isValid() ? progressClock.elapsed() / 1000.0 : 0.0;
+            if (f >= 0.03 && f < 1.0 && elapsed >= 2.0) {
+                const double left = elapsed * (1.0 - f) / f;
+                text += QStringLiteral(" · ~%1 left").arg(durationText(left));
+            } else if (elapsed >= 2.0) {
+                text += QStringLiteral(" · %1").arg(durationText(elapsed));
+            }
+            if (!progressMessage.isEmpty()) text += QStringLiteral(" · ") + progressMessage;
+            progressText->setText(text);
+        }
+
+        static QString durationText(double seconds) {
+            if (seconds < 60.0) return QStringLiteral("%1 s").arg(static_cast<int>(seconds + 0.5));
+            const int m = static_cast<int>(seconds / 60.0), sec = static_cast<int>(seconds + 0.5) % 60;
+            if (m < 60) return QStringLiteral("%1:%2 min").arg(m).arg(sec, 2, 10, QLatin1Char('0'));
+            return QStringLiteral("%1 h %2 min").arg(m / 60).arg(m % 60);
+        }
         QLabel* statusRight = nullptr;
 
         QMenu* recentMenu = nullptr;
@@ -459,13 +565,18 @@ namespace sirius::app {
             progressBar = new QProgressBar(statusProgress);
             progressBar->setRange(0, 1000);
             progressBar->setTextVisible(false);
-            progressBar->setFixedSize(120, 4);
+            progressBar->setFixedSize(160, 4);
             progressText = widgets::label(QStringLiteral("0 %"), 11, theme::kText, -1, statusProgress);
             pl->addWidget(progressBar);
             pl->addWidget(progressText);
             statusProgress->hide();
+            statusLog = widgets::label(QString(), 11, theme::kNeutral600, -1, left);
+            statusLog->setMaximumWidth(660);
+            statusLogTimer.setSingleShot(true);
+            QObject::connect(&statusLogTimer, &QTimer::timeout, self, [this] { statusLog->clear(); });
             for (QWidget* w : {static_cast<QWidget*>(statusShape), static_cast<QWidget*>(statusDtype),
-                               static_cast<QWidget*>(statusZoom), static_cast<QWidget*>(statusCursor), statusProgress})
+                               static_cast<QWidget*>(statusZoom), static_cast<QWidget*>(statusCursor), statusProgress,
+                               static_cast<QWidget*>(statusLog)})
                 ll->addWidget(w);
             ll->addStretch(1);
             sb->addWidget(left, 1);
@@ -888,16 +999,18 @@ namespace sirius::app {
             impl_->refreshTitle();
         });
         connect(&bridge, &WorkbenchBridge::runStarted, this, [this] {
-            impl_->statusProgress->show();
-            impl_->progressBar->setValue(0);
-            impl_->progressText->setText(QStringLiteral("0 %"));
+            impl_->progressClock.start();
+            impl_->progressMessage.clear();
+            impl_->showProgress(0.0, QString());
             impl_->refreshActions();
         });
-        connect(&bridge, &WorkbenchBridge::runProgress, this, [this](double f, int, const QString& msg) {
-            impl_->statusProgress->show();
-            impl_->progressBar->setValue(static_cast<int>(f * 1000.0));
-            impl_->progressText->setText(QStringLiteral("%1 %").arg(static_cast<int>(f * 100.0 + 0.5)));
-            if (!msg.isEmpty()) statusBar()->showMessage(msg, 2000);
+        connect(&bridge, &WorkbenchBridge::runProgress, this, [this](double f, int step, const QString& msg) {
+            QString message = msg;
+            if (step >= 0 && step < impl_->wb().pipeline().size()) {
+                const QString name = fromStd(impl_->wb().pipeline().at(step).name);
+                message = message.isEmpty() ? name : name + QStringLiteral(" · ") + message;
+            }
+            impl_->showProgress(f, message);
         });
         connect(&bridge, &WorkbenchBridge::runFinished, this, [this](bool ok, const QString& error) {
             impl_->statusProgress->hide();
@@ -905,22 +1018,22 @@ namespace sirius::app {
             if (!ok && !error.isEmpty() && error != QLatin1String("cancelled"))
                 QMessageBox::warning(this, QStringLiteral("Run failed"), error);
         });
-        connect(&bridge, &WorkbenchBridge::taskStarted, this, [this](const QString&) {
-            impl_->statusProgress->show();
-            impl_->progressBar->setValue(0);
+        connect(&bridge, &WorkbenchBridge::taskStarted, this, [this](const QString& name) {
+            impl_->progressClock.start();
+            impl_->progressMessage = name;
+            impl_->showProgress(0.0, QString());
             impl_->refreshActions();
         });
         connect(&bridge, &WorkbenchBridge::taskProgress, this, [this](double f, const QString& msg) {
-            impl_->progressBar->setValue(static_cast<int>(f * 1000.0));
-            impl_->progressText->setText(QStringLiteral("%1 %").arg(static_cast<int>(f * 100.0 + 0.5)));
-            if (!msg.isEmpty()) statusBar()->showMessage(msg, 2000);
+            impl_->showProgress(f, msg);
+
         });
         connect(&bridge, &WorkbenchBridge::taskFinished, this, [this](bool ok, const QString& error) {
             impl_->statusProgress->hide();
             impl_->refreshActions();
             if (!ok && !error.isEmpty()) QMessageBox::warning(this, impl_->bridge.taskLabel(), error);
         });
-        connect(&bridge, &WorkbenchBridge::logged, this, [this](const QString& line) { statusBar()->showMessage(line, 4000); });
+        connect(&bridge, &WorkbenchBridge::logged, this, [this](const QString& line) { impl_->showLogLine(line, 4000); });
 
         QSettings settings;
         if (settings.contains(QStringLiteral("window/geometry"))) restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray());

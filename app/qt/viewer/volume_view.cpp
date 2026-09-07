@@ -1,5 +1,7 @@
 #include "qt/viewer/volume_view.hpp"
 
+#include "core/labels.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -46,6 +48,9 @@ namespace sirius::app {
             uniform float uStep;           // world units per sample
             uniform vec3 uRamp;            // lo, hi, alpha
             uniform int uMip;
+            uniform sampler3D uLabels;     // RGBA: palette colour, a = 1 inside a label
+            uniform int uLabelsOn;
+            uniform float uLabelAlpha;     // label opacity per unit length
 
             float sampleChannel(int i, vec3 uvw) {
                 if (i == 0) return texture(uTex0, uvw).r;
@@ -72,6 +77,8 @@ namespace sirius::app {
                 tn = max(tn, 0.0);
                 vec3 acc = vec3(0.0);
                 float alpha = 0.0;
+                vec3 lab = vec3(0.0);          // labels composited front to back on their own
+                float labA = 0.0;
                 float best[4];
                 best[0] = 0.0; best[1] = 0.0; best[2] = 0.0; best[3] = 0.0;
                 int steps = int((tf - tn) / uStep) + 1;
@@ -96,13 +103,22 @@ namespace sirius::app {
                             alpha += (1.0 - alpha) * a;
                         }
                     }
-                    if (alpha > 0.985) break;
+                    if (uLabelsOn == 1 && labA < 0.985) {
+                        vec4 l = texture(uLabels, uvw);
+                        if (l.a > 0.5) {
+                            float a = clamp(uLabelAlpha * uStep * 60.0, 0.0, 1.0);
+                            lab += (1.0 - labA) * a * l.rgb;
+                            labA += (1.0 - labA) * a;
+                        }
+                    }
+                    if (alpha > 0.985 && (uLabelsOn == 0 || labA > 0.985)) break;
                 }
                 if (uMip == 1) {
                     for (int c = 0; c < uCount; ++c) acc += uColor[c] * best[c];
                     alpha = clamp(max(max(best[0], best[1]), max(best[2], best[3])), 0.0, 1.0);
                 }
-                fragColor = vec4(acc, alpha);
+                // labels in front of the intensity they cover
+                fragColor = vec4(lab + (1.0 - labA) * acc, labA + (1.0 - labA) * alpha);
             })";
 
         const char* kLineVertex = R"(
@@ -126,6 +142,8 @@ namespace sirius::app {
         QOpenGLVertexArrayObject vao;
         GLuint textures[kMaxChannels] = {0, 0, 0, 0};
         int textureCount = 0;
+        GLuint labelTexture = 0;
+        bool labelsUploaded = false;
         GLuint lineVbo = 0;
     };
 
@@ -249,6 +267,7 @@ namespace sirius::app {
         makeCurrent();
         if (glOk_) {
             glDeleteTextures(kMaxChannels, gl_->textures);
+            if (gl_->labelTexture) glDeleteTextures(1, &gl_->labelTexture);
             if (gl_->lineVbo) glDeleteBuffers(1, &gl_->lineVbo);
         }
         gl_->ray.reset();
@@ -271,6 +290,23 @@ namespace sirius::app {
     void VolumeView::clearVolumes() {
         channels_.clear();
         key_ = 0;
+        update();
+    }
+
+    void VolumeView::setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity) {
+        labels_ = labels;
+        lz_ = z;
+        ly_ = y;
+        lx_ = x;
+        labelsKey_ = key;
+        labelOpacity_ = opacity;
+        update();
+    }
+
+    void VolumeView::clearLabels() {
+        if (!labels_ && labelsKey_ == 0) return;
+        labels_ = nullptr;
+        labelsKey_ = 0;
         update();
     }
 
@@ -349,9 +385,55 @@ namespace sirius::app {
         if (!gl_->line) return;
         gl_->vao.create();
         glGenTextures(kMaxChannels, gl_->textures);
+        glGenTextures(1, &gl_->labelTexture);
         glGenBuffers(1, &gl_->lineVbo);
         glOk_ = true;
         uploadedKey_ = 0;
+        uploadedLabelsKey_ = 0;
+    }
+
+    // The label volume at the same reduction as the intensity textures,
+    // nearest label per box centre, as palette colours with a = 1 where labelled.
+    void VolumeView::uploadLabels() {
+        gl_->labelsUploaded = false;
+        uploadedLabelsKey_ = labelsKey_;
+        if (!labels_ || lx_ <= 0 || ly_ <= 0 || lz_ <= 0) return;
+        const int fx = static_cast<int>((lx_ + kMaxTexels - 1) / kMaxTexels);
+        const int fy = static_cast<int>((ly_ + kMaxTexels - 1) / kMaxTexels);
+        const int fz = static_cast<int>((lz_ + kMaxTexels - 1) / kMaxTexels);
+        const int tx = static_cast<int>((lx_ + fx - 1) / fx), ty = static_cast<int>((ly_ + fy - 1) / fy),
+                  tz = static_cast<int>((lz_ + fz - 1) / fz);
+        std::vector<unsigned char> texels(static_cast<std::size_t>(tx) * ty * tz * 4, 0);
+        bool any = false;
+        for (int z = 0; z < tz; ++z) {
+            const Index zz = std::min<Index>(static_cast<Index>(z) * fz + fz / 2, lz_ - 1);
+            for (int y = 0; y < ty; ++y) {
+                const Index yy = std::min<Index>(static_cast<Index>(y) * fy + fy / 2, ly_ - 1);
+                const std::uint32_t* row = labels_ + (zz * ly_ + yy) * lx_;
+                unsigned char* out = texels.data() + (static_cast<std::size_t>(z) * ty + y) * tx * 4;
+                for (int x = 0; x < tx; ++x) {
+                    const Index xx = std::min<Index>(static_cast<Index>(x) * fx + fx / 2, lx_ - 1);
+                    const std::uint32_t id = row[xx];
+                    if (!id) continue;
+                    const std::array<float, 3> col = labelColor(id);
+                    out[x * 4 + 0] = static_cast<unsigned char>(col[0] * 255.0f);
+                    out[x * 4 + 1] = static_cast<unsigned char>(col[1] * 255.0f);
+                    out[x * 4 + 2] = static_cast<unsigned char>(col[2] * 255.0f);
+                    out[x * 4 + 3] = 255;
+                    any = true;
+                }
+            }
+        }
+        glBindTexture(GL_TEXTURE_3D, gl_->labelTexture);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, tx, ty, tz, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels.data());
+        glBindTexture(GL_TEXTURE_3D, 0);
+        gl_->labelsUploaded = any;
     }
 
     void VolumeView::resizeGL(int, int) {}
@@ -433,6 +515,7 @@ namespace sirius::app {
 
         if (glOk_ && !channels_.empty()) {
             if (uploadedKey_ != key_) uploadTextures();
+            if (uploadedLabelsKey_ != labelsKey_) uploadLabels();
             if (gl_->textureCount > 0) {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -457,6 +540,12 @@ namespace sirius::app {
                                               QVector3D(c.color[0], c.color[1], c.color[2]));
                     ++k;
                 }
+                const bool labelsOn = gl_->labelsUploaded && labels_ != nullptr;
+                gl_->ray->setUniformValue("uLabelsOn", labelsOn ? 1 : 0);
+                gl_->ray->setUniformValue("uLabelAlpha", labelOpacity_);
+                glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(kMaxChannels));
+                glBindTexture(GL_TEXTURE_3D, labelsOn ? gl_->labelTexture : 0);
+                gl_->ray->setUniformValue("uLabels", kMaxChannels);
                 gl_->vao.bind();
                 glDrawArrays(GL_TRIANGLES, 0, 3);
                 gl_->vao.release();

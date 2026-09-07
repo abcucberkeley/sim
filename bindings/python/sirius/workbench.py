@@ -1021,10 +1021,31 @@ def load_model(path: str, device: str = "auto", progress: ProgressFn = None):
         m = _OnnxModel(ort.InferenceSession(path, providers=providers))
     else:
         torch = _torch()
-        m = torch.jit.load(path, map_location=device)
+        try:
+            m = torch.jit.load(path, map_location=device)
+        except Exception as e:  # noqa: BLE001 - say what the file is instead of PytorchStreamReader details
+            raise ValueError(_not_torchscript_message(path, e)) from e
         m.eval()
     _model_cache[key] = m
     return m
+
+
+def _not_torchscript_message(path: str, error: BaseException) -> str:
+    """A checkpoint / state dict / safetensors file is not a runnable model."""
+    name = os.path.basename(path)
+    low = name.lower()
+    detail = str(error).splitlines()[0][:120] if str(error).strip() else error.__class__.__name__
+    if low.endswith(".safetensors"):
+        what = "a safetensors weights file"
+    elif "constants.pkl" in detail or low.endswith((".bin", ".ckpt")) or "state_dict" in low:
+        what = "a checkpoint / state dict (weights only)"
+    elif "central directory" in detail or "zip archive" in detail:
+        what = "not a TorchScript archive"
+    else:
+        what = "not loadable as TorchScript"
+    return (f"{name} is {what}: SIRIUS runs TorchScript or ONNX files that carry the model's code. "
+            f"Export the model with torch.jit.trace / torch.jit.script (or to ONNX), or pick a model family "
+            f"(cellpose:default, microsam:vit_b_lm) from the hub. ({detail})")
 
 
 def model_info(path: str, device: str = "cpu") -> Dict[str, Any]:

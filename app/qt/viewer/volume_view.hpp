@@ -11,6 +11,7 @@
 // GL surface exactly as in the design.
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -41,6 +42,12 @@ namespace sirius::app {
         void setVolumes(quint64 key, const std::vector<Channel>& channels, const std::array<double, 3>& voxelUm);
         void clearVolumes();
         bool hasVolumes() const noexcept { return !channels_.empty(); }
+
+        // Instance labels of the same (z, y, x) grid, composited over the
+        // volume in their palette colours; `key` changes with every edit.
+        void setLabels(quint64 key, const std::uint32_t* labels, Index z, Index y, Index x, float opacity);
+        void clearLabels();
+        bool hasLabels() const noexcept { return labels_ != nullptr; }
 
         void setOrientation(double yawDeg, double pitchDeg);
         double yaw() const noexcept { return yaw_; }
@@ -74,12 +81,17 @@ namespace sirius::app {
     private:
         struct Gl;
         void uploadTextures();
+        void uploadLabels();
         void layoutOverlays();
         void applyOrientation(double yaw, double pitch, bool emitSignal);
 
         std::unique_ptr<Gl> gl_;
         std::vector<Channel> channels_;
         quint64 key_ = 0, uploadedKey_ = 0;
+        const std::uint32_t* labels_ = nullptr;
+        Index lz_ = 0, ly_ = 0, lx_ = 0;
+        quint64 labelsKey_ = 0, uploadedLabelsKey_ = 0;
+        float labelOpacity_ = 0.45f;
         std::array<double, 3> voxelUm_{0.1, 0.1, 0.2};
         double yaw_ = 35.0, pitch_ = 22.0, zoom_ = 1.0;
         double clipLo_ = 0.0, clipHi_ = 1.0;

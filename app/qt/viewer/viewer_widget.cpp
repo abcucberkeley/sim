@@ -155,6 +155,7 @@ namespace sirius::app {
         std::uint32_t mergeFirst = 0;
         QPointF lastPaint;
         bool painting = false;
+        quint64 labelsVersion = 0;   // bumps on every label edit: the 3D label texture follows
         QTimer playTimer;
         QString cursorText = QStringLiteral("cursor —");
         QString zoomText = QStringLiteral("100 %");
@@ -583,7 +584,8 @@ namespace sirius::app {
             }
         });
         QObject::connect(&bridge, &WorkbenchBridge::labelsChanged, q, [this](quint64) {
-            dirty.xy = dirty.xz = dirty.yz = dirty.cmp = true;
+            ++labelsVersion;
+            dirty.xy = dirty.xz = dirty.yz = dirty.cmp = dirty.vol = true;
             scheduleUpdate();
         });
         QObject::connect(&bridge, &WorkbenchBridge::viewStateChanged, q, [this] { applyViewStateDiff(vs()); });
@@ -856,7 +858,7 @@ namespace sirius::app {
             if (s.cx != prev.cx || s.cy != prev.cy) dirty.xz = dirty.yz = true;
             if (s.channelVisible != prev.channelVisible) dirty = Dirty{};
             if (s.labels != prev.labels || s.labelOpacity != prev.labelOpacity || s.selectedLabel != prev.selectedLabel)
-                dirty.xy = dirty.xz = dirty.yz = dirty.cmp = true;
+                dirty.xy = dirty.xz = dirty.yz = dirty.cmp = dirty.vol = true;
             if (s.mode != prev.mode) {
                 if (s.mode == ViewMode::Volume) dirty.vol = true;
                 if (s.mode == ViewMode::Compare) dirty.cmp = true;
@@ -1071,7 +1073,18 @@ namespace sirius::app {
             key ^= (static_cast<quint64>(c + 1) * 0x9e3779b97f4a7c15ull) ^ static_cast<quint64>(std::hash<float>{}(w.lo) * 31 + std::hash<float>{}(w.hi));
             chans.push_back(ch);
         }
-        if (volume) volume->setVolumes(key, chans, model.meta().voxelUm);
+        if (volume) {
+            volume->setVolumes(key, chans, model.meta().voxelUm);
+            // labels ride along as their own texture, toggled with the Labels box
+            const LabelVolume* L = s.labels ? model.labels() : nullptr;
+            if (L && t < L->t()) {
+                const quint64 lkey = (static_cast<quint64>(reinterpret_cast<std::uintptr_t>(L)) ^ (static_cast<quint64>(t + 1) << 40) ^
+                                      (labelsVersion << 8)) | 1;
+                volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity));
+            } else {
+                volume->clearLabels();
+            }
+        }
     }
 
     // --- zoom / pan --------------------------------------------------------------------

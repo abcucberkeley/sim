@@ -355,6 +355,18 @@ TEST_CASE("Executor caches per fingerprint and invalidates downstream only", "[a
         REQUIRE(c->array);
         CHECK(c->array->at(0, 0, 0, 0, 1) == 4.0f);
         CHECK(ex.cachedBytesOf(scaleId) == c->array->bytes());
+        // while a holder keeps the reloaded output, every request returns
+        // that same object (one disk read, stable pointers for the viewer);
+        // once released, the next request reloads
+        CHECK(ex.cached(p, 1) == c);
+        CHECK(ex.lastOutput(scaleId) == c);
+        const StepOutput* held = c.get();
+        c.reset();
+        auto again = ex.lastOutput(scaleId);
+        REQUIRE(again);
+        REQUIRE(again->array);
+        CHECK(again.get() != held);
+        CHECK(again->array->at(0, 0, 0, 0, 1) == 4.0f);
     }
     SECTION("recompute keeps only the newest result") {
         p.setCache(1, CachePolicy::Recompute);
@@ -572,6 +584,44 @@ TEST_CASE("Workbench runs, caches, displays and reports", "[app][workbench]") {
         wb.displayOutput(&actual);
         CHECK(actual == 0);
     }
+}
+
+TEST_CASE("Painting labels on a disk-cached step edits the volume the viewer shows", "[app][workbench][labels]") {
+    registerBuiltinOperations();
+    if (!findOperation("threshold")) SKIP("the threshold operation is not registered");
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 8, 8));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("threshold");
+    wb.setStepParam(1, "method", std::string("Manual"));
+    wb.setStepParam(1, "value", 1e9);   // nothing above: no labels yet
+    wb.setStepCache(1, CachePolicy::Disk);
+    auto job = runSync(wb);
+    REQUIRE(job->succeeded());
+    wb.view(1);
+    int actual = -1;
+    auto shown = wb.displayOutput(&actual);
+    REQUIRE(shown);
+    CHECK(actual == 1);
+    REQUIRE(shown->labels);
+    CHECK(shown->labels->maxLabel() == 0);
+    // the disk-cached output is one object while it is held, so the labels
+    // the stroke edits are the labels on screen
+    CHECK(wb.displayOutput() == shown);
+    CHECK(wb.viewedLabels() == shown->labels);
+    wb.setTool(ViewerTool::Paint);
+    wb.setPaintTool(PaintTool::Brush);
+    wb.beginPaintStroke();
+    wb.paintLabels(2, 4, 4, false);
+    CHECK(shown->labels->at(0, 2, 4, 4) != 0);
+    CHECK(shown->labels->maxLabel() == 1);
+    CHECK(wb.displayOutput()->labels->at(0, 2, 4, 4) == shown->labels->at(0, 2, 4, 4));
+    wb.undo();
+    CHECK(shown->labels->at(0, 2, 4, 4) == 0);
+    wb.redo();
+    CHECK(shown->labels->at(0, 2, 4, 4) != 0);
 }
 
 TEST_CASE("Workbench loads pipelines and the example without losing the dataset", "[app][workbench]") {

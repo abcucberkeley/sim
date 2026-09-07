@@ -44,6 +44,7 @@ namespace sirius::app {
         std::filesystem::path diskPath;
         std::size_t bytes = 0;
         bool arrayOnDisk = false;
+        std::weak_ptr<const StepOutput> restored;   // the reloaded copy while someone holds it
     };
 
     Executor::Executor(std::filesystem::path scratchDir) : scratch_(std::move(scratchDir)) {
@@ -74,9 +75,14 @@ namespace sirius::app {
     std::shared_ptr<const StepOutput> Executor::load(Entry& e) const {
         if (!e.arrayOnDisk || !e.output) return e.output;
         // Reload the spilled array into a fresh StepOutput; the entry keeps
-        // the on-disk copy so memory can be released again later.
+        // the on-disk copy so memory can be released again later. While a
+        // caller (the viewer, a paint stroke) still holds the restored output
+        // it is handed out again: one object, one read, instead of the whole
+        // array coming off the disk for every refresh.
+        if (auto held = e.restored.lock()) return held;
         auto restored = std::make_shared<StepOutput>(*e.output);
         restored->array = readArrayFile(e.diskPath);
+        e.restored = restored;
         return restored;
     }
 

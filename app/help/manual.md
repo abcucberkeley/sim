@@ -12,14 +12,14 @@ $$
 ## The window
 
 - **Operations** (left): the pipeline. The checkbox enables or skips a step; ▲▼ reorder; ◉ shows a step's output in the viewer. *Load* is pinned first and cannot be disabled. *Add a processing step* opens the grouped library.
-- **Viewer** (centre): *Ortho* shows XY with YZ, XZ and a z projection; *3D* ray-casts the volume; *Compare* puts the raw data next to the viewed step. The tool strip selects Navigate, Probe, Measure, ROI or Paint; the crosshair only moves in Probe mode.
+- **Viewer** (centre): *Ortho* shows XY with YZ, XZ and a z projection; *3D* ray-casts the volume; *Compare* puts the raw data next to the viewed step. The tool strip selects Navigate, Probe, Measure, ROI or Paint; the crosshair only moves in Probe mode. The *Labels* box toggles the segmentation overlay in every mode, including the 3D view, where labels are composited in their colours over the volume at the label opacity.
 - **Parameters** (right): the selected step's parameters, the backend (CUDA, CPU, HPC) and the cache policy (memory, disk, recompute), with *Run step*, *View* and *Remove*.
 - **Diagnostics** (bottom): per-kind panels — spectra and fitted pattern vectors for SIM, convergence for deconvolution, histograms for contrast, the label review table for segmentation, alignment statistics for stitching and registration.
 - **Assistant** (✦): drives the same operations through a typed tool API; every action lands in the undo stack and is shown as a card.
 
 ## Running
 
-*Run all enabled* (⌘R) runs every enabled step; *Run step* runs the selected one and whatever it depends on. Outputs are cached per step according to the cache policy; changing a parameter invalidates exactly the steps downstream of it. The status bar shows the progress and the memory the caches hold.
+*Run all enabled* (⌘R) runs every enabled step; *Run step* runs the selected one and whatever it depends on. The status bar shows the progress, the time left once a few percent are done, and what the running step is doing (a Cellpose model reports its stages). Outputs are cached per step according to the cache policy; changing a parameter invalidates exactly the steps downstream of it. A disk-cached output is read back once and kept while it is on screen, so scrubbing and painting on it stay quick. The status bar shows the progress and the memory the caches hold.
 
 ## Backends
 
@@ -36,7 +36,7 @@ $$
 | **Folder datasets** <br> sirius-dataset.toml | *File ▸ Open folder as dataset…* opens one file per channel, tile or time point as a single dataset: a regular expression parses the names once, the result is saved beside the files and reused. The viewer's tile chooser and the Load step's *Tile* pick the tile; *Stitch* fuses all of them. |
 | **Models** <br> Segment menu | *Segment ▸ Download model…* fetches segmentation models from Hugging Face into the local model store and points a Torch segmentation step at them. |
 | **User operations** <br> Window menu | *Window ▸ User operations…* (also the link at the foot of the add menu) lists the Python files that define user steps, shows load errors, and edits or creates them in place; saving reloads the step. |
-| **Layout** <br> Window menu | Docks can be moved, floated (also to another monitor) and reset; the layout is saved between sessions. |
+| **Layout** <br> Window menu | Docks can be floated (also to another monitor) and reset; the layout is saved between sessions. A floating panel gets a title bar: drag it to move (on Wayland the compositor moves it), *Dock* or a double-click puts it back. |
 
 ## Note
 

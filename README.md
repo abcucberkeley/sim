@@ -306,7 +306,7 @@ assistant action is one undo entry.
 **Viewer**: Ortho (XY, YZ, XZ, MIP·Z with a shared crosshair, physical z scaling, scale
 bars, zoom/pan), 3D (OpenGL ray casting or MIP with presets, yaw/pitch, z clip,
 bounding box), Compare (raw next to the viewed step over the same physical field);
-tools Navigate, Probe, Measure, ROI, Paint. The diagnostics dock shows what the
+tools Navigate, Probe, Measure, ROI, Paint; the label overlay toggles in every mode, 3D included. The diagnostics dock shows what the
 selected step reports: SIM spectra and the fitted k₀ / phase / modulation table,
 deconvolution convergence, contrast histograms, alignment maps, the label review table
 and queue, or a shape preview before a run. `?` / F1 opens the step's help page
