@@ -134,7 +134,7 @@ TEST_CASE("the built-in operations are registered with complete metadata", "[app
     // other test files register synthetic "test_*" operations in the same process
     std::size_t builtins = 0;
     for (const Operation* op : allOperations())
-        if (op->kind().rfind("test_", 0) != 0) ++builtins;
+        if (op->kind().rfind("test_", 0) != 0 && !op->info().plugin) ++builtins;   // nor plugins the worker tests load
     CHECK(builtins == 19);
 
     SECTION("menu groups follow the design's order and exclude Load") {
