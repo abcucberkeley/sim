@@ -7,6 +7,7 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <algorithm>
+#include <functional>
 
 #include <QPen>
 #include <QEnterEvent>
@@ -295,6 +296,10 @@ namespace sirius::app {
             // the next time the menu opens.
             void markStale() { stale_ = true; }
 
+            // "Manage user operations…" link (in the User group, or under the
+            // last group while there are no user operations yet).
+            std::function<void()> onManagePlugins;
+
         protected:
             void showEvent(QShowEvent* e) override {
                 if (stale_) {
@@ -311,6 +316,20 @@ namespace sirius::app {
                     if (item->widget()) item->widget()->deleteLater();
                     delete item;
                 }
+                auto manageLink = [this](QWidget* parent) {
+                    auto* link = new ClickRow(parent);
+                    link->setTopRule(0);
+                    auto* ll = new QHBoxLayout(link);
+                    ll->setContentsMargins(10, 6, 10, 6);
+                    ll->addWidget(widgets::label(QStringLiteral("Manage user operations…"), 11, theme::kAccent, -1, link));
+                    link->setToolTip(QStringLiteral("Browse, edit and create the Python files that define user operations"));
+                    connect(link, &ClickRow::clicked, this, [this] {
+                        hide();
+                        if (onManagePlugins) onManagePlugins();
+                    });
+                    return link;
+                };
+                bool linked = false;
                 for (const auto& [group, ops] : operationGroups()) {
                     auto* row = new QWidget(this);
                     auto* grid = new QGridLayout(row);
@@ -336,8 +355,16 @@ namespace sirius::app {
                         connect(item, &ClickRow::clicked, this, [this, kind] { add(kind); });
                         itemsLayout->addWidget(item);
                     }
+                    if (group == "User") {
+                        itemsLayout->addWidget(manageLink(items));
+                        linked = true;
+                    }
                     grid->addWidget(items, 0, 1);
                     layout->addWidget(row);
+                    layout->addWidget(new Rule(1, Qt::Horizontal, this));
+                }
+                if (!linked) {
+                    layout->addWidget(manageLink(this));
                     layout->addWidget(new Rule(1, Qt::Horizontal, this));
                 }
                 auto* example = new ClickRow(this);
@@ -456,6 +483,10 @@ namespace sirius::app {
 
         impl_->addMenu = new AddMenu(bridge, content);
         impl_->addMenu->hide();
+        impl_->addMenu->onManagePlugins = [this] {
+            impl_->addRow->setSelected(false);
+            emit managePluginsRequested();
+        };
         connect(&bridge, &WorkbenchBridge::operationsChanged, this, [this] { impl_->addMenu->markStale(); });
         auto* menuHost = new QWidget(content);
         auto* ml = new QHBoxLayout(menuHost);
