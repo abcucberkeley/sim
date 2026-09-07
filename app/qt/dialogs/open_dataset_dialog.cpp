@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -21,9 +22,12 @@
 #include <QTableWidget>
 #include <QTimer>
 
+#include "core/manifest.hpp"
+#include "qt/dialogs/folder_dataset_dialog.hpp"
 #include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
+#include "qt/workbench_bridge.hpp"
 
 namespace sirius::app {
 
@@ -32,6 +36,16 @@ namespace sirius::app {
 
     namespace {
         constexpr int kMaxRecent = 12;
+
+        // TIFF files directly in a folder (what a manifest would describe).
+        int tiffCount(const QString& folder) {
+            int n = 0;
+            for (const QString& e : QDir(folder).entryList(QDir::Files | QDir::NoDotAndDotDot)) {
+                const QString l = e.toLower();
+                if (l.endsWith(QLatin1String(".tif")) || l.endsWith(QLatin1String(".tiff"))) ++n;
+            }
+            return n;
+        }
 
         QString sizeText(std::uint64_t bytes) {
             const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
@@ -72,8 +86,17 @@ namespace sirius::app {
         DatasetMeta probed;
         bool probeOk = false;
         bool dimsFromMetadata = false;
+        bool isFolder = false;          // a folder with a manifest: nothing to override
         Index pages = 0;
+        WorkbenchBridge* bridge = nullptr;
     };
+
+    OpenDatasetDialog::OpenDatasetDialog(WorkbenchBridge& bridge, QWidget* parent, const QString& initialPath)
+        : OpenDatasetDialog(parent, initialPath) {
+        impl_->bridge = &bridge;
+    }
+
+    void OpenDatasetDialog::setBridge(WorkbenchBridge* bridge) { impl_->bridge = bridge; }
 
     OpenDatasetDialog::OpenDatasetDialog(QWidget* parent, const QString& initialPath)
         : QDialog(parent), impl_(std::make_unique<Impl>()) {
@@ -88,15 +111,20 @@ namespace sirius::app {
         auto* pathRow = new QHBoxLayout();
         pathRow->setSpacing(6);
         impl_->path = new QLineEdit(initialPath, this);
-        impl_->path->setPlaceholderText(QStringLiteral("/data/…/stack.tif or dataset.zarr"));
+        impl_->path->setPlaceholderText(QStringLiteral("/data/…/stack.tif, dataset.zarr or a folder of TIFF files"));
         auto* browse = new QPushButton(QStringLiteral("Browse"), this);
         widgets::setButtonClass(browse, "secondary small");
+        auto* browseFolder = new QPushButton(QStringLiteral("Folder…"), this);
+        widgets::setButtonClass(browseFolder, "secondary small");
+        browseFolder->setToolTip(QStringLiteral("A folder of TIFF files, one per channel / time point / tile, described by a %1 manifest")
+                                     .arg(QLatin1String(DatasetManifest::kFileName)));
         auto* browseDir = new QPushButton(QStringLiteral("Directory…"), this);
         widgets::setButtonClass(browseDir, "secondary small");
         browseDir->setToolTip(QStringLiteral("zarr / N5 stores are directories"));
         browseDir->setVisible(zarrSupported());
         pathRow->addWidget(impl_->path, 1);
         pathRow->addWidget(browse);
+        pathRow->addWidget(browseFolder);
         pathRow->addWidget(browseDir);
         root->addLayout(pathRow);
 
@@ -224,7 +252,10 @@ namespace sirius::app {
             name->setToolTip(f);
             name->setData(Qt::UserRole, f);
             impl_->recent->setItem(r, 0, name);
-            impl_->recent->setItem(r, 1, new QTableWidgetItem(fi.suffix().isEmpty() ? QStringLiteral("dir") : fi.suffix()));
+            const QString format = fi.isDir() && isFolderDataset(toStd(f)) ? QStringLiteral("folder")
+                                   : fi.suffix().isEmpty()                 ? QStringLiteral("dir")
+                                                                           : fi.suffix();
+            impl_->recent->setItem(r, 1, new QTableWidgetItem(format));
             impl_->recent->setItem(r, 2, new QTableWidgetItem(fi.exists() ? fi.lastModified().toString(QStringLiteral("MMM d HH:mm"))
                                                                           : QStringLiteral("missing")));
         }
@@ -253,6 +284,24 @@ namespace sirius::app {
             const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("Open zarr / N5 store"));
             if (!d.isEmpty()) impl_->path->setText(d);
         });
+        connect(browseFolder, &QPushButton::clicked, this, [this] {
+            const QString start = impl_->path->text().isEmpty() ? QString() : QFileInfo(impl_->path->text()).absolutePath();
+            const QString d = QFileDialog::getExistingDirectory(this, QStringLiteral("Open folder of TIFF files"), start);
+            if (d.isEmpty()) return;
+            if (isFolderDataset(toStd(d)) || !impl_->bridge) {
+                impl_->path->setText(d);   // the probe reports the manifest, or its absence
+                return;
+            }
+            // no manifest yet: describe the files; the folder dialog opens the
+            // dataset itself, so close without asking the caller to open it again
+            FolderDatasetDialog describe(*impl_->bridge, d, this);
+            const bool opened = describe.exec() == QDialog::Accepted;
+            impl_->path->setText(d);
+            if (opened) {
+                addRecentFile(d);
+                reject();
+            }
+        });
         connect(impl_->recent, &QTableWidget::itemSelectionChanged, this, [this] {
             const auto items = impl_->recent->selectedItems();
             if (!items.isEmpty()) impl_->path->setText(impl_->recent->item(items.first()->row(), 0)->data(Qt::UserRole).toString());
@@ -265,23 +314,44 @@ namespace sirius::app {
         connect(&impl_->probeTimer, &QTimer::timeout, this, [this] {
             const QString p = impl_->path->text().trimmed();
             impl_->probeOk = false;
+            impl_->isFolder = false;
             impl_->error->hide();
+            impl_->layoutBox->setVisible(true);
             if (p.isEmpty() || !QFileInfo::exists(p)) {
-                impl_->facts->setText(p.isEmpty() ? QStringLiteral("Choose a TIFF / OME-TIFF file or a zarr / N5 store.")
+                impl_->facts->setText(p.isEmpty() ? QStringLiteral("Choose a TIFF / OME-TIFF file, a zarr / N5 store or a folder of TIFF files.")
                                                   : QStringLiteral("No such file or directory."));
                 impl_->open->setEnabled(false);
                 return;
             }
+            const bool folder = QFileInfo(p).isDir() && isFolderDataset(toStd(p));
+            if (!folder && QFileInfo(p).isDir()) {
+                // a folder of TIFFs without a manifest is not yet a dataset
+                const int tiffs = tiffCount(p);
+                if (tiffs > 0) {
+                    impl_->facts->setText(QStringLiteral("Folder of %1 TIFF file(s) without a %2 manifest. %3")
+                                              .arg(tiffs)
+                                              .arg(QLatin1String(DatasetManifest::kFileName),
+                                                   impl_->bridge ? QStringLiteral("Use Folder… to describe how the file names map to channels, time points and tiles.")
+                                                                 : QStringLiteral("Describe the files with File ▸ Open folder…")));
+                    impl_->open->setEnabled(false);
+                    updatePageCheck();
+                    return;
+                }
+            }
             try {
                 impl_->probed = probeDataset(toStd(p));
                 impl_->probeOk = true;
+                impl_->isFolder = folder;
+                impl_->layoutBox->setVisible(!folder);   // the manifest settles layout, voxel size and channels
                 const DatasetMeta& m = impl_->probed;
                 impl_->pages = m.dims.planes();
-                impl_->dimsFromMetadata = m.format != "tiff";   // plain TIFF: the page mapping is the user's call
-                impl_->facts->setText(QStringLiteral("%1 · %2 · %3 · %4 · %5 channel(s)")
-                                          .arg(fromStd(m.format), fromStd(m.shapeString()), QString::fromLatin1(toString(m.sourceType)),
-                                               sizeText(m.bytesOnDisk))
-                                          .arg(m.channels.size()));
+                impl_->dimsFromMetadata = folder || m.format != "tiff";   // plain TIFF: the page mapping is the user's call
+                QString facts = QStringLiteral("%1 · %2 · %3 · %4 · %5 channel(s)")
+                                    .arg(fromStd(m.format), fromStd(m.shapeString()), QString::fromLatin1(toString(m.sourceType)),
+                                         sizeText(m.bytesOnDisk))
+                                    .arg(m.channels.size());
+                if (m.hasTiles()) facts += QStringLiteral(" · %1 tiles").arg(m.tiles.size());
+                impl_->facts->setText(facts);
                 {
                     QSignalBlocker b1(impl_->c), b2(impl_->t), b3(impl_->z);
                     impl_->c->setValue(static_cast<int>(m.dims.c));
@@ -335,6 +405,11 @@ namespace sirius::app {
             impl_->pageCheck->clear();
             return;
         }
+        if (impl_->isFolder) {
+            impl_->pageCheck->clear();
+            impl_->open->setEnabled(true);
+            return;
+        }
         const Index c = impl_->c->value(), t = impl_->t->value();
         Index z = impl_->z->value();
         const Index pages = impl_->pages;
@@ -352,6 +427,12 @@ namespace sirius::app {
 
     OpenOptions OpenDatasetDialog::options() const {
         OpenOptions o;
+        if (impl_->isFolder) {
+            // everything else comes from the manifest; start on the first tile
+            o.readAll = impl_->readAs->currentIndex() == 1;
+            o.tile = 0;
+            return o;
+        }
         PageOrder po;
         po.order = toStd(impl_->order->currentData().toString());
         po.c = impl_->c->value();
