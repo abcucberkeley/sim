@@ -484,12 +484,45 @@ namespace sirius::app {
                     break;
                 }
             if (wb.hasDataset()) {
-                factsTable({{QStringLiteral("Shape"), fromStd(ds.shapeString())},
-                            {QStringLiteral("Acquisition"), ds.acquisition.empty() ? QStringLiteral("—") : fromStd(ds.acquisition)},
-                            {QStringLiteral("Voxel"), fromStd(ds.voxelString())},
-                            {QStringLiteral("Dtype"), pixelTypeName(ds.sourceType) + QStringLiteral(" · ") + bytesText(ds.bytesOnDisk)}},
-                           into);
+                std::vector<std::pair<QString, QString>> facts{
+                    {QStringLiteral("Shape"), fromStd(ds.shapeString())},
+                    {QStringLiteral("Acquisition"), ds.acquisition.empty() ? QStringLiteral("—") : fromStd(ds.acquisition)},
+                    {QStringLiteral("Voxel"), fromStd(ds.voxelString())},
+                    {QStringLiteral("Dtype"), pixelTypeName(ds.sourceType) + QStringLiteral(" · ") + bytesText(ds.bytesOnDisk)}};
+                if (ds.hasTiles()) {
+                    // grid extent from the tiles' grid indices (rows × columns, layers when > 1)
+                    Index rows = 0, cols = 0, layers = 0;
+                    for (const TileInfo& t : ds.tiles) {
+                        layers = std::max(layers, t.gridIndex[0] + 1);
+                        rows = std::max(rows, t.gridIndex[1] + 1);
+                        cols = std::max(cols, t.gridIndex[2] + 1);
+                    }
+                    QString tiles = QString::number(ds.tiles.size());
+                    if (rows * cols > 1) tiles += QStringLiteral(" · %1 × %2 grid").arg(rows).arg(cols);
+                    if (layers > 1) tiles += QStringLiteral(" · %1 layers").arg(layers);
+                    facts.emplace_back(QStringLiteral("Tiles"), tiles);
+                }
+                factsTable(facts, into);
                 channelList(ds, into);
+                // the tile chooser, bound to Load ▸ tile like the viewer toolbar's
+                const bool hasTileParam = std::any_of(info.params.begin(), info.params.end(),
+                                                      [](const ParamSpec& s) { return s.key == "tile"; });
+                if (ds.hasTiles() && hasTileParam) {
+                    const std::string key = "tile";
+                    auto* combo = new QComboBox(body);
+                    for (std::size_t i = 0; i < ds.tiles.size(); ++i)
+                        combo->addItem(QStringLiteral("%1 · %2").arg(i + 1).arg(fromStd(ds.tiles[i].name)));
+                    combo->setCurrentIndex(std::clamp(static_cast<int>(step.params.getInt(key)), 0, combo->count() - 1));
+                    combo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads"));
+                    QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), panel,
+                                     [this, key](int i) { setParam(key, static_cast<std::int64_t>(i), false); });
+                    updaters[key] = [combo, key](const ParamSet& p) {
+                        QSignalBlocker b(combo);
+                        combo->setCurrentIndex(std::clamp(static_cast<int>(p.getInt(key)), 0, combo->count() - 1));
+                    };
+                    into->addWidget(field(QStringLiteral("Tile"), combo, body));
+                    done.push_back(key);
+                }
             } else {
                 auto* hint = widgets::label(QStringLiteral("No dataset loaded. Choose a file above or use File ▸ Open dataset…"), 12,
                                             theme::kNeutral600, -1, body);

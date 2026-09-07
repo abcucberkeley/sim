@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <functional>
 
+#include <QComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QGuiApplication>
@@ -94,6 +96,10 @@ namespace sirius::app {
         QHBoxLayout* swatchLayout = nullptr;
         std::vector<ChannelSwatch*> swatches;
         QString swatchSignature;
+        // multi-file datasets: which tile the pipeline reads (Load ▸ tile)
+        QWidget* tileHost = nullptr;
+        QComboBox* tileCombo = nullptr;
+        QString tileSignature;
 
         // tool strip
         std::array<GlyphButton*, 5> tools{};
@@ -188,6 +194,7 @@ namespace sirius::app {
         bool previewing = false;
         void refreshChrome();
         void refreshSwatches();
+        void refreshTiles();
         void refreshDims();
         void refreshHints();
         void applyViewStateDiff(const ViewState& s);
@@ -239,6 +246,27 @@ namespace sirius::app {
         swatchLayout->setContentsMargins(0, 0, 0, 0);
         swatchLayout->setSpacing(4);
         bl->addWidget(swatchHost);
+        // tile chooser: only for multi-file datasets with more than one tile
+        tileHost = new QWidget(bar);
+        auto* tl = new QHBoxLayout(tileHost);
+        tl->setContentsMargins(6, 0, 0, 0);
+        tl->setSpacing(4);
+        tl->addWidget(new widgets::CaptionLabel(QStringLiteral("Tile"), tileHost));
+        tileCombo = new QComboBox(tileHost);
+        tileCombo->setFocusPolicy(Qt::NoFocus);
+        tileCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        tileCombo->setToolTip(QStringLiteral("Which tile of the multi-file dataset the pipeline reads (Load ▸ tile)"));
+        tl->addWidget(tileCombo);
+        tileHost->hide();
+        bl->addWidget(tileHost);
+        QObject::connect(tileCombo, qOverload<int>(&QComboBox::currentIndexChanged), q, [this](int i) {
+            if (i < 0) return;
+            try {
+                wb.setStepParam(0, "tile", static_cast<std::int64_t>(i));
+            } catch (const std::exception& e) {
+                wb.logLine(std::string("Tile: ") + e.what());
+            }
+        });
         // display contrast: the auto percentile window or the full data range
         auto* autoBtn = new QPushButton(QStringLiteral("Auto"), bar);
         auto* resetBtn = new QPushButton(QStringLiteral("Reset"), bar);
@@ -540,6 +568,7 @@ namespace sirius::app {
         QObject::connect(&bridge, &WorkbenchBridge::pipelineChanged, q, [this] { rebuildOutput(); });
         QObject::connect(&bridge, &WorkbenchBridge::runFinished, q, [this](bool, const QString&) { rebuildOutput(); });
         QObject::connect(&bridge, &WorkbenchBridge::stepChanged, q, [this](int index) {
+            if (index == 0) refreshTiles();   // Load ▸ tile edited elsewhere
             if (index == wb.viewedIndex()) {
                 if (previewing || wb.viewedIsLivePreview()) {
                     rebuildOutput();   // re-applies the preview window
@@ -653,6 +682,29 @@ namespace sirius::app {
             }
         }
         for (std::size_t c = 0; c < swatches.size(); ++c) swatches[c]->setChecked(vs().channelOn(static_cast<Index>(c)));
+        refreshTiles();
+    }
+
+    // "1 · tile_0_0", "2 · tile_0_1", …: the displayed output's tiles, current
+    // = the tile it was read from. Hidden for single-tile data.
+    void ViewerWidget::Impl::refreshTiles() {
+        if (!tileHost) return;
+        const DatasetMeta& m = model.meta();
+        if (!model.valid() || !m.hasTiles()) {
+            tileHost->hide();
+            return;
+        }
+        QString sig;
+        for (const TileInfo& t : m.tiles) sig += QString::fromStdString(t.name) + QLatin1Char(';');
+        QSignalBlocker block(tileCombo);
+        if (sig != tileSignature) {
+            tileSignature = sig;
+            tileCombo->clear();
+            for (std::size_t i = 0; i < m.tiles.size(); ++i)
+                tileCombo->addItem(QStringLiteral("%1 · %2").arg(i + 1).arg(QString::fromStdString(m.tiles[i].name)));
+        }
+        tileCombo->setCurrentIndex(std::clamp(static_cast<int>(m.tileIndex), 0, tileCombo->count() - 1));
+        tileHost->show();
     }
 
     void ViewerWidget::Impl::refreshChrome() {
