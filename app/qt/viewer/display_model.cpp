@@ -1,7 +1,9 @@
 #include "qt/viewer/display_model.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <memory>
 #include <limits>
 
 #include "core/array_source.hpp"
@@ -231,6 +233,14 @@ namespace sirius::app {
             ChannelPlane cp;
             cp.tint = tintOf(meta_, c, meta_.rgb);
             cp.window = window(c, t);
+            if (std::abs(cp.window.gamma - 1.0f) > 1e-4f) {
+                // gamma through a 256-entry table: one pow per level, not per pixel
+                auto lut = std::make_shared<std::array<std::uint8_t, 256>>();
+                for (int i = 0; i < 256; ++i)
+                    (*lut)[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(
+                        std::lround(255.0 * std::pow(i / 255.0, 1.0 / cp.window.gamma)));
+                cp.lut = lut;
+            }
             chans.push_back(cp);
         }
         return chans;
@@ -271,7 +281,8 @@ namespace sirius::app {
                     const float scale = 255.0f / (cp.window.hi - cp.window.lo);
                     const float gf = (v - cp.window.lo) * scale;
                     // NaN compares false on both sides and maps to 0
-                    const int gi = gf > 255.0f ? 255 : (gf > 0.0f ? static_cast<int>(gf) : 0);
+                    int gi = gf > 255.0f ? 255 : (gf > 0.0f ? static_cast<int>(gf) : 0);
+                    if (cp.lut) gi = (*cp.lut)[static_cast<std::size_t>(gi)];
                     r += (gi * cp.tint[0]) >> 8;
                     g += (gi * cp.tint[1]) >> 8;
                     b += (gi * cp.tint[2]) >> 8;

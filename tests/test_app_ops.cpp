@@ -783,3 +783,55 @@ TEST_CASE("Deconvolve runs Richardson-Lucy with a theoretical PSF", "[app][ops][
         CHECK_FALSE(op.validate(p, meta).ok());
     }
 }
+
+TEST_CASE("Contrast manual window, Auto / Reset helpers and live preview", "[app][ops][contrast]") {
+    const Operation& op = requireOperation("contrast");
+    CHECK(op.info().livePreview);
+    const Dims5 dims{1, 1, 2, 8, 8};
+    auto arr = std::make_shared<Array5>(Array5::zeros(dims));
+    for (Index i = 0; i < arr->numel(); ++i) arr->data()[i] = static_cast<float>(i) / static_cast<float>(arr->numel() - 1) * 10.0f;   // 0..10
+    DatasetMeta meta;
+    meta.dims = dims;
+    meta.normalizeChannels();
+    const StepInput in{meta, arr, nullptr, nullptr};
+
+    ParamSet p = op.defaults();
+    p.set("mode", std::string("Manual"));
+    p.set("min", 2.0);
+    p.set("max", 4.0);
+    const ContrastWindow w = contrastWindow(in, p, 0, 0, true);
+    CHECK(w.manual);
+    CHECK(w.lo == 2.0f);
+    CHECK(w.hi == 4.0f);
+    CHECK_THAT(w.dataMin, WithinAbs(0.0, 1e-6));
+    CHECK_THAT(w.dataMax, WithinAbs(10.0, 1e-6));
+    CHECK(op.summary(p, meta).find("window 2 – 4") != std::string::npos);
+
+    Progress prog;
+    const StepOutput out = op.run(in, p, prog.ctx);
+    REQUIRE(out.array);
+    CHECK(out.array->data()[0] == 0.0f);                                  // below min
+    CHECK(out.array->data()[out.array->numel() - 1] == 1.0f);             // above max
+    const Index mid = out.array->numel() * 3 / 10;                        // value ≈ 3 -> 0.5
+    CHECK_THAT(out.array->data()[mid], WithinAbs(0.5, 0.05));
+
+    SECTION("validation rejects an empty window") {
+        p.set("max", 2.0);
+        CHECK_FALSE(op.validate(p, meta).ok());
+    }
+    SECTION("Auto returns to percentiles, Reset spans the data") {
+        ParamSet a = contrastAutoParams(p);
+        CHECK(a.getString("mode") == "Percentiles");
+        a.set("lo_percentile", 5.0);    // 128 samples: the 0.2 / 99.8 defaults are the end points
+        a.set("hi_percentile", 95.0);
+        const ParamSet r = contrastResetParams(a, in);
+        CHECK(r.getString("mode") == "Manual");
+        CHECK_THAT(r.getDouble("min"), WithinAbs(0.0, 1e-6));
+        CHECK_THAT(r.getDouble("max"), WithinAbs(10.0, 1e-6));
+        CHECK(r.getDouble("gamma") == 1.0);
+        const ContrastWindow pw = contrastWindow(in, a, 0, 0);
+        CHECK_FALSE(pw.manual);
+        CHECK(pw.lo > 0.0f);
+        CHECK(pw.hi < 10.0f);
+    }
+}

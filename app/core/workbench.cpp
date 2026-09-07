@@ -828,6 +828,9 @@ namespace sirius::app {
     }
 
     std::shared_ptr<const StepOutput> Workbench::displayOutput(int* actualIndex) const {
+        // A live-preview step that has not run (or is stale) is shown on its
+        // input: the viewer applies the step's parameters itself.
+        if (viewedIsLivePreview()) return upstreamOutput(viewed_, actualIndex);
         for (int i = viewed_; i >= 0; --i) {
             if (i > 0 && !pipeline_.at(i).enabled) continue;
             auto out = output(i);
@@ -838,6 +841,27 @@ namespace sirius::app {
         }
         if (actualIndex) *actualIndex = -1;
         return nullptr;
+    }
+
+    std::shared_ptr<const StepOutput> Workbench::upstreamOutput(int index, int* actualIndex) const {
+        for (int i = std::min(index, pipeline_.size()) - 1; i >= 0; --i) {
+            if (i > 0 && !pipeline_.at(i).enabled) continue;
+            auto out = output(i);
+            if (out && (out->array || out->source)) {
+                if (actualIndex) *actualIndex = i;
+                return out;
+            }
+        }
+        if (actualIndex) *actualIndex = -1;
+        return nullptr;
+    }
+
+    bool Workbench::viewedIsLivePreview() const {
+        if (!source_ || viewed_ <= 0 || viewed_ >= pipeline_.size()) return false;
+        const Step& s = pipeline_.at(viewed_);
+        if (!s.enabled) return false;
+        const Operation* op = findOperation(s.kind);
+        return op && op->info().livePreview && !outputFresh(viewed_);
     }
 
     Diagnostics Workbench::previewDiagnostics(int index) const {
@@ -860,14 +884,7 @@ namespace sirius::app {
         for (const std::string& e : v.errors) d.warnings.push_back(e);
         // The operation's own live preview, when it has one and an input exists.
         if (source_ && index > 0) {
-            int actual = -1;
-            std::shared_ptr<const StepOutput> upstream;
-            for (int i = index - 1; i >= 0; --i) {
-                if (i > 0 && !pipeline_.at(i).enabled) continue;
-                upstream = output(i);
-                if (upstream) { actual = i; break; }
-            }
-            (void)actual;
+            std::shared_ptr<const StepOutput> upstream = upstreamOutput(index);
             if (upstream) {
                 try {
                     if (auto p = op->preview(upstream->asInput(), s.params)) {

@@ -222,6 +222,11 @@ namespace sirius::app {
         // has one, else the nearest computed upstream output (Load's lazy
         // source at worst). `actualIndex` reports which one it is.
         std::shared_ptr<const StepOutput> displayOutput(int* actualIndex = nullptr) const;
+        // Nearest computed output upstream of step `index` (the step's input).
+        std::shared_ptr<const StepOutput> upstreamOutput(int index, int* actualIndex = nullptr) const;
+        // True while the viewed step is shown as a live preview on its input
+        // (OpInfo::livePreview and not run or stale).
+        bool viewedIsLivePreview() const;
         // Diagnostics of the selected step: the last run's, or the
         // operation's live preview when it offers one.
         Diagnostics selectedDiagnostics() const;

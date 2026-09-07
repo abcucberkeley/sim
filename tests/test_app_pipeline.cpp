@@ -696,3 +696,40 @@ TEST_CASE("History merges by key and clears redo on push", "[app][history]") {
     CHECK_FALSE(h.canRedo());
     CHECK(h.undoLabel() == "1→5");
 }
+
+TEST_CASE("A live-preview step is displayed on its input until it runs", "[app][workbench][preview]") {
+    registerTestOps();
+    if (!findOperation("contrast")) SKIP("built-in operations not registered");
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource());
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    wb.addStep("test_scale");
+    const StepId contrastId = wb.addStep("contrast");
+    const int ci = wb.pipeline().indexOf(contrastId);
+    wb.view(ci);
+    // nothing has run: the preview falls back to the Load step's source
+    CHECK(wb.viewedIsLivePreview());
+    int actual = -1;
+    auto shown = wb.displayOutput(&actual);
+    REQUIRE(shown);
+    CHECK(actual == 0);
+    CHECK(wb.upstreamOutput(ci, &actual) == shown);
+
+    runSync(wb, 1);   // scale only
+    shown = wb.displayOutput(&actual);
+    CHECK(actual == 1);
+    CHECK(wb.viewedIsLivePreview());
+
+    runSync(wb);      // contrast too: its own output is shown
+    CHECK_FALSE(wb.viewedIsLivePreview());
+    shown = wb.displayOutput(&actual);
+    CHECK(actual == ci);
+
+    wb.setStepParam(ci, "gamma", 2.0);   // stale again -> preview on the input
+    CHECK(wb.viewedIsLivePreview());
+    shown = wb.displayOutput(&actual);
+    CHECK(actual == 1);
+    wb.setStepEnabled(ci, false);        // a skipped step is never previewed
+    CHECK_FALSE(wb.viewedIsLivePreview());
+}

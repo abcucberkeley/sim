@@ -30,6 +30,7 @@ namespace sirius::app {
     struct DisplayWindow {
         float lo = 0.0f;
         float hi = 1.0f;
+        float gamma = 1.0f;   // display = ((v - lo) / (hi - lo)) ^ (1 / gamma)
     };
 
     class DisplayModel {
@@ -51,7 +52,7 @@ namespace sirius::app {
         // Full: the (c, t) volume's minimum and maximum, nothing clipped.
         enum class WindowMode { Auto, Full };
         DisplayWindow window(Index c, Index t);
-        void setWindow(Index c, DisplayWindow w);
+        void setWindow(Index c, DisplayWindow w);   // an explicit window (live previews)
         void setWindowMode(WindowMode m);
         WindowMode windowMode() const noexcept { return windowMode_; }
         void resetWindows();
@@ -96,6 +97,7 @@ namespace sirius::app {
             Index colStride = 1;    // floats between columns
             std::array<int, 3> tint{256, 256, 256};
             DisplayWindow window;
+            std::shared_ptr<const std::array<std::uint8_t, 256>> lut;   // gamma table, null for gamma 1
         };
 
         DisplayWindow computeWindow(Index c, Index t);

@@ -51,6 +51,11 @@ namespace sirius::app {
         bool remoteCapable = false;       // the Python worker implements it
         bool producesLabels = false;
         bool needsLabels = false;         // consumes the labels of its input
+        // The viewer can show this step on its input without running it (a
+        // display-level mapping such as Contrast): while the step is not
+        // run or stale, the upstream output is displayed through the step's
+        // current parameters and updates live as they change.
+        bool livePreview = false;
         std::string helpPage;             // markdown file stem under app/help (defaults to kind)
     };
 

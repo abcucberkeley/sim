@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 #include <sirius/image_ops.hpp>
 
@@ -15,8 +16,12 @@ namespace sirius::app {
 
     namespace {
 
+        constexpr const char* kPercentiles = "Percentiles";
+        constexpr const char* kManual = "Manual";
+
         struct ChannelWindow {
             float lo = 0.0f, hi = 1.0f;
+            float dataMin = 0.0f, dataMax = 1.0f;
             DiagnosticHistogram histogram;
         };
 
@@ -55,6 +60,8 @@ namespace sirius::app {
             }
             if (!(mn <= mx)) { mn = 0.0f; mx = 1.0f; }
             if (mx <= mn) mx = mn + 1.0f;
+            w.dataMin = mn;
+            w.dataMax = mx;
             w.histogram.bins = histogram(samples.data(), n, 30, mn, mx);
             w.histogram.binLo = mn;
             w.histogram.binHi = mx;
@@ -77,8 +84,15 @@ namespace sirius::app {
             d.summary = summary;
             const double lo = params.getDouble("lo_percentile", 0.2), hi = params.getDouble("hi_percentile", 99.8);
             const double gamma = params.getDouble("gamma", 1.0);
-            for (Index c = 0; c < input.meta.dims.c; ++c)
-                d.histograms.push_back(windowOf(input, c, lo, hi, gamma, maxPlanes).histogram);
+            const bool manual = params.getString("mode", kPercentiles) == kManual;
+            for (Index c = 0; c < input.meta.dims.c; ++c) {
+                ChannelWindow w = windowOf(input, c, lo, hi, gamma, maxPlanes);
+                if (manual) {
+                    w.histogram.lo = static_cast<float>(params.getDouble("min", w.dataMin));
+                    w.histogram.hi = static_cast<float>(params.getDouble("max", w.dataMax));
+                }
+                d.histograms.push_back(w.histogram);
+            }
             return d;
         }
 
@@ -93,9 +107,14 @@ namespace sirius::app {
                 info_.defaultCache = CachePolicy::Recompute;
                 info_.separableOverT = false;   // the window spans every time point
                 info_.helpPage = "contrast";
+                info_.livePreview = true;
                 info_.params = {
+                    choiceParam("mode", "Window", {kPercentiles, kManual}, kPercentiles)
+                        .withHelp("Percentiles of the data, or an explicit min / max"),
                     doubleParam("lo_percentile", "Low percentile", 0.2).range(0.0, 50.0, 0.1, 2).withUnit("%"),
                     doubleParam("hi_percentile", "High percentile", 99.8).range(50.0, 100.0, 0.1, 2).withUnit("%"),
+                    doubleParam("min", "Min", 0.0).withHelp("Manual window: values at or below map to 0"),
+                    doubleParam("max", "Max", 1.0).withHelp("Manual window: values at or above map to 1"),
                     doubleParam("gamma", "Gamma", 1.0).range(0.1, 5.0, 0.05, 2),
                     boolParam("per_channel", "Per channel", true).withHelp("Separate window for every channel"),
                     boolParam("bake", "Bake into data", true)
@@ -114,8 +133,11 @@ namespace sirius::app {
 
             std::string summary(const ParamSet& params, const DatasetMeta&) const override {
                 char buf[64];
-                std::snprintf(buf, sizeof buf, "percentile %.1f – %.1f", params.getDouble("lo_percentile", 0.2),
-                              params.getDouble("hi_percentile", 99.8));
+                if (params.getString("mode", kPercentiles) == kManual)
+                    std::snprintf(buf, sizeof buf, "window %.4g – %.4g", params.getDouble("min", 0.0), params.getDouble("max", 1.0));
+                else
+                    std::snprintf(buf, sizeof buf, "percentile %.1f – %.1f", params.getDouble("lo_percentile", 0.2),
+                                  params.getDouble("hi_percentile", 99.8));
                 const double gamma = params.getDouble("gamma", 1.0);
                 char g[32];
                 std::snprintf(g, sizeof g, "γ %.2g", gamma);
@@ -125,8 +147,12 @@ namespace sirius::app {
 
             Validation validate(const ParamSet& params, const DatasetMeta& input) const override {
                 Validation v = Operation::validate(params, input);
-                if (params.getDouble("lo_percentile") >= params.getDouble("hi_percentile"))
+                if (params.getString("mode", kPercentiles) == kManual) {
+                    if (params.getDouble("min", 0.0) >= params.getDouble("max", 1.0))
+                        v.errors.push_back("Min must be below max.");
+                } else if (params.getDouble("lo_percentile") >= params.getDouble("hi_percentile")) {
                     v.errors.push_back("The low percentile must be below the high one.");
+                }
                 return v;
             }
 
@@ -148,11 +174,18 @@ namespace sirius::app {
                 const double lo = params.getDouble("lo_percentile", 0.2), hi = params.getDouble("hi_percentile", 99.8);
                 const float gamma = static_cast<float>(params.getDouble("gamma", 1.0));
                 const bool perChannel = params.getBool("per_channel", true);
+                const bool manual = params.getString("mode", kPercentiles) == kManual;
                 const Dims5& d = meta.dims;
                 const Index channelSize = d.t * d.z * d.planeSize();
                 StepInput full{meta, result, nullptr, input.labels};
                 std::string note;
-                if (perChannel) {
+                if (manual) {
+                    const float mn = static_cast<float>(params.getDouble("min", 0.0)), mx = static_cast<float>(params.getDouble("max", 1.0));
+                    rescaleGamma(result->data(), result->numel(), mn, mx, gamma);
+                    char buf[64];
+                    std::snprintf(buf, sizeof buf, "%g – %g", mn, mx);
+                    note = buf;
+                } else if (perChannel) {
                     for (Index c = 0; c < d.c; ++c) {
                         ctx.throwIfCancelled();
                         ctx.report(0.4 + 0.6 * static_cast<double>(c) / d.c, "channel " + std::to_string(c));
@@ -185,6 +218,51 @@ namespace sirius::app {
         };
 
     } // namespace
+
+    ContrastWindow contrastWindow(const StepInput& input, const ParamSet& paramsIn, Index c, Index maxPlanes,
+                                  bool wantRange) {
+        ParamSet params = paramsIn;
+        if (const Operation* op = findOperation("contrast")) params.applyDefaults(op->info().params);
+        ContrastWindow out;
+        out.gamma = static_cast<float>(params.getDouble("gamma", 1.0));
+        out.manual = params.getString("mode", kPercentiles) == kManual;
+        if (out.manual) {
+            out.lo = static_cast<float>(params.getDouble("min", 0.0));
+            out.hi = static_cast<float>(params.getDouble("max", 1.0));
+            if (!wantRange) return out;
+        }
+        const ChannelWindow w = windowOf(input, c, params.getDouble("lo_percentile", 0.2),
+                                         params.getDouble("hi_percentile", 99.8), out.gamma, maxPlanes);
+        out.dataMin = w.dataMin;
+        out.dataMax = w.dataMax;
+        if (!out.manual) {
+            out.lo = w.lo;
+            out.hi = w.hi;
+        }
+        return out;
+    }
+
+    ParamSet contrastAutoParams(const ParamSet& current) {
+        ParamSet p = current;
+        p.set("mode", std::string(kPercentiles));
+        return p;
+    }
+
+    ParamSet contrastResetParams(const ParamSet& current, const StepInput& input) {
+        ParamSet p = current;
+        float mn = std::numeric_limits<float>::infinity(), mx = -mn;
+        for (Index c = 0; c < input.meta.dims.c; ++c) {
+            const ContrastWindow w = contrastWindow(input, current, c, 8, true);
+            mn = std::min(mn, w.dataMin);
+            mx = std::max(mx, w.dataMax);
+        }
+        if (!(mn < mx)) { mn = 0.0f; mx = 1.0f; }
+        p.set("mode", std::string(kManual));
+        p.set("min", static_cast<double>(mn));
+        p.set("max", static_cast<double>(mx));
+        p.set("gamma", 1.0);
+        return p;
+    }
 
     Diagnostics contrastPreview(const StepInput& input, const ParamSet& params) {
         // 8 planes per channel keep this under ~100 ms on 2048² planes

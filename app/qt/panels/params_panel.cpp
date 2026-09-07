@@ -21,6 +21,9 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QSlider>
+
+#include <limits>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -29,6 +32,7 @@
 #include <sirius/device.hpp>
 
 #include "qt/qt_strings.hpp"
+#include "core/ops/builtin.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 
@@ -693,6 +697,162 @@ namespace sirius::app {
             buildGeneric(info.params, step.params, input, into, false, done);
         }
 
+        // Contrast: window mode, percentiles or min / max sliders over the
+        // input's range, gamma, Auto / Reset. Every edit is a parameter
+        // change, so the viewer's live preview follows it and it is undoable.
+        void buildContrast(const Step& step, const OpInfo& info, const DatasetMeta& input, QVBoxLayout* into) {
+            std::vector<std::string> done{"mode", "lo_percentile", "hi_percentile", "min", "max", "gamma"};
+            auto specOf = [&](const char* key) -> const ParamSpec* {
+                for (const ParamSpec& sp : info.params)
+                    if (sp.key == key) return &sp;
+                return nullptr;
+            };
+            // the input's intensity range, for the slider extents
+            double dataMin = 0.0, dataMax = 1.0;
+            std::shared_ptr<const StepOutput> upstream = bridge.wb().upstreamOutput(index());
+            if (upstream) {
+                const StepInput in = upstream->asInput();
+                float mn = std::numeric_limits<float>::infinity(), mx = -mn;
+                for (Index c = 0; c < in.meta.dims.c; ++c) {
+                    const ContrastWindow w = contrastWindow(in, step.params, c, 8, true);
+                    mn = std::min(mn, w.dataMin);
+                    mx = std::max(mx, w.dataMax);
+                }
+                if (mn < mx) {
+                    dataMin = mn;
+                    dataMax = mx;
+                }
+            }
+            const double span = dataMax - dataMin;
+            const int decimals = span >= 100.0 ? 1 : span >= 10.0 ? 2 : span >= 1.0 ? 3 : 4;
+
+            // mode
+            auto* mode = new SegmentedControl(QStringList{QStringLiteral("Percentiles"), QStringLiteral("Manual")}, body);
+            mode->setCurrentText(fromStd(step.params.getString("mode", "Percentiles")));
+            into->addWidget(field(QStringLiteral("Window"), mode, body));
+
+            // percentiles (generic editors)
+            auto* pctRow = new QWidget(body);
+            auto* pg = new QGridLayout(pctRow);
+            pg->setContentsMargins(0, 0, 0, 0);
+            pg->setHorizontalSpacing(10);
+            if (const ParamSpec* lo = specOf("lo_percentile")) pg->addWidget(field(fromStd(lo->label), editor(*lo, step.params, input, pctRow), pctRow), 0, 0);
+            if (const ParamSpec* hi = specOf("hi_percentile")) pg->addWidget(field(fromStd(hi->label), editor(*hi, step.params, input, pctRow), pctRow), 0, 1);
+            into->addWidget(pctRow);
+
+            // manual min / max: slider + spin box over the data range
+            auto* manualBox = new QWidget(body);
+            auto* mv = new QVBoxLayout(manualBox);
+            mv->setContentsMargins(0, 0, 0, 0);
+            mv->setSpacing(10);
+            auto sliderRow = [&](const char* key, const QString& label, double lo, double hi, int dec, double value) {
+                auto* row = new QWidget(manualBox);
+                auto* h = new QHBoxLayout(row);
+                h->setContentsMargins(0, 0, 0, 0);
+                h->setSpacing(8);
+                auto* slider = new QSlider(Qt::Horizontal, row);
+                slider->setRange(0, 1000);
+                auto* spin = new QDoubleSpinBox(row);
+                spin->setRange(lo, hi);
+                spin->setDecimals(dec);
+                spin->setSingleStep((hi - lo) / 200.0);
+                spin->setValue(value);
+                spin->setFixedWidth(96);
+                slider->setValue(static_cast<int>(std::lround((value - lo) / (hi - lo) * 1000.0)));
+                h->addWidget(slider, 1);
+                h->addWidget(spin);
+                const std::string k = key;
+                QObject::connect(slider, &QSlider::valueChanged, panel, [this, k, lo, hi, spin](int v) {
+                    if (updating) return;
+                    const double value = lo + (hi - lo) * v / 1000.0;
+                    QSignalBlocker b(spin);
+                    spin->setValue(value);
+                    setParam(k, value, true);   // one undo entry per drag
+                });
+                QObject::connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), panel, [this, k, lo, hi, slider](double v) {
+                    if (updating) return;
+                    QSignalBlocker b(slider);
+                    slider->setValue(static_cast<int>(std::lround((v - lo) / (hi - lo) * 1000.0)));
+                    setParam(k, v, false);
+                });
+                updaters[k] = [slider, spin, k, lo, hi](const ParamSet& p) {
+                    const double v = p.getDouble(k, lo);
+                    QSignalBlocker b1(slider), b2(spin);
+                    spin->setValue(v);
+                    slider->setValue(static_cast<int>(std::lround((v - lo) / (hi - lo) * 1000.0)));
+                };
+                mv->addWidget(field(label, row, manualBox));
+            };
+            sliderRow("min", QStringLiteral("Min"), dataMin, dataMax, decimals, step.params.getDouble("min", dataMin));
+            sliderRow("max", QStringLiteral("Max"), dataMin, dataMax, decimals, step.params.getDouble("max", dataMax));
+            into->addWidget(manualBox);
+
+            // gamma: slider (0.1 .. 5) with the generic spin box
+            if (const ParamSpec* g = specOf("gamma")) {
+                auto* row = new QWidget(body);
+                auto* h = new QHBoxLayout(row);
+                h->setContentsMargins(0, 0, 0, 0);
+                h->setSpacing(8);
+                auto* slider = new QSlider(Qt::Horizontal, row);
+                slider->setRange(10, 500);   // hundredths
+                slider->setValue(static_cast<int>(std::lround(step.params.getDouble("gamma", 1.0) * 100.0)));
+                QWidget* spin = editor(*g, step.params, input, row);
+                spin->setFixedWidth(96);
+                h->addWidget(slider, 1);
+                h->addWidget(spin);
+                QObject::connect(slider, &QSlider::valueChanged, panel, [this](int v) {
+                    if (updating) return;
+                    setParam("gamma", v / 100.0, true);
+                });
+                updaters["gamma#slider"] = [slider](const ParamSet& p) {
+                    QSignalBlocker b(slider);
+                    slider->setValue(static_cast<int>(std::lround(p.getDouble("gamma", 1.0) * 100.0)));
+                };
+                into->addWidget(field(fromStd(g->label), row, body));
+            }
+
+            // mode switches which window editors show
+            auto applyMode = [pctRow, manualBox, mode](const QString& m) {
+                const bool manual = m == QLatin1String("Manual");
+                pctRow->setVisible(!manual);
+                manualBox->setVisible(manual);
+                mode->setCurrentText(m);
+            };
+            applyMode(fromStd(step.params.getString("mode", "Percentiles")));
+            QObject::connect(mode, &SegmentedControl::changed, panel, [this, mode, applyMode](int) {
+                applyMode(mode->currentText());
+                setParam("mode", toStd(mode->currentText()), false);
+            });
+            updaters["mode"] = [applyMode](const ParamSet& p) { applyMode(fromStd(p.getString("mode", "Percentiles"))); };
+
+            // Auto / Reset
+            auto* buttons = new QWidget(body);
+            auto* bh = new QHBoxLayout(buttons);
+            bh->setContentsMargins(0, 0, 0, 0);
+            bh->setSpacing(8);
+            auto* autoBtn = new QPushButton(QStringLiteral("Auto"), buttons);
+            auto* resetBtn = new QPushButton(QStringLiteral("Reset"), buttons);
+            widgets::setButtonClass(autoBtn, "secondary small");
+            widgets::setButtonClass(resetBtn, "ghost small");
+            autoBtn->setToolTip(QStringLiteral("Window on the percentiles above"));
+            resetBtn->setToolTip(QStringLiteral("Manual window over the input's full range, gamma 1"));
+            QObject::connect(autoBtn, &QPushButton::clicked, panel, [this] {
+                const Step* st = this->step();
+                if (st) bridge.wb().setStepParams(index(), contrastAutoParams(st->params), "Auto contrast");
+            });
+            QObject::connect(resetBtn, &QPushButton::clicked, panel, [this] {
+                const Step* st = this->step();
+                auto up = bridge.wb().upstreamOutput(index());
+                if (st && up) bridge.wb().setStepParams(index(), contrastResetParams(st->params, up->asInput()), "Reset contrast");
+            });
+            bh->addWidget(autoBtn);
+            bh->addWidget(resetBtn);
+            bh->addStretch(1);
+            into->addWidget(buttons);
+
+            buildGeneric(info.params, step.params, input, into, false, done);
+        }
+
         // --- rebuild --------------------------------------------------------------
         void rebuild() {
             updaters.clear();
@@ -720,6 +880,7 @@ namespace sirius::app {
             else if (st->kind == "sim") buildSim(*st, info, input, bodyLayout);
             else if (st->kind == "seg") buildSeg(*st, info, input, bodyLayout);
             else if (st->kind == "merge") buildMerge(*st, info, input, bodyLayout);
+            else if (st->kind == "contrast") buildContrast(*st, info, input, bodyLayout);
             else buildGeneric(info.params, st->params, input, bodyLayout, false);
             validation = widgets::label(QString(), 11, theme::kAccent, -1, body);
             validation->setWordWrap(true);

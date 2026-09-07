@@ -16,6 +16,7 @@
 #include <QVBoxLayout>
 
 #include "core/array_source.hpp"
+#include "core/ops/builtin.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 #include "qt/viewer/dims_strip.hpp"
@@ -168,6 +169,8 @@ namespace sirius::app {
         void build();
         void connectSignals();
         void rebuildOutput();          // display output changed
+        void applyLivePreview();       // window / gamma of a previewed step
+        bool previewing = false;
         void refreshChrome();
         void refreshSwatches();
         void refreshDims();
@@ -518,6 +521,10 @@ namespace sirius::app {
         QObject::connect(&bridge, &WorkbenchBridge::runFinished, q, [this](bool, const QString&) { rebuildOutput(); });
         QObject::connect(&bridge, &WorkbenchBridge::stepChanged, q, [this](int index) {
             if (index == wb.viewedIndex()) {
+                if (previewing || wb.viewedIsLivePreview()) {
+                    rebuildOutput();   // re-applies the preview window
+                    return;
+                }
                 refreshChrome();
                 dirty.vol = true;
                 scheduleUpdate();
@@ -562,12 +569,34 @@ namespace sirius::app {
                 splitPending = false;
                 mergeFirst = 0;
             }
+            applyLivePreview();
             refreshSwatches();
             refreshChrome();
             refreshDims();
             layoutPanes();
             scheduleUpdate();
         });
+    }
+
+    // A live-preview step (Contrast) that has not run is shown on its input
+    // through its own window and gamma, so edits update the panes at once.
+    void ViewerWidget::Impl::applyLivePreview() {
+        const bool was = previewing;
+        previewing = wb.viewedIsLivePreview() && model.valid();
+        if (!previewing) {
+            if (was) {
+                model.resetWindows();
+                dirty = Dirty{};
+            }
+            return;
+        }
+        const Step& st = wb.pipeline().at(wb.viewedIndex());
+        const StepInput in = model.output()->asInput();
+        for (Index c = 0; c < model.dims().c; ++c) {
+            const ContrastWindow w = contrastWindow(in, st.params, c, 8);
+            model.setWindow(c, DisplayWindow{w.lo, w.hi, w.gamma});
+        }
+        dirty = Dirty{};
     }
 
     void ViewerWidget::Impl::refreshSwatches() {
@@ -619,7 +648,10 @@ namespace sirius::app {
                         .arg(theme::kAccent.name(), num2(viewed), QString::fromStdString(st.name).toHtmlEscaped());
             QString shape = QString::fromStdString(wb.outputMetaOf(viewed).shapeString());
             html += QStringLiteral(" <span style='color:%1'>%2</span>").arg(theme::kNeutral500.name(), shape);
-            if (displayIndex >= 0 && displayIndex != viewed)
+            if (previewing)
+                html += QStringLiteral(" <span style='color:%1'>· live preview on %2</span>")
+                            .arg(theme::kNeutral500.name(), num2(displayIndex));
+            else if (displayIndex >= 0 && displayIndex != viewed)
                 html += QStringLiteral(" <span style='color:%1'>· not run yet, showing %2</span>")
                             .arg(theme::kNeutral500.name(), num2(displayIndex));
         } else if (!wb.hasDataset()) {
@@ -1234,6 +1266,11 @@ namespace sirius::app {
     bool ViewerWidget::playing() const { return impl_->playTimer.isActive(); }
 
     void ViewerWidget::autoContrast() {
+        if (impl_->previewing) {   // the previewed step's own Auto
+            const int i = impl_->wb.viewedIndex();
+            impl_->wb.setStepParams(i, contrastAutoParams(impl_->wb.pipeline().at(i).params), "Auto contrast");
+            return;
+        }
         impl_->model.setWindowMode(DisplayModel::WindowMode::Auto);
         impl_->rawModel.setWindowMode(DisplayModel::WindowMode::Auto);
         impl_->dirty = Impl::Dirty{};
@@ -1241,6 +1278,12 @@ namespace sirius::app {
     }
 
     void ViewerWidget::resetContrast() {
+        if (impl_->previewing) {
+            const int i = impl_->wb.viewedIndex();
+            if (auto up = impl_->wb.upstreamOutput(i))
+                impl_->wb.setStepParams(i, contrastResetParams(impl_->wb.pipeline().at(i).params, up->asInput()), "Reset contrast");
+            return;
+        }
         impl_->model.setWindowMode(DisplayModel::WindowMode::Full);
         impl_->rawModel.setWindowMode(DisplayModel::WindowMode::Full);
         impl_->dirty = Impl::Dirty{};
