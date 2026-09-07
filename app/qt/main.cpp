@@ -139,10 +139,10 @@ int main(int argc, char** argv) {
     const int settle = parser.isSet(settleOpt) ? parser.value(settleOpt).toInt() : 600;
     if (parser.isSet(screenshotOpt) || scripted) {
         const QString path = parser.value(screenshotOpt);
-        auto finish = [&window, &app, &script, path, scripted, settle] {
+        auto finish = [&window, &app, &bridge, &script, path, scripted, settle] {
             // Arm the grab before scripting: a modal dialog opened by an
             // action runs its own event loop, in which the timer still fires.
-            if (!path.isEmpty()) QTimer::singleShot(settle, &window, [&window, &app, path] {
+            if (!path.isEmpty()) QTimer::singleShot(settle, &window, [&window, &app, &bridge, path] {
                 // size report: which widget dictates the window's minimum
                 QString report = QStringLiteral("window %1x%2 min %3x%4").arg(window.width()).arg(window.height())
                                      .arg(window.minimumSizeHint().width()).arg(window.minimumSizeHint().height());
@@ -166,6 +166,7 @@ int main(int argc, char** argv) {
                         top->grab().save(fi.path() + QLatin1Char('/') + fi.completeBaseName() + tag + fi.suffix());
                     }
                 while (QWidget* modal = QApplication::activeModalWidget()) modal->close();   // let exec() return
+                if (bridge.running()) bridge.cancelRun();   // a slow step must not hold the exit
                 app.quit();
             });
             if (scripted) script();

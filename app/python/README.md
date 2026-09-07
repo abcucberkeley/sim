@@ -58,9 +58,11 @@ uint64 int64`.
 | `hello` | `{token}` | `result`: `{version, methods, cuda, device, hostname, python, torch, sirius, workbench}` |
 | `ping` | | `result`: `{time}` |
 | `model_info` | `{spec}` (or `path`) | `result`: `{format, input_shape, output_shape, dtype, size_bytes, channels_out}` for a file; `{format: "cellpose" \| "micro-sam", available, install_hint, returns: "labels"}` for a model family; `{format: "hf", cached: false, repo, file}` for an `hf:` file not downloaded yet |
-| `hub_search` | `{query, limit?, filter?}` | `result`: `{models: [{id, downloads, likes, tags, last_modified, pipeline_tag}]}` (Hugging Face, sorted by downloads) |
+| `hub_search` | `{query, limit?, filter?, token?}` | `result`: `{models: [{id, downloads, likes, tags, last_modified, pipeline_tag, library, gated, private}]}` (Hugging Face, sorted by downloads; `gated` is `"manual"` / `"auto"` for repositories whose terms must be accepted, else `false`) |
 | `hub_files` | `{repo}` | `result`: `{repo, files: [{name, size, model}]}` (`model`: a `.pt` / `.pts` / `.pth` / `.onnx`) |
-| `hub_download` | `{repo, file?}` | `progress`\* then `result`: `{path, bytes, spec}`; cancellable like a run; without `file` the repository's single model file |
+| `hub_download` | `{repo, file?, token?}` | `progress`\* then `result`: `{path, bytes, spec}`; cancellable like a run; without `file` the repository's single model file |
+| `install` | `{family, dry_run?}` | `progress`\* (one frame per output line) then `result`: `{ok, returncode, available, command, installer, tail}`; runs the family's install command (`pip install cellpose`; `conda install -c conda-forge micro_sam` when the interpreter lives in a conda environment, pip otherwise) in the worker's own Python; cancellable |
+| `model_prepare` | `{spec, token?}` | `progress`\* then `result`: `{spec, path, cached}`; fetches a family model's weights (or an `hf:` file) now instead of on the first run |
 | `models_list` | | `result`: `{cache, models: [{spec, path, bytes, repo, file}]}` -- the local model cache |
 | `run` | `{kind, params, meta?}` + tensors | `progress`\* (`{fraction, message}`) then `result` + tensors, or `error` |
 | `cancel` | `{id}` | `result`: `{cancelled: id}`; the cancelled run replies `error` `"cancelled"` |
@@ -133,14 +135,18 @@ is a *spec* resolved by `sirius_worker/models.py`:
 | --- | --- | --- |
 | `/path/model.pt` (`.pts`, `.pth`, `.onnx`) | the file, tile-wise, probabilities out | `torch` (`onnxruntime` for ONNX) |
 | `hf:<owner>/<repo>[:<file>]` | the file downloaded once from Hugging Face into the cache; without `<file>` the repository must hold exactly one model file | `huggingface_hub` |
-| `cellpose:<model>` -- `cyto3`, `nuclei`, `cyto2`, ... or a path / `hf:` spec of a custom Cellpose model | `cellpose.models.CellposeModel`, 3D through `do_3D` or per-plane stitching; instance labels out | `pip install cellpose` |
+| `cellpose:<model>` -- `default` (the installed version's built-in model: `cpsam` on Cellpose 4, `cyto3` on Cellpose 3), one of `cellpose.models.MODEL_NAMES`, or a path / `hf:` spec of a custom Cellpose model | `cellpose.models.CellposeModel`, 3D through `do_3D` or per-plane stitching; instance labels plus the cell probability | `pip install cellpose` |
 | `microsam:<model_type>` -- `vit_b_lm`, `vit_l_lm`, `vit_t_lm`, `vit_b_em_organelles`, ... | micro-SAM's automatic instance segmentation, per plane or with its 3D linking; instance labels out | `conda install -c conda-forge micro_sam` |
 
 The cache is `$SIRIUS_MODEL_CACHE` or `~/.sirius/models`
 (`hf/<owner>--<repo>/<file>` for downloads); `models_list` reports it. A
 missing package is reported by `model_info` (`available: false` with an
-`install_hint`) and by `run` as a `NotAvailable` error naming the `pip
-install`; the worker itself starts without any of them. The model
+`install_hint`, `install` = the exact command) and by `run` as a `NotAvailable` error naming the `pip
+install`; the worker itself starts without any of them. The `install` method runs that command on request (the
+application asks first), and `model_prepare` fetches a model's weights ahead of the first run. Cellpose 4 keeps only
+its own built-in models: a Cellpose 3 name such as `cyto3` is refused with the installed version's list rather than
+silently mapped to another model. Gated Hugging Face repositories need an access token: `HF_TOKEN` in the worker's
+environment, a `token` in the hub calls, or `huggingface-cli login`. The model
 families skip the application's threshold / watershed stage: their labels
 go straight into the label volume (`min_voxels` still applies, and a
 probability map, when the family provides one, gives the per-label

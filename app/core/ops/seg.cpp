@@ -103,7 +103,8 @@ namespace sirius::app {
                     pathParam("model", "Model").withFilter("Models (*.pt *.pts *.pth *.onnx);;All files (*)")
                         .withHelp("A TorchScript / ONNX file taking (1, 1, Z, Y, X) float32, or a spec the worker resolves: "
                                   "hf:<repo>[:<file>] (Hugging Face, cached in $SIRIUS_MODEL_CACHE or ~/.sirius/models), "
-                                  "cellpose:<model> (cyto3, nuclei, cyto2, ... or a custom model file) or "
+                                  "cellpose:<model> (default = the installed Cellpose's built-in model, one of its model names, "
+                                  "or a custom model file) or "
                                   "microsam:<model_type> (vit_b_lm, vit_l_lm, vit_t_lm, vit_b_em_organelles, ...). "
                                   "Cellpose and micro-SAM return instance labels directly; threshold and post-processing "
                                   "then do not apply"),
@@ -269,11 +270,19 @@ namespace sirius::app {
             if (info.value("model", std::string()).size()) out += " " + info.value("model", std::string());
             if (!info["available"].get<bool>()) {
                 const std::string hint = info.value("install_hint", std::string());
-                return out + " · not installed" + (hint.empty() ? "" : " (" + hint + ")");
+                return out + " · not installed (Hub… installs it" + (hint.empty() ? ")" : ": " + hint + ")");
             }
             if (info.contains("cached") && info["cached"].is_boolean() && !info["cached"].get<bool>())
                 return out + " " + info.value("repo", std::string()) + " · downloads on first run";
-            if (!info.contains("input_shape")) return out + " · returns labels";
+            if (!info.contains("input_shape")) {
+                if (info.contains("version") && info["version"].is_string() && !info["version"].get<std::string>().empty())
+                    out = info.value("format", std::string()) + " " + info["version"].get<std::string>() + " " + info.value("model", std::string());
+                out += " · returns labels";
+                if (info.contains("weights_cached") && info["weights_cached"].is_boolean())
+                    out += info["weights_cached"].get<bool>() ? " · weights cached" : " · weights download on first run";
+                if (info.contains("warning") && info["warning"].is_string()) out += " · " + info["warning"].get<std::string>();
+                return out;
+            }
         }
         if (info.contains("input_shape")) {
             out += " · in " + shapeText(info["input_shape"]);

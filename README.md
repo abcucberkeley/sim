@@ -325,12 +325,17 @@ step's Tile parameter pick the tile; Stitch with no tile files fuses all of them
 registering on one channel and time point and applying that layout to every other.
 
 **Segmentation models**: Segment ▸ Download model… (or Hub… next to the model field)
-searches Hugging Face, downloads a model file with progress into
-`$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points the step at it; the same
-dialog lists the model families and whether their packages are installed on the
-worker (`pip install cellpose`, `pip install micro-sam`) and the locally cached files.
-The model field also takes `hf:<repo>[:<file>]`, `cellpose:<model>` and
-`microsam:<model_type>` specs directly, which the HPC worker resolves on its own host.
+opens on the model families — Cellpose and micro-SAM, which return instance labels
+directly and fetch their weights from the authors, no account needed. A family whose
+package is missing on the worker is installed after a confirmation (`pip install
+cellpose`; `conda install -c conda-forge micro_sam` in a conda environment), with the
+installer's output streamed into the dialog, and the weights can be fetched right away.
+The Hugging Face tab searches the Hub, marks gated repositories (an accepted licence
+plus an access token — Token… or Preferences — as for SAM 3), downloads a TorchScript /
+ONNX file with progress into `$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points
+the step at it. The model field also takes `hf:<repo>[:<file>]`, `cellpose:<model>`
+(`default` = the installed version's built-in model) and `microsam:<model_type>` specs
+directly, which the HPC worker resolves on its own host.
 
 **Backends**: CUDA (when the build has it and a device is present), CPU, or HPC — a
 Python worker on a cluster node reached over TCP (see "Python worker and HPC backend").

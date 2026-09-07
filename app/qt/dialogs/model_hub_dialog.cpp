@@ -8,19 +8,25 @@
 #include <vector>
 
 #include <QBoxLayout>
+#include <QComboBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QMetaObject>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QStyle>
 #include <QTabWidget>
+#include <QScrollBar>
 #include <QTableWidget>
 #include <QThread>
 
@@ -97,11 +103,23 @@ namespace sirius::app {
             label->style()->polish(label);
         }
 
+        // One card per model family: the package (installed or not), its
+        // models, and Use / Install & use.
         struct FamilyCard {
-            QString spec;
+            QString family;        // "cellpose" | "microsam"
+            QString title;         // "Cellpose"
+            QString package;       // what the installer adds
+            QString probe;         // spec asked for model_info
+            QComboBox* model = nullptr;
             QLabel* status = nullptr;
             QPushButton* use = nullptr;
+            bool available = false;
+            int weightsCached = -1;   // -1 unknown, 0 no, 1 yes
+            nlohmann::json info;
+            QString spec() const { return family + QLatin1Char(':') + model->currentData().toString(); }
         };
+
+        QString hubToken() { return QSettings().value(QStringLiteral("hub/token")).toString().trimmed(); }
 
     } // namespace
 
@@ -125,11 +143,15 @@ namespace sirius::app {
         QPushButton* useFile = nullptr;
         QProgressBar* progress = nullptr;
         QLabel* fileNote = nullptr;
+        QPushButton* tokenButton = nullptr;
         QString repo;
+        bool repoGated = false;
         QString downloadedPath;   // of the selected file, once it is in the cache
+        QString progressPrefix;   // "Downloading…", "Installing…"
 
         // families and the local cache
         std::vector<FamilyCard> cards;
+        QPlainTextEdit* log = nullptr;   // install / fetch output lines
         QTableWidget* cache = nullptr;
         QLabel* cacheNote = nullptr;
         bool familiesChecked = false;
@@ -151,9 +173,15 @@ namespace sirius::app {
         // Calls `method` on the hub thread and `done(result)` back on the
         // dialog's; a throw becomes a status line. Results cross threads as
         // JSON text. Progress frames (downloads) reach onProgress.
-        void callWorker(const QString& what, const nlohmann::json& params, const std::string& method,
+        void callWorker(const QString& what, nlohmann::json params, const std::string& method,
                         std::function<void(const nlohmann::json&)> done, bool withProgress = false) {
             setStatus(what + QStringLiteral("…"), false);
+            progressPrefix = what;
+            // gated / private repositories: the access token from the settings
+            if (method.rfind("hub_", 0) == 0 || method == "model_prepare") {
+                const QString token = hubToken();
+                if (!token.isEmpty()) params["token"] = toStd(token);
+            }
             QPointer<ModelHubDialog> self(dialog);
             HubClient* c = client;
             Impl* impl = this;
@@ -199,7 +227,18 @@ namespace sirius::app {
 
         void onProgress(double fraction, const QString& message) {
             progress->setValue(static_cast<int>(fraction * 1000.0));
-            if (!message.isEmpty()) setStatus(QStringLiteral("Downloading… ") + message, false);
+            if (message.isEmpty()) return;
+            setStatus(progressPrefix + QStringLiteral("… ") + message, false);
+            if (log && log->isVisible()) {
+                log->appendPlainText(message);
+                log->verticalScrollBar()->setValue(log->verticalScrollBar()->maximum());
+            }
+        }
+
+        void showLog(const QString& first) {
+            log->clear();
+            log->show();
+            if (!first.isEmpty()) log->appendPlainText(first);
         }
 
         void runSearch() {
@@ -217,8 +256,13 @@ namespace sirius::app {
                                const int row = results->rowCount();
                                results->insertRow(row);
                                const QString id = fromStd(m.value("id", std::string()));
-                               auto* idItem = cell(id, id);
-                               idItem->setToolTip(id);
+                               const bool gated = m.contains("gated") && !(m["gated"].is_boolean() && !m["gated"].get<bool>());
+                               auto* idItem = cell(gated ? id + QStringLiteral("  (gated)") : id, id);
+                               idItem->setData(Qt::UserRole + 1, gated);
+                               idItem->setToolTip(gated ? id + QStringLiteral("\nGated: accept the terms on huggingface.co while signed in, "
+                                                                            "then add your access token (Token…)")
+                                                        : id);
+                               if (gated) idItem->setForeground(theme::kAccent);
                                results->setItem(row, 0, idItem);
                                results->setItem(row, 1, cell(countText(m.value("downloads", 0LL))));
                                results->setItem(row, 2, cell(countText(m.value("likes", 0LL))));
@@ -233,9 +277,10 @@ namespace sirius::app {
                        });
         }
 
-        void listFiles(const QString& id) {
+        void listFiles(const QString& id, bool gated) {
             if (id == repo) return;
             repo = id;
+            repoGated = gated;
             files->setRowCount(0);
             download->setEnabled(false);
             useFile->setEnabled(false);
@@ -256,10 +301,27 @@ namespace sirius::app {
                     files->setItem(row, 1, cell(bytesText(f.value("size", -1LL))));
                 }
                 if (firstModel >= 0) files->selectRow(firstModel);
-                fileNote->setText(firstModel >= 0
-                                      ? QStringLiteral("Model files (.pt, .pts, .pth, .onnx) are highlighted; the rest is shown for reference.")
-                                      : QStringLiteral("This repository has no TorchScript / ONNX file; SIRIUS cannot run its weights directly."));
+                QString note = firstModel >= 0
+                                   ? QStringLiteral("Model files (.pt, .pts, .pth, .onnx) are highlighted; the rest is shown for reference.")
+                                   : QStringLiteral("This repository has no TorchScript / ONNX file; SIRIUS cannot run its weights directly.");
+                if (repoGated)
+                    note += QStringLiteral(" Gated repository: accept its terms at https://huggingface.co/%1 while signed in, then add "
+                                           "your access token with Token….").arg(id);
+                fileNote->setText(note);
             });
+        }
+
+        void askToken() {
+            bool ok = false;
+            const QString token = QInputDialog::getText(
+                dialog, QStringLiteral("Hugging Face access token"),
+                QStringLiteral("Token for gated or private repositories (huggingface.co ▸ Settings ▸ Access Tokens).\n"
+                               "Stored in the application settings and passed to the local worker as HF_TOKEN."),
+                QLineEdit::Password, hubToken(), &ok);
+            if (!ok) return;
+            QSettings().setValue(QStringLiteral("hub/token"), token.trimmed());
+            tokenButton->setText(token.trimmed().isEmpty() ? QStringLiteral("Token…") : QStringLiteral("Token ✓"));
+            setStatus(token.trimmed().isEmpty() ? QStringLiteral("Token cleared.") : QStringLiteral("Token stored."), false);
         }
 
         void fileSelected() {
@@ -312,16 +374,154 @@ namespace sirius::app {
 
         void checkFamilies() {
             familiesChecked = true;
-            for (const FamilyCard& card : cards) {
-                QLabel* status = card.status;
-                callWorker(QStringLiteral("Checking ") + card.spec, {{"spec", toStd(card.spec)}}, "model_info", [status](const nlohmann::json& info) {
-                    const bool available = info.value("available", false);
-                    const QString hint = fromStd(info.value("install_hint", std::string()));
-                    status->setText(available ? QStringLiteral("available in the worker's Python")
-                                              : QStringLiteral("not installed · %1").arg(hint.isEmpty() ? QStringLiteral("see app/python/README.md") : hint));
-                    setLabelClass(status, available ? QStringLiteral("small") : QStringLiteral("error"));
-                });
+            for (std::size_t i = 0; i < cards.size(); ++i) checkFamily(i);
+        }
+
+        // model_info for the card's probe spec: installed?, version, the
+        // package's model names, whether the weights are on disk.
+        void checkFamily(std::size_t index) {
+            FamilyCard& card = cards[index];
+            callWorker(QStringLiteral("Checking ") + card.title, {{"spec", toStd(card.probe)}}, "model_info",
+                       [this, index](const nlohmann::json& info) { applyFamilyInfo(index, info); });
+        }
+
+        void applyFamilyInfo(std::size_t index, const nlohmann::json& info) {
+            FamilyCard& card = cards[index];
+            card.info = info;
+            card.available = info.value("available", false);
+            card.weightsCached = info.contains("weights_cached") && info["weights_cached"].is_boolean()
+                                     ? (info["weights_cached"].get<bool>() ? 1 : 0)
+                                     : -1;
+            // models: the package's own list once installed, the known names before
+            const QString current = card.model->currentData().toString();
+            QSignalBlocker block(card.model);
+            card.model->clear();
+            const std::string defaultModel = info.value("default_model", std::string());
+            if (card.family == QLatin1String("cellpose"))
+                card.model->addItem(defaultModel.empty() ? QStringLiteral("default (built-in model)")
+                                                         : QStringLiteral("default · %1").arg(fromStd(defaultModel)),
+                                    QStringLiteral("default"));
+            for (const nlohmann::json& m : info.value("known_models", nlohmann::json::array()))
+                if (m.is_string()) card.model->addItem(fromStd(m.get<std::string>()), fromStd(m.get<std::string>()));
+            const int keep = card.model->findData(current);
+            card.model->setCurrentIndex(keep >= 0 ? keep : 0);
+            refreshFamilyStatus(index);
+        }
+
+        void refreshFamilyStatus(std::size_t index) {
+            FamilyCard& card = cards[index];
+            QString text;
+            if (card.available) {
+                const QString version = fromStd(card.info.value("version", std::string()));
+                text = QStringLiteral("%1%2 in the worker's Python").arg(card.package, version.isEmpty() ? QString() : QLatin1Char(' ') + version);
+                if (card.weightsCached == 1) text += QStringLiteral(" · weights cached");
+                else if (card.weightsCached == 0) text += QStringLiteral(" · weights download on first use");
+            } else {
+                const nlohmann::json install = card.info.value("install", nlohmann::json::object());
+                text = QStringLiteral("not installed · Install & use runs %1")
+                           .arg(fromStd(install.value("display", install.value("command", std::string("pip install " + toStd(card.package))))));
             }
+            card.status->setText(text);
+            setLabelClass(card.status, card.available ? QStringLiteral("small") : QStringLiteral("error"));
+            card.use->setText(card.available ? QStringLiteral("Use") : QStringLiteral("Install & use"));
+        }
+
+        // Use: install the package first when it is missing (asked), then
+        // offer to fetch the weights now (asked), then choose the spec.
+        void useFamily(std::size_t index) {
+            FamilyCard& card = cards[index];
+            const QString spec = card.spec();
+            if (!card.available) {
+                const nlohmann::json install = card.info.value("install", nlohmann::json::object());
+                const QString command = fromStd(install.value("command", std::string("pip install " + toStd(card.package))));
+                const QString note = fromStd(install.value("note", std::string()));
+                const QString python = fromStd(card.info.value("python", std::string()));
+                QMessageBox box(dialog);
+                box.setIcon(QMessageBox::Question);
+                box.setWindowTitle(QStringLiteral("Install %1").arg(card.title));
+                box.setText(QStringLiteral("Install the %1 package into the worker's Python?").arg(card.package));
+                box.setInformativeText(QStringLiteral("%1\n\n%2%3This changes the Python environment%4 and can take several "
+                                                      "minutes; the output is shown in the log. The %5 weights are offered next.")
+                                           .arg(command, note, note.isEmpty() ? QString() : QStringLiteral(". "),
+                                                python.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(python), card.title));
+                QPushButton* go = box.addButton(QStringLiteral("Install"), QMessageBox::AcceptRole);
+                box.addButton(QMessageBox::Cancel);
+                box.setDefaultButton(go);
+                box.exec();
+                if (box.clickedButton() != go) return;
+                runInstall(index);
+                return;
+            }
+            if (card.weightsCached == 0) {
+                QMessageBox box(dialog);
+                box.setIcon(QMessageBox::Question);
+                box.setWindowTitle(QStringLiteral("Model weights"));
+                box.setText(QStringLiteral("Download the weights of %1 now?").arg(spec));
+                box.setInformativeText(QStringLiteral("They come from the model's authors into the worker's cache%1. "
+                                                      "Otherwise the first run of the step downloads them.")
+                                           .arg(card.family == QLatin1String("cellpose")
+                                                    ? QStringLiteral(" (Cellpose 4's built-in model is about 1.2 GB)")
+                                                    : QString()));
+                QPushButton* go = box.addButton(QStringLiteral("Download"), QMessageBox::AcceptRole);
+                QPushButton* later = box.addButton(QStringLiteral("Not now"), QMessageBox::RejectRole);
+                box.addButton(QMessageBox::Cancel);
+                box.setDefaultButton(go);
+                box.exec();
+                if (box.clickedButton() == go) {
+                    runPrepare(index, spec);
+                    return;
+                }
+                if (box.clickedButton() != later) return;
+            }
+            choose(spec);
+        }
+
+        void runInstall(std::size_t index) {
+            FamilyCard& card = cards[index];
+            for (FamilyCard& c : cards) c.use->setEnabled(false);
+            client->cancel = false;
+            progress->setValue(0);
+            showLog(QString());
+            callWorker(QStringLiteral("Installing ") + card.package, {{"family", toStd(card.family)}}, "install",
+                       [this, index](const nlohmann::json& r) {
+                           for (FamilyCard& c : cards) c.use->setEnabled(true);
+                           FamilyCard& c = cards[index];
+                           const bool ok = r.value("ok", false) && r.value("available", false);
+                           if (!ok) {
+                               QStringList tail;
+                               for (const nlohmann::json& line : r.value("tail", nlohmann::json::array()))
+                                   if (line.is_string()) tail << fromStd(line.get<std::string>());
+                               setStatus(QStringLiteral("Installing %1 failed (exit code %2): %3")
+                                             .arg(c.package).arg(r.value("returncode", -1))
+                                             .arg(tail.isEmpty() ? QStringLiteral("see the log") : tail.last()),
+                                         true);
+                               return;
+                           }
+                           setStatus(QStringLiteral("%1 installed.").arg(c.package), false);
+                           // re-read the package's models and weights, then carry on with Use
+                           callWorker(QStringLiteral("Checking ") + c.title, {{"spec", toStd(c.probe)}}, "model_info",
+                                      [this, index](const nlohmann::json& info) {
+                                          applyFamilyInfo(index, info);
+                                          if (cards[index].available) useFamily(index);
+                                      });
+                       },
+                       true);
+        }
+
+        void runPrepare(std::size_t index, const QString& spec) {
+            for (FamilyCard& c : cards) c.use->setEnabled(false);
+            client->cancel = false;
+            progress->setValue(0);
+            showLog(QString());
+            callWorker(QStringLiteral("Fetching the weights of ") + spec, {{"spec", toStd(spec)}}, "model_prepare",
+                       [this, index, spec](const nlohmann::json& r) {
+                           for (FamilyCard& c : cards) c.use->setEnabled(true);
+                           cards[index].weightsCached = 1;
+                           refreshFamilyStatus(index);
+                           setStatus(QStringLiteral("Weights ready: %1").arg(fromStd(r.value("path", std::string()))), false);
+                           choose(spec);
+                       },
+                       true);
         }
 
         void listCache() {
@@ -367,6 +567,95 @@ namespace sirius::app {
         auto* tabs = new QTabWidget(this);
         tabs->setDocumentMode(true);
 
+        // --- Model families
+        auto* fam = new QWidget(tabs);
+        auto* fl = new QVBoxLayout(fam);
+        fl->setContentsMargins(0, 12, 0, 0);
+        fl->setSpacing(10);
+        auto* famNote = widgets::label(
+            QStringLiteral("Packages that segment cells and nuclei out of the box and return instance labels directly (no "
+                           "threshold or watershed step). A missing package is installed into the worker's Python on request; "
+                           "the weights come from the model's authors, no Hugging Face account needed. Any model name can "
+                           "also be typed into the step's Model field as cellpose:<model> / microsam:<type>."),
+            11, theme::kNeutral600, -1, fam);
+        famNote->setWordWrap(true);
+        fl->addWidget(famNote);
+        auto* grid = new QGridLayout();
+        grid->setHorizontalSpacing(10);
+        grid->setVerticalSpacing(10);
+        struct CardSpec {
+            const char* family;
+            const char* title;
+            const char* package;
+            const char* probe;
+            const char* blurb;
+            const char* models[6];
+        };
+        const CardSpec specs[] = {
+            {"cellpose", "Cellpose", "cellpose", "cellpose:default",
+             "Generalist cell and nucleus segmentation, 2D and 3D, any modality. Cellpose 4 ships one built-in model "
+             "(cellpose:default); Cellpose 3 offers cyto3, nuclei and more. Recommended first choice for fluorescence.",
+             {"default", nullptr}},
+            {"microsam", "micro-SAM", "micro_sam", "microsam:vit_b_lm",
+             "Segment Anything fine-tuned for microscopy with automatic instance segmentation: vit_b_lm / vit_l_lm for "
+             "light microscopy, vit_b_em_organelles for electron microscopy. The generalist for unusual specimens.",
+             {"vit_b_lm", "vit_l_lm", "vit_t_lm", "vit_b_em_organelles", "vit_l_em_organelles", nullptr}},
+        };
+        int i = 0;
+        for (const CardSpec& c : specs) {
+            auto* card = new QFrame(fam);
+            card->setProperty("class", QStringLiteral("floating"));
+            auto* cl = new QVBoxLayout(card);
+            cl->setContentsMargins(12, 10, 12, 10);
+            cl->setSpacing(6);
+            cl->addWidget(widgets::label(QString::fromUtf8(c.title), 13, theme::kText, QFont::Bold, card));
+            auto* blurb = widgets::label(QString::fromUtf8(c.blurb), 11, theme::kNeutral700, -1, card);
+            blurb->setWordWrap(true);
+            cl->addWidget(blurb);
+            FamilyCard fc;
+            fc.family = QString::fromUtf8(c.family);
+            fc.title = QString::fromUtf8(c.title);
+            fc.package = QString::fromUtf8(c.package);
+            fc.probe = QString::fromUtf8(c.probe);
+            auto* modelRow = new QHBoxLayout();
+            modelRow->setSpacing(6);
+            modelRow->addWidget(new CaptionLabel(QStringLiteral("Model"), card));
+            fc.model = new QComboBox(card);
+            fc.model->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+            for (const char* const* m = c.models; *m; ++m) {
+                const QString name = QString::fromUtf8(*m);
+                fc.model->addItem(name == QLatin1String("default") ? QStringLiteral("default (built-in model)") : name, name);
+            }
+            fc.model->setToolTip(QStringLiteral("The package's models; the list is read from the installed version"));
+            modelRow->addWidget(fc.model, 1);
+            cl->addLayout(modelRow);
+            auto* bottom = new QHBoxLayout();
+            fc.status = widgets::label(QStringLiteral("checking…"), 11, theme::kNeutral600, -1, card);
+            fc.status->setWordWrap(true);
+            fc.use = new QPushButton(QStringLiteral("Use"), card);
+            widgets::setButtonClass(fc.use, "secondary small");
+            bottom->addWidget(fc.status, 1);
+            bottom->addWidget(fc.use);
+            cl->addLayout(bottom);
+            grid->addWidget(card, 0, i);
+            const std::size_t index = impl_->cards.size();
+            connect(fc.use, &QPushButton::clicked, this, [this, index] { impl_->useFamily(index); });
+            impl_->cards.push_back(fc);
+            ++i;
+        }
+        fl->addLayout(grid);
+        impl_->log = new QPlainTextEdit(fam);
+        impl_->log->setReadOnly(true);
+        impl_->log->setMaximumHeight(140);
+        impl_->log->setLineWrapMode(QPlainTextEdit::NoWrap);
+        impl_->log->setStyleSheet(QStringLiteral("QPlainTextEdit { font-family: monospace; font-size: 12px; color: %1; "
+                                                 "background: %2; border: 1px solid %3; }")
+                                      .arg(theme::kNeutral700.name(), theme::kSurface.name(), theme::kNeutral300.name()));
+        impl_->log->hide();
+        fl->addWidget(impl_->log);
+        fl->addStretch(1);
+        tabs->addTab(fam, QStringLiteral("Model families"));
+
         // --- Hugging Face
         auto* hf = new QWidget(tabs);
         auto* hl = new QVBoxLayout(hf);
@@ -378,8 +667,12 @@ namespace sirius::app {
         impl_->query->setPlaceholderText(QStringLiteral("search models… (e.g. nuclei segmentation 3d, cellpose, unet)"));
         impl_->search = new QPushButton(QStringLiteral("Search"), hf);
         widgets::setButtonClass(impl_->search, "secondary small");
+        impl_->tokenButton = new QPushButton(hubToken().isEmpty() ? QStringLiteral("Token…") : QStringLiteral("Token ✓"), hf);
+        widgets::setButtonClass(impl_->tokenButton, "ghost small");
+        impl_->tokenButton->setToolTip(QStringLiteral("Hugging Face access token for gated or private repositories"));
         searchRow->addWidget(impl_->query, 1);
         searchRow->addWidget(impl_->search);
+        searchRow->addWidget(impl_->tokenButton);
         hl->addLayout(searchRow);
         impl_->results = makeTable({QStringLiteral("Model"), QStringLiteral("Downloads"), QStringLiteral("Likes"), QStringLiteral("Tags")}, 0, hf);
         impl_->results->setMinimumHeight(160);
@@ -410,62 +703,6 @@ namespace sirius::app {
         impl_->fileNote->setWordWrap(true);
         hl->addWidget(impl_->fileNote);
         tabs->addTab(hf, QStringLiteral("Hugging Face"));
-
-        // --- Model families
-        auto* fam = new QWidget(tabs);
-        auto* fl = new QVBoxLayout(fam);
-        fl->setContentsMargins(0, 12, 0, 0);
-        fl->setSpacing(10);
-        auto* famNote = widgets::label(
-            QStringLiteral("Packages in the worker's Python that segment cells and nuclei out of the box and return instance "
-                           "labels directly (no threshold or watershed step). Any Cellpose model name or micro-SAM model type can "
-                           "also be typed into the step's Model field as cellpose:<model> / microsam:<type>."),
-            11, theme::kNeutral600, -1, fam);
-        famNote->setWordWrap(true);
-        fl->addWidget(famNote);
-        auto* grid = new QGridLayout();
-        grid->setHorizontalSpacing(10);
-        grid->setVerticalSpacing(10);
-        struct CardSpec {
-            const char* spec;
-            const char* title;
-            const char* blurb;
-        };
-        const CardSpec specs[] = {
-            {"cellpose:cyto3", "Cellpose cyto3", "Generalist cytoplasm model (Cellpose 3): whole cells in 2D and 3D, any modality."},
-            {"cellpose:nuclei", "Cellpose nuclei", "Nuclear model for DAPI / Hoechst-like stains; 3D through per-plane stitching or do_3D."},
-            {"microsam:vit_b_lm", "micro-SAM vit_b_lm", "Segment Anything fine-tuned for light microscopy (ViT-B): automatic instance segmentation."},
-            {"microsam:vit_l_lm", "micro-SAM vit_l_lm", "The larger ViT-L light-microscopy model: better masks, more GPU memory and time."},
-        };
-        int i = 0;
-        for (const CardSpec& c : specs) {
-            auto* card = new QFrame(fam);
-            card->setProperty("class", QStringLiteral("floating"));
-            auto* cl = new QVBoxLayout(card);
-            cl->setContentsMargins(12, 10, 12, 10);
-            cl->setSpacing(4);
-            cl->addWidget(widgets::label(QString::fromUtf8(c.title), 13, theme::kText, QFont::Bold, card));
-            auto* blurb = widgets::label(QString::fromUtf8(c.blurb), 11, theme::kNeutral700, -1, card);
-            blurb->setWordWrap(true);
-            cl->addWidget(blurb);
-            auto* bottom = new QHBoxLayout();
-            FamilyCard fc;
-            fc.spec = QString::fromUtf8(c.spec);
-            fc.status = widgets::label(QStringLiteral("checking…"), 11, theme::kNeutral600, -1, card);
-            fc.status->setWordWrap(true);
-            fc.use = new QPushButton(QStringLiteral("Use"), card);
-            widgets::setButtonClass(fc.use, "secondary small");
-            bottom->addWidget(fc.status, 1);
-            bottom->addWidget(fc.use);
-            cl->addLayout(bottom);
-            grid->addWidget(card, i / 2, i % 2);
-            connect(fc.use, &QPushButton::clicked, this, [this, spec = fc.spec] { impl_->choose(spec); });
-            impl_->cards.push_back(fc);
-            ++i;
-        }
-        fl->addLayout(grid);
-        fl->addStretch(1);
-        tabs->addTab(fam, QStringLiteral("Model families"));
 
         // --- Local
         auto* local = new QWidget(tabs);
@@ -517,8 +754,11 @@ namespace sirius::app {
         connect(impl_->query, &QLineEdit::returnPressed, this, [this] { impl_->runSearch(); });
         connect(impl_->results, &QTableWidget::itemSelectionChanged, this, [this] {
             const auto items = impl_->results->selectedItems();
-            if (!items.isEmpty()) impl_->listFiles(impl_->results->item(items.first()->row(), 0)->data(Qt::UserRole).toString());
+            if (items.isEmpty()) return;
+            QTableWidgetItem* id = impl_->results->item(items.first()->row(), 0);
+            impl_->listFiles(id->data(Qt::UserRole).toString(), id->data(Qt::UserRole + 1).toBool());
         });
+        connect(impl_->tokenButton, &QPushButton::clicked, this, [this] { impl_->askToken(); });
         connect(impl_->files, &QTableWidget::itemSelectionChanged, this, [this] { impl_->fileSelected(); });
         connect(impl_->files, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem*) {
             if (!impl_->downloadedPath.isEmpty()) {
@@ -548,11 +788,11 @@ namespace sirius::app {
             accept();
         });
         connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
-            if (index == 1 && !impl_->familiesChecked) impl_->checkFamilies();
+            if (index == 0 && !impl_->familiesChecked) impl_->checkFamilies();
             if (index == 2 && !impl_->cacheListed) impl_->listCache();
         });
-        // the worker takes a moment to come up: start it now by listing the cache
-        impl_->listCache();
+        // the families tab is up first: checking it starts the worker
+        impl_->checkFamilies();
     }
 
     ModelHubDialog::~ModelHubDialog() {

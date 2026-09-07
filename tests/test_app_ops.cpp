@@ -856,8 +856,14 @@ TEST_CASE("Torch segmentation accepts hub and family model specs without a local
 
     // family info from the worker: availability and the install hint
     CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}}) == "cellpose cyto3 · returns labels");
+    // an installed package reports its version and whether the weights are on disk
+    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "default"}, {"available", true}, {"version", "4.2.1"},
+                             {"weights_cached", false}}) == "cellpose 4.2.1 default · returns labels · weights download on first run");
+    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}, {"version", "4.2.1"},
+                             {"weights_cached", true}, {"warning", "cellpose 4.2.1 has no model 'cyto3'"}}) ==
+          "cellpose 4.2.1 cyto3 · returns labels · weights cached · cellpose 4.2.1 has no model 'cyto3'");
     CHECK(torchModelSummary({{"format", "micro-sam"}, {"model", "vit_b_lm"}, {"available", false}, {"install_hint", "pip install micro-sam"}}) ==
-          "micro-sam vit_b_lm · not installed (pip install micro-sam)");
+          "micro-sam vit_b_lm · not installed (Hub… installs it: pip install micro-sam)");
     CHECK(torchModelSummary({{"format", "hf"}, {"repo", "owner/repo"}, {"available", true}, {"cached", false}}) ==
           "hf owner/repo · downloads on first run");
 }
@@ -869,7 +875,7 @@ TEST_CASE("Torch segmentation takes instance labels from a family model", "[app]
     auto remote = std::make_unique<RemoteWorker>(std::move(pair.first));
     CHECK(remote->supports("hub_search"));
     CHECK(torchModelSummary(torchModelInfo(*remote, "cellpose:cyto3")) == "cellpose cyto3 · returns labels");
-    CHECK(torchModelSummary(torchModelInfo(*remote, "cellpose:nuclei")) == "cellpose cyto3 · not installed (pip install cellpose)");
+    CHECK(torchModelSummary(torchModelInfo(*remote, "cellpose:nuclei")) == "cellpose cyto3 · not installed (Hub… installs it: pip install cellpose)");
 
     const Dims5 dims{1, 1, 9, 40, 20};
     const DatasetMeta meta = metaFor(dims);

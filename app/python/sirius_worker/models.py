@@ -5,8 +5,9 @@ A model *spec* is the string the application's Torch segmentation step holds:
     /path/to/model.pt            TorchScript (.pt / .pts / .pth) or ONNX (.onnx) file
     hf:<repo_id>[:<filename>]    a file from a Hugging Face repository, downloaded once
                                  into the cache ($SIRIUS_MODEL_CACHE or ~/.sirius/models)
-    cellpose:<model>             the `cellpose` package: cyto3, nuclei, cyto2, ... or a
-                                 path / hf: spec of a custom Cellpose model file
+    cellpose:<model>             the `cellpose` package: `default` (the installed version's
+                                 built-in model: cpsam on Cellpose 4, cyto3 on Cellpose 3), one
+                                 of its model names, or a path / hf: spec of a custom model file
     microsam:<model_type>        the `micro_sam` package's automatic instance
                                  segmentation: vit_b_lm, vit_l_lm, vit_t_lm, vit_b_em_organelles, ...
 
@@ -18,7 +19,11 @@ packages are imported lazily so the worker starts without them and reports a
 
 from __future__ import annotations
 
+import importlib
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -40,6 +45,14 @@ INSTALL_HINTS = {
     "microsam": "conda install -c conda-forge micro_sam   (or: pip install micro-sam)",
     "hf": "pip install huggingface_hub",
     "onnx": "pip install onnxruntime",
+}
+
+# pip names, and the conda-forge name where the authors recommend conda
+PACKAGES = {
+    "cellpose": {"pip": ["cellpose"], "conda": None},
+    "microsam": {"pip": ["micro-sam"], "conda": ["micro_sam"]},
+    "hf": {"pip": ["huggingface_hub"], "conda": None},
+    "onnx": {"pip": ["onnxruntime"], "conda": None},
 }
 
 
@@ -89,9 +102,7 @@ def parse_spec(spec: str) -> ModelSpec:
             raise ModelError(f"hf spec '{s}': expected hf:<owner>/<repo>[:<filename>]")
         return ModelSpec("hf", repo, filename.strip(), s)
     if low.startswith("cellpose:"):
-        name = s.split(":", 1)[1].strip()
-        if not name:
-            raise ModelError("cellpose spec needs a model name, e.g. cellpose:cyto3")
+        name = s.split(":", 1)[1].strip() or "default"
         return ModelSpec("cellpose", name, "", s)
     if low.startswith("microsam:") or low.startswith("micro-sam:") or low.startswith("micro_sam:"):
         name = s.split(":", 1)[1].strip()
@@ -170,14 +181,43 @@ def _hf_api():
     return HfApi()
 
 
+def _hub_error(e: BaseException, repo: str) -> ModelError:
+    """huggingface_hub failures as one sentence that says what to do."""
+    name = e.__class__.__name__
+    text = str(e).strip()
+    if name == "GatedRepoError" or "gated" in text.lower():
+        return ModelError(
+            f"{repo} is a gated repository: sign in at https://huggingface.co/{repo}, accept its terms, "
+            "then paste an access token (Hugging Face settings > Access Tokens) into the hub's Token field "
+            "or Preferences > Compute, or run `huggingface-cli login` for the worker's Python.")
+    if name == "RepositoryNotFoundError":
+        return ModelError(f"{repo} was not found on Hugging Face (a private repository needs your access token).")
+    if name == "EntryNotFoundError":
+        return ModelError(f"{repo}: no such file in the repository ({text.splitlines()[0] if text else name}).")
+    if name in ("LocalEntryNotFoundError", "OfflineModeIsEnabled") or "Connection" in name:
+        return ModelError(f"Hugging Face is unreachable from the worker ({name}).")
+    return ModelError(f"{repo}: {text.splitlines()[0] if text else name}")
+
+
+# fields list_models omits unless asked for; gated repositories need a token
+_SEARCH_EXPAND = ["gated", "private", "downloads", "likes", "tags", "pipeline_tag", "lastModified", "library_name"]
+
+
 def hub_search(query: str, limit: int = 25, filter_tag: str = "") -> List[Dict[str, Any]]:
     api = _hf_api()
     kwargs: Dict[str, Any] = {"search": query or None, "limit": max(1, int(limit)), "sort": "downloads",
                               "direction": -1}
     if filter_tag:
         kwargs["filter"] = filter_tag
+    try:
+        found = list(api.list_models(expand=_SEARCH_EXPAND, **kwargs))
+    except (TypeError, ValueError):   # older huggingface_hub without expand
+        found = list(api.list_models(**kwargs))
+    except Exception as e:  # noqa: BLE001
+        raise _hub_error(e, query or "search") from e
     out = []
-    for m in api.list_models(**kwargs):
+    for m in found:
+        gated = getattr(m, "gated", None)
         out.append({
             "id": m.id,
             "downloads": int(getattr(m, "downloads", 0) or 0),
@@ -185,13 +225,19 @@ def hub_search(query: str, limit: int = 25, filter_tag: str = "") -> List[Dict[s
             "tags": list(getattr(m, "tags", []) or [])[:8],
             "last_modified": str(getattr(m, "last_modified", "") or ""),
             "pipeline_tag": str(getattr(m, "pipeline_tag", "") or ""),
+            "library": str(getattr(m, "library_name", "") or ""),
+            "gated": str(gated) if gated else False,
+            "private": bool(getattr(m, "private", False)),
         })
     return out
 
 
 def hub_files(repo: str) -> List[Dict[str, Any]]:
     api = _hf_api()
-    info = api.model_info(repo, files_metadata=True)
+    try:
+        info = api.model_info(repo, files_metadata=True)
+    except Exception as e:  # noqa: BLE001
+        raise _hub_error(e, repo) from e
     files = []
     for s in getattr(info, "siblings", None) or []:
         name = getattr(s, "rfilename", "")
@@ -256,13 +302,25 @@ def hub_download(repo: str, filename: str = "", progress: ProgressFn = None) -> 
     if tqdm_class is not None:
         kwargs["tqdm_class"] = tqdm_class
     try:
-        path = hf_hub_download(**kwargs)
-    except TypeError:   # older huggingface_hub without tqdm_class
-        kwargs.pop("tqdm_class", None)
-        path = hf_hub_download(**kwargs)
+        try:
+            path = hf_hub_download(**kwargs)
+        except TypeError:   # older huggingface_hub without tqdm_class
+            kwargs.pop("tqdm_class", None)
+            path = hf_hub_download(**kwargs)
+    except (ModelError, RuntimeError):
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _hub_error(e, repo) from e
     if progress:
         progress(1.0, filename)
     return str(Path(path).resolve())
+
+
+def set_hub_token(token: str) -> None:
+    """An access token for gated / private repositories, for this process."""
+    token = (token or "").strip()
+    if token:
+        os.environ["HF_TOKEN"] = token
 
 
 def resolve(spec: str, progress: ProgressFn = None) -> Tuple[ModelSpec, str]:
@@ -304,6 +362,209 @@ def family_available(family: str) -> Tuple[bool, str]:
     return True, ""
 
 
+def _conda_executable() -> Optional[str]:
+    """The conda that owns this interpreter's environment, or None."""
+    if not os.path.isdir(os.path.join(sys.prefix, "conda-meta")):
+        return None
+    for candidate in (os.environ.get("CONDA_EXE", ""), shutil.which("conda"), shutil.which("mamba")):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    # a conda env under <base>/envs/<name>, or the base itself
+    for base in (Path(sys.prefix).parent.parent, Path(sys.prefix)):
+        for exe in ("conda", "mamba"):
+            c = base / "bin" / exe
+            if c.exists():
+                return str(c)
+    return None
+
+
+def _installed_by(distribution: str) -> str:
+    """"pip", "conda", ... from the distribution's INSTALLER record, or ""."""
+    try:
+        from importlib import metadata
+        text = metadata.distribution(distribution).read_text("INSTALLER") or ""
+        return text.strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def install_plan(family: str) -> Dict[str, Any]:
+    """How `install` would add a family's package to this interpreter:
+    {family, installer: pip|conda, command: [...], display, packages, python, note}.
+    conda is used for packages whose authors recommend it, unless torch here
+    came from pip: conda would then add its own torch build next to it."""
+    if family not in PACKAGES:
+        raise ModelError(f"nothing to install for '{family}'")
+    spec = PACKAGES[family]
+    conda = _conda_executable() if spec["conda"] else None
+    if conda and _installed_by("torch") == "pip":
+        conda = None
+        pip_note = "pip, because torch here was installed by pip (conda would add its own torch build)"
+    else:
+        pip_note = "pip (no conda found for this interpreter; pip pulls a large dependency set for micro-sam)"
+    if conda:
+        return {"family": family, "installer": "conda", "packages": list(spec["conda"]), "python": sys.executable,
+                "command": [conda, "install", "-y", "-p", sys.prefix, "-c", "conda-forge", *spec["conda"]],
+                "display": "conda install -c conda-forge " + " ".join(spec["conda"]),
+                "note": "conda-forge, as the package's authors recommend; conda may also swap in its own torch build"}
+    return {"family": family, "installer": "pip", "packages": list(spec["pip"]), "python": sys.executable,
+            "command": [sys.executable, "-m", "pip", "install", *spec["pip"]],
+            "display": "pip install " + " ".join(spec["pip"]),
+            "note": "into the worker's Python" if not spec["conda"] else pip_note}
+
+
+def install(family: str, progress: ProgressFn = None, cancelled: CancelFn = None, dry_run: bool = False) -> Dict[str, Any]:
+    """Run the family's install command, streaming its output lines through
+    `progress`; returns {ok, returncode, available, command, tail}. `dry_run`
+    adds pip's --dry-run (conda: --dry-run) so nothing is changed."""
+    plan = install_plan(family)
+    command = list(plan["command"])
+    if dry_run:
+        command.append("--dry-run")
+    if progress:
+        progress(0.0, "$ " + " ".join(command))
+    env = dict(os.environ)
+    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            env=env, errors="replace")
+    tail: List[str] = []
+    fraction = 0.02
+    milestones = (("Collecting", 0.1), ("Downloading", 0.3), ("Installing collected", 0.8), ("Successfully", 1.0),
+                  ("Solving environment", 0.1), ("Downloading and Extracting", 0.4), ("Executing transaction", 0.8),
+                  ("Preparing transaction", 0.7))
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        tail.append(line)
+        if len(tail) > 60:
+            del tail[0]
+        for key, f in milestones:
+            if key in line:
+                fraction = max(fraction, f)
+        if progress:
+            progress(min(fraction, 0.98), line[-300:])
+        if cancelled and cancelled():
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise RuntimeError("cancelled")
+    rc = proc.wait()
+    importlib.invalidate_caches()
+    available = family_available(family)[0] if not dry_run else False
+    if progress:
+        progress(1.0, "done" if rc == 0 else f"exit code {rc}")
+    return {"ok": rc == 0, "returncode": rc, "available": available, "command": command, "installer": plan["installer"],
+            "tail": tail[-25:], "family": family}
+
+
+def _cellpose_models_module():
+    from cellpose import models  # type: ignore
+    return models
+
+
+def cellpose_model_names() -> List[str]:
+    """The installed Cellpose's built-in model names (empty when not installed)."""
+    try:
+        models = _cellpose_models_module()
+    except ImportError:
+        return []
+    names = list(getattr(models, "MODEL_NAMES", []) or [])
+    return names or list(CELLPOSE_MODELS)
+
+
+def _cellpose_is_v4(models) -> bool:
+    return any(str(n).startswith("cpsam") for n in getattr(models, "MODEL_NAMES", []) or [])
+
+
+def _cellpose_default(models) -> str:
+    names = list(getattr(models, "MODEL_NAMES", []) or [])
+    if _cellpose_is_v4(models):
+        return names[0]
+    return "cyto3" if "cyto3" in names else (names[0] if names else "cyto")
+
+
+def microsam_model_names() -> List[str]:
+    try:
+        from micro_sam import util  # type: ignore
+        registry = util.models().registry
+        names = [k for k in registry if not k.endswith("_decoder")]
+        return names or list(MICROSAM_MODELS)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _module_version(name: str) -> str:
+    try:
+        mod = importlib.import_module(name)
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(getattr(mod, "__version__", "") or getattr(mod, "version", "") or "")
+
+
+def weights_cached(spec: str) -> Optional[bool]:
+    """Whether a family model's weights are already on this machine; None
+    when it cannot be told (package missing)."""
+    ms = parse_spec(spec)
+    try:
+        if ms.family == "cellpose":
+            models = _cellpose_models_module()
+            name = _cellpose_default(models) if ms.name in ("", "default") else ms.name
+            if os.path.exists(name):
+                return True
+            root = Path(str(getattr(models, "MODEL_DIR", Path.home() / ".cellpose" / "models")))
+            return any((root / candidate).exists() for candidate in (name, f"{name}torch_0", f"{name}_0"))
+        if ms.family == "microsam":
+            from micro_sam import util  # type: ignore
+            root = Path(util.get_cache_directory()) / "models"
+            return (root / ms.name).exists()
+        if ms.family == "hf":
+            return cached_path(ms.name, ms.filename) is not None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def prepare(spec: str, progress: ProgressFn = None, cancelled: CancelFn = None) -> Dict[str, Any]:
+    """Fetch a model's weights now rather than on the first run: family
+    models through their packages, hf: files through the cache."""
+    ms = parse_spec(spec)
+    if progress:
+        progress(0.02, f"fetching {ms.text()}")
+    if ms.family == "hf":
+        path = hub_download(ms.name, ms.filename, progress)
+        return {"spec": ms.text(), "path": path, "cached": True}
+    if ms.family == "cellpose":
+        try:
+            models = _cellpose_models_module()
+        except ImportError as e:
+            raise NotAvailable(f"{ms.text()} needs the 'cellpose' package ({INSTALL_HINTS['cellpose']})") from e
+        model = _cellpose_model(models, ms.name, gpu=False, progress=progress)
+        path = str(getattr(model, "pretrained_model", "") or "")
+        del model
+        _check(cancelled)
+        if progress:
+            progress(1.0, "weights ready")
+        return {"spec": ms.text(), "path": path, "cached": True}
+    if ms.family == "microsam":
+        try:
+            from micro_sam.automatic_segmentation import get_predictor_and_segmenter  # type: ignore
+            from micro_sam import util  # type: ignore
+        except ImportError as e:
+            raise NotAvailable(f"{ms.text()} needs the 'micro_sam' package ({INSTALL_HINTS['microsam']})") from e
+        predictor, segmenter = get_predictor_and_segmenter(model_type=ms.name, device="cpu", amg=False, is_tiled=False)
+        del predictor, segmenter
+        _check(cancelled)
+        if progress:
+            progress(1.0, "weights ready")
+        return {"spec": ms.text(), "path": str(Path(util.get_cache_directory()) / "models" / ms.name), "cached": True}
+    raise ModelError(f"'{spec}' names a local file; nothing to fetch")
+
+
 def family_info(spec: str) -> Dict[str, Any]:
     """What model_info reports for cellpose:/microsam: specs."""
     ms = parse_spec(spec)
@@ -313,11 +574,33 @@ def family_info(spec: str) -> Dict[str, Any]:
         "format": {"cellpose": "cellpose", "microsam": "micro-sam"}.get(ms.family, ms.family),
         "available": available, "install_hint": hint, "returns": "labels",
         "dtype": "float32", "input_shape": [1, 1, -1, -1, -1], "output_shape": ["labels", -1, -1, -1],
+        "python": sys.executable,
     }
+    try:
+        plan = install_plan(ms.family)
+        info["install"] = {"installer": plan["installer"], "command": " ".join(plan["command"]), "display": plan["display"],
+                           "note": plan["note"]}
+    except ModelError:
+        pass
     if ms.family == "cellpose":
-        info["known_models"] = list(CELLPOSE_MODELS)
+        names = cellpose_model_names() if available else list(CELLPOSE_MODELS)
+        info["known_models"] = names
+        if available:
+            models = _cellpose_models_module()
+            info["default_model"] = _cellpose_default(models)
+            info["version"] = _module_version("cellpose")
+            if ms.name not in ("", "default") and ms.name not in names and not os.path.exists(ms.name) \
+                    and not ms.name.lower().startswith("hf:"):
+                info["warning"] = (f"cellpose {info['version']} has no model '{ms.name}'; it offers " + ", ".join(names) +
+                                   " (cellpose:default picks the built-in one)")
     elif ms.family == "microsam":
-        info["known_models"] = list(MICROSAM_MODELS)
+        info["known_models"] = (microsam_model_names() if available else []) or list(MICROSAM_MODELS)
+        if available:
+            info["version"] = _module_version("micro_sam")
+    if available:
+        cached = weights_cached(spec)
+        if cached is not None:
+            info["weights_cached"] = cached
     return info
 
 
@@ -334,6 +617,24 @@ def _check(cancelled: CancelFn) -> None:
         raise RuntimeError("cancelled")
 
 
+def _cellpose_model(models, model_name: str, gpu: bool, progress: ProgressFn = None):
+    """A CellposeModel for a name, path or hf: spec across Cellpose 3 and 4
+    (4 keeps only its own built-in models and would silently fall back)."""
+    name = model_name or "default"
+    if name.lower().startswith("hf:") or os.path.exists(name):
+        _, path = resolve(name, progress)
+        return models.CellposeModel(gpu=gpu, pretrained_model=path)
+    names = list(getattr(models, "MODEL_NAMES", []) or [])
+    if name == "default":
+        name = _cellpose_default(models)
+    if names and name not in names:
+        raise ModelError(f"cellpose {_module_version('cellpose')} has no model '{name}'; it offers " + ", ".join(names) +
+                         " (cellpose:default picks the built-in one)")
+    if _cellpose_is_v4(models):
+        return models.CellposeModel(gpu=gpu, pretrained_model=name)
+    return models.CellposeModel(gpu=gpu, model_type=name)
+
+
 def run_cellpose(volume: np.ndarray, model_name: str, params: Dict[str, Any], device: str = "auto",
                  progress: ProgressFn = None, cancelled: CancelFn = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Instance labels (uint32 (z, y, x)) from the Cellpose package, plus the
@@ -343,20 +644,16 @@ def run_cellpose(volume: np.ndarray, model_name: str, params: Dict[str, Any], de
     except ImportError as e:
         raise NotAvailable(f"cellpose:{model_name} needs the 'cellpose' package ({INSTALL_HINTS['cellpose']})") from e
     gpu = device != "cpu"
-    name = model_name
-    if name.lower().startswith("hf:") or os.path.exists(name):
-        _, name = resolve(name, progress)
-        model = models.CellposeModel(gpu=gpu, pretrained_model=name)
-    else:
-        try:
-            model = models.CellposeModel(gpu=gpu, model_type=name)
-        except TypeError:   # cellpose >= 4 dropped model_type (one built-in model)
-            model = models.CellposeModel(gpu=gpu)
+    model = _cellpose_model(models, model_name, gpu=gpu, progress=progress)
     z = volume.shape[0]
     diameter = params.get("diameter")
     diameter = float(diameter) if diameter not in (None, "", 0, "0") else None
     do_3d = bool(params.get("do_3d", z > 1 and str(params.get("mode", "3D")) == "3D"))
-    kwargs: Dict[str, Any] = {"diameter": diameter, "channels": [0, 0], "do_3D": bool(do_3d and z > 1)}
+    kwargs: Dict[str, Any] = {"diameter": diameter, "do_3D": bool(do_3d and z > 1)}
+    if not _cellpose_is_v4(models):
+        kwargs["channels"] = [0, 0]   # grayscale; Cellpose 4 infers it
+    if z > 1:
+        kwargs["z_axis"] = 0          # (z, y, x) stacks, single channel
     if params.get("anisotropy") not in (None, "", 0):
         kwargs["anisotropy"] = float(params["anisotropy"])
     if not kwargs["do_3D"] and z > 1:

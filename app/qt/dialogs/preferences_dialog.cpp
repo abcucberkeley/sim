@@ -57,6 +57,7 @@ namespace sirius::app {
         QSpinBox* port = nullptr;
         QLineEdit* token = nullptr;
         QLineEdit* python = nullptr;
+        QLineEdit* hfToken = nullptr;
         QComboBox* provider = nullptr;
         QLineEdit* baseUrl = nullptr;
         QLineEdit* model = nullptr;
@@ -124,6 +125,11 @@ namespace sirius::app {
         impl_->python = new QLineEdit(settings.value(QStringLiteral("worker/python"), QStringLiteral("python3")).toString(), compute);
         impl_->python->setToolTip(QStringLiteral("Interpreter with numpy (and torch for segmentation); SIRIUS_PYTHON overrides"));
         cl->addWidget(field(QStringLiteral("Python for the local worker"), impl_->python, compute));
+        impl_->hfToken = new QLineEdit(settings.value(QStringLiteral("hub/token")).toString(), compute);
+        impl_->hfToken->setEchoMode(QLineEdit::Password);
+        impl_->hfToken->setToolTip(QStringLiteral("Access token for gated or private Hugging Face repositories (huggingface.co ▸ Settings ▸ "
+                                                  "Access Tokens); passed to the local worker as HF_TOKEN"));
+        cl->addWidget(field(QStringLiteral("Hugging Face access token (optional)"), impl_->hfToken, compute));
         cl->addStretch(1);
         tabs->addTab(compute, QStringLiteral("Compute"));
 
@@ -199,6 +205,7 @@ namespace sirius::app {
         settings.setValue(QStringLiteral("hpc/port"), impl_->port->value());
         settings.setValue(QStringLiteral("hpc/token"), impl_->token->text());
         settings.setValue(QStringLiteral("worker/python"), impl_->python->text().trimmed());
+        settings.setValue(QStringLiteral("hub/token"), impl_->hfToken->text().trimmed());
         AssistantSettings as;
         as.provider = impl_->provider->currentData().toString();
         as.baseUrl = impl_->baseUrl->text().trimmed();

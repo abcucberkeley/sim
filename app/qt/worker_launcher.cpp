@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRandomGenerator>
+#include <QProcessEnvironment>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -56,6 +57,11 @@ namespace sirius::app {
         process_ = std::make_unique<QProcess>();
         process_->setWorkingDirectory(dir);
         process_->setProcessChannelMode(QProcess::SeparateChannels);
+        // the Hugging Face token from Preferences reaches huggingface_hub as HF_TOKEN
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        const QString hfToken = QSettings().value(QStringLiteral("hub/token")).toString().trimmed();
+        if (!hfToken.isEmpty() && !env.contains(QStringLiteral("HF_TOKEN"))) env.insert(QStringLiteral("HF_TOKEN"), hfToken);
+        process_->setProcessEnvironment(env);
         QStringList args{QStringLiteral("-m"), QStringLiteral("sirius_worker"), QStringLiteral("--host"),
                          QStringLiteral("127.0.0.1"), QStringLiteral("--port"), QStringLiteral("0"),
                          QStringLiteral("--token"), token_, QStringLiteral("--device"), device_};

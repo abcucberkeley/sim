@@ -107,8 +107,9 @@ class TestSpecs(unittest.TestCase):
         self.assertEqual((s.family, s.name), ("microsam", "vit_b_lm"))
         self.assertEqual(models.parse_spec("micro-sam:vit_l_lm").family, "microsam")
         self.assertTrue(models.is_family_spec("cellpose:nuclei"))
+        self.assertEqual(models.parse_spec("cellpose:").name, "default")   # the installed version's built-in model
         with self.assertRaises(models.ModelError):
-            models.parse_spec("cellpose:")
+            models.parse_spec("microsam:")
         with self.assertRaises(models.ModelError):
             models.parse_spec("")
 
@@ -167,8 +168,78 @@ class TestFamilies(unittest.TestCase):
                 self.assertIn("install", info["install_hint"])
             else:
                 self.assertEqual(info["install_hint"], "")
-        self.assertIn("cyto3", models.family_info("cellpose:cyto3")["known_models"])
+        cp = models.family_info("cellpose:cyto3")
+        self.assertTrue(cp["known_models"])
+        if not cp["available"]:
+            self.assertIn("cyto3", cp["known_models"])
         self.assertIn("vit_b_lm", models.family_info("microsam:vit_b_lm")["known_models"])
+
+    def test_family_info_carries_the_install_plan(self):
+        for spec, family in (("cellpose:default", "cellpose"), ("microsam:vit_b_lm", "microsam")):
+            info = models.family_info(spec)
+            self.assertEqual(info["install"]["installer"], models.install_plan(family)["installer"])
+            self.assertIn(info["install"]["installer"], ("pip", "conda"))
+            self.assertTrue(info["install"]["display"].startswith(("pip install", "conda install")))
+            self.assertEqual(info["python"], sys.executable)
+        plan = models.install_plan("hf")
+        self.assertEqual(plan["installer"], "pip")
+        self.assertEqual(plan["command"][:4], [sys.executable, "-m", "pip", "install"])
+        self.assertIn("huggingface_hub", plan["command"])
+        with self.assertRaises(models.ModelError):
+            models.install_plan("file")
+
+    def test_cellpose_default_spec(self):
+        self.assertEqual(models.parse_spec("cellpose:").name, "default")
+        self.assertEqual(models.parse_spec("cellpose:default").text(), "cellpose:default")
+        info = models.family_info("cellpose:default")
+        self.assertEqual(info["model"], "default")
+        if info["available"]:
+            self.assertTrue(info["default_model"])
+            self.assertIn(info["default_model"], info["known_models"])
+            self.assertIn("weights_cached", info)
+        else:
+            self.assertIsNone(models.weights_cached("cellpose:default"))
+        # a name the installed version does not have is flagged, not silently remapped
+        if info["available"] and "cyto3" not in info["known_models"]:
+            self.assertIn("cyto3", models.family_info("cellpose:cyto3")["warning"])
+            with self.assertRaises(models.ModelError) as cm:
+                models.run_family("cellpose:cyto3", np.zeros((2, 8, 8), np.float32), {}, "cpu")
+            self.assertIn("cellpose:default", str(cm.exception))
+
+    def test_prepare_rejects_local_files_and_missing_packages(self):
+        with self.assertRaises(models.ModelError):
+            models.prepare("/some/model.pt")
+        if not self._importable("micro_sam"):
+            with self.assertRaises(models.NotAvailable) as cm:
+                models.prepare("microsam:vit_b_lm")
+            self.assertIn("micro_sam", str(cm.exception))
+
+    def test_hub_errors_say_what_to_do(self):
+        class GatedRepoError(Exception):
+            pass
+
+        class RepositoryNotFoundError(Exception):
+            pass
+
+        gated = models._hub_error(GatedRepoError("403 Client Error"), "facebook/sam3")
+        self.assertIsInstance(gated, models.ModelError)
+        self.assertIn("gated", str(gated))
+        self.assertIn("https://huggingface.co/facebook/sam3", str(gated))
+        self.assertIn("token", str(gated))
+        missing = models._hub_error(RepositoryNotFoundError("404"), "owner/none")
+        self.assertIn("not found", str(missing))
+        other = models._hub_error(ValueError("boom\nsecond line"), "owner/x")
+        self.assertEqual(str(other), "owner/x: boom")
+
+    @unittest.skipUnless(HAVE_HF, "huggingface_hub missing (the dry run would need PyPI)")
+    def test_install_dry_run_streams_output(self):
+        lines = []
+        r = models.install("hf", progress=lambda f, m: lines.append(m), dry_run=True)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["returncode"], 0)
+        self.assertIn("--dry-run", r["command"])
+        self.assertTrue(lines and lines[0].startswith("$ "), lines[:2])
+        self.assertTrue(any("huggingface" in line.lower() for line in lines), lines)
 
     def test_missing_package_raises_not_available(self):
         vol = np.zeros((2, 8, 8), np.float32)
@@ -203,8 +274,38 @@ class TestHubMethods(ServerTestCase, _CacheCase):
         c = _Client(self.port, self.token)
         try:
             caps = c.hello()["result"]
-            for m in ("hub_search", "hub_files", "hub_download", "models_list", "model_info"):
+            for m in ("hub_search", "hub_files", "hub_download", "models_list", "model_info", "install", "model_prepare"):
                 self.assertIn(m, caps["methods"])
+        finally:
+            c.close()
+
+    @unittest.skipUnless(HAVE_HF, "huggingface_hub missing (the dry run would need PyPI)")
+    def test_install_job_streams_progress(self):
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            progress, header, _ = c.call("install", {"family": "hf", "dry_run": True})
+            self.assertEqual(header["type"], "result", header)
+            self.assertTrue(header["result"]["ok"])
+            self.assertIn("--dry-run", header["result"]["command"])
+            self.assertTrue(progress, "install should stream its output lines")
+            _, header, _ = c.call("install", {"family": "file"})
+            self.assertEqual(header["type"], "error", header)
+        finally:
+            c.close()
+
+    def test_model_prepare_reports_missing_package(self):
+        try:
+            import micro_sam  # type: ignore  # noqa: F401
+            self.skipTest("micro_sam is installed")
+        except ImportError:
+            pass
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("model_prepare", {"spec": "microsam:vit_b_lm"})
+            self.assertEqual(header["type"], "error", header)
+            self.assertIn("micro_sam", header["message"])
         finally:
             c.close()
 
