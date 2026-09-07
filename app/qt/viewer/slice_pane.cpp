@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include <QMouseEvent>
+#include <QElapsedTimer>
 #include <QPainter>
 #include <QPen>
 #include <QResizeEvent>
@@ -23,11 +24,12 @@ namespace sirius::app {
         setCursor(Qt::CrossCursor);
     }
 
-    void SlicePane::setContent(const QImage& img, int factor, Index cols, Index rows) {
+    void SlicePane::setContent(const QImage& img, int factor, Index cols, Index rows, const QPoint& origin) {
         image_ = img;
         factor_ = std::max(factor, 1);
         cols_ = cols;
         rows_ = rows;
+        origin_ = origin;
         update();
     }
 
@@ -93,18 +95,21 @@ namespace sirius::app {
     // --- painting ----------------------------------------------------------------
 
     void SlicePane::paintEvent(QPaintEvent*) {
+        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+        QElapsedTimer clock;
+        if (trace) clock.start();
         QPainter p(this);
         p.fillRect(rect(), theme::kViewerGround);
 
         if (!image_.isNull() && cols_ > 0 && rows_ > 0) {
             p.save();
             QTransform t;
-            t.translate(view_.ox, view_.oy);
+            t.translate(view_.ox + origin_.x() * view_.zx, view_.oy + origin_.y() * view_.zy);
             t.scale(view_.zx * factor_, view_.zy * factor_);
             p.setTransform(t);
             // nearest neighbour when magnifying keeps voxels crisp; smooth
-            // when shrinking avoids aliasing on large frames
-            p.setRenderHint(QPainter::SmoothPixmapTransform, smooth_ || view_.zx * factor_ < 1.0);
+            // when shrinking (in device pixels) avoids aliasing on large frames
+            p.setRenderHint(QPainter::SmoothPixmapTransform, smooth_ || view_.zx * factor_ * devicePixelRatioF() < 1.0);
             p.drawImage(QPointF(0, 0), image_);
             p.restore();
         }
@@ -204,6 +209,7 @@ namespace sirius::app {
             p.setPen(QColor(243, 242, 242, 180));
             p.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, message_);
         }
+        if (trace) qInfo("pane %s paint %lld us (%dx%d, image %dx%d)", objectName().isEmpty() ? "?" : qPrintable(objectName()), clock.nsecsElapsed() / 1000, width(), height(), image_.width(), image_.height());
     }
 
     // --- mouse ----------------------------------------------------------------------

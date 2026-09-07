@@ -27,6 +27,7 @@
 #include "core/workbench.hpp"
 #include "qt/dialogs/preferences_dialog.hpp"
 #include "qt/main_window.hpp"
+#include "qt/viewer/viewer_widget.hpp"
 #include "qt/worker_launcher.hpp"
 #include "qt/qt_strings.hpp"
 #include "qt/theme.hpp"
@@ -60,12 +61,16 @@ int main(int argc, char** argv) {
     // their text ("Assistant"), applied once the run (if any) has finished.
     const QCommandLineOption toolOpt(QStringLiteral("tool"), QStringLiteral("Call a tool of the assistant API (JSON, repeatable)"),
                                      QStringLiteral("json"));
+    const QCommandLineOption strokeOpt(QStringLiteral("stroke"), QStringLiteral("Drag on the XY pane: x0,y0,x1,y1,moves in voxels (repeatable, after the tools)"),
+                                       QStringLiteral("spec"));
+    const QCommandLineOption wheelOpt(QStringLiteral("wheel"), QStringLiteral("Wheel on the XY pane: x,y,steps in voxels (repeatable, before the strokes)"),
+                                      QStringLiteral("spec"));
     const QCommandLineOption actionOpt(QStringLiteral("action"), QStringLiteral("Trigger a menu action by its text (repeatable)"),
                                        QStringLiteral("text"));
     const QCommandLineOption askOpt(QStringLiteral("ask"), QStringLiteral("Send a message to the assistant"), QStringLiteral("text"));
     const QCommandLineOption settleOpt(QStringLiteral("settle"), QStringLiteral("Milliseconds to wait before the screenshot (default 600)"),
                                        QStringLiteral("ms"));
-    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt});
+    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt, strokeOpt, wheelOpt});
     parser.process(app);
 
     sirius::app::registerBuiltinOperations();
@@ -122,6 +127,10 @@ int main(int argc, char** argv) {
             const nlohmann::json r = tools.call(sirius::app::toStd(j.value(QStringLiteral("name")).toString()), args);
             workbench.logLine("tool " + sirius::app::toStd(j.value(QStringLiteral("name")).toString()) + " → " + r.dump().substr(0, 200));
             qInfo("tool %s -> %s", qPrintable(j.value(QStringLiteral("name")).toString()), r.dump(2).c_str());
+            // let the window react (repaint, refresh) before the next call, as it would between a user's actions
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+            QCoreApplication::sendPostedEvents();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
         }
         for (const QString& text : actions) {
             bool found = false;
@@ -133,9 +142,18 @@ int main(int argc, char** argv) {
                 }
             if (!found) workbench.logLine("no action named " + sirius::app::toStd(text));
         }
+        for (const QString& spec : parser.values(wheelOpt)) {
+            const QStringList v = spec.split(QLatin1Char(','));
+            if (v.size() == 3) window.viewer().syntheticWheel(QPointF(v[0].toDouble(), v[1].toDouble()), v[2].toDouble());
+        }
+        for (const QString& spec : parser.values(strokeOpt)) {
+            const QStringList v = spec.split(QLatin1Char(','));
+            if (v.size() == 5)
+                window.viewer().syntheticStroke(QPointF(v[0].toDouble(), v[1].toDouble()), QPointF(v[2].toDouble(), v[3].toDouble()), v[4].toInt());
+        }
         if (parser.isSet(askOpt)) window.askAssistant(parser.value(askOpt));
     };
-    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt);
+    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt) || parser.isSet(strokeOpt) || parser.isSet(wheelOpt);
     const int settle = parser.isSet(settleOpt) ? parser.value(settleOpt).toInt() : 600;
     if (parser.isSet(screenshotOpt) || scripted) {
         const QString path = parser.value(screenshotOpt);

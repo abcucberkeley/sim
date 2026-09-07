@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <QImage>
+#include <QRect>
 
 #include "core/operation.hpp"
 #include "core/workbench.hpp"
@@ -72,13 +73,15 @@ namespace sirius::app {
         // `factor` sub-samples the plane (image pixel = factor voxels).
         // Every renderer resizes `img` as needed (Format_RGB32) and blends the
         // visible channels of `vs` additively with their colours.
-        void renderXY(Index t, Index z, const ViewState& vs, int factor, QImage& img);
+        // `region` (voxels, empty = the whole plane) limits the render to the
+        // part of the plane on screen: the cost follows the window, not the data.
+        void renderXY(Index t, Index z, const ViewState& vs, int factor, QImage& img, const QRect& region = QRect());
         void renderXZ(Index t, Index y, const ViewState& vs, QImage& img);   // rows z, cols x
         void renderYZ(Index t, Index x, const ViewState& vs, QImage& img);   // rows y, cols z
         void renderMIP(Index t, const ViewState& vs, int factor, QImage& img);
 
         // Label overlay on an image produced by the matching renderer.
-        void overlayLabelsXY(Index t, Index z, int factor, const ViewState& vs, QImage& img);
+        void overlayLabelsXY(Index t, Index z, int factor, const ViewState& vs, QImage& img, const QRect& region = QRect());
         void overlayLabelsXZ(Index t, Index y, const ViewState& vs, QImage& img);
         void overlayLabelsYZ(Index t, Index x, const ViewState& vs, QImage& img);
 

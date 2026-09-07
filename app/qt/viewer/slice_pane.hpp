@@ -9,6 +9,7 @@
 // events in voxel coordinates and the ViewerWidget decides what they mean.
 
 #include <QImage>
+#include <QPoint>
 #include <QPointF>
 #include <QRectF>
 #include <QString>
@@ -34,9 +35,14 @@ namespace sirius::app {
         explicit SlicePane(Kind kind, QWidget* parent = nullptr);
         Kind kind() const noexcept { return kind_; }
 
-        // The rendered image covers a (cols, rows) voxel grid with `factor`
-        // voxels per image pixel. The image is implicitly shared (cheap).
-        void setContent(const QImage& img, int factor, Index cols, Index rows);
+        // The rendered image covers part of a (cols, rows) voxel grid with
+        // `factor` voxels per image pixel, starting at voxel `origin` (the
+        // viewer renders the visible region plus a margin, not the whole
+        // plane). The image is implicitly shared (cheap).
+        void setContent(const QImage& img, int factor, Index cols, Index rows, const QPoint& origin = QPoint(0, 0));
+        QPoint origin() const noexcept { return origin_; }
+        // The grid alone (fitView needs it before the first content arrives).
+        void setGrid(Index cols, Index rows) { cols_ = cols; rows_ = rows; }
         void clearContent();
         bool hasContent() const noexcept { return !image_.isNull(); }
         Index cols() const noexcept { return cols_; }
@@ -97,6 +103,7 @@ namespace sirius::app {
         Kind kind_;
         QImage image_;
         int factor_ = 1;
+        QPoint origin_;   // voxel of the image's top-left corner
         Index cols_ = 0, rows_ = 0;
         View view_;
         QString title_, hint_, message_;

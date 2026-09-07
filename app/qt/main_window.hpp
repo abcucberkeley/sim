@@ -18,6 +18,8 @@
 
 namespace sirius::app {
 
+    class ViewerWidget;
+
     class MainWindow : public QMainWindow {
         Q_OBJECT
     public:
@@ -26,6 +28,7 @@ namespace sirius::app {
 
         // Command-line conveniences; failures land in the log.
         void openDatasetPath(const QString& path);
+        ViewerWidget& viewer();   // scripting hooks (--stroke, --wheel)
         void openPipelinePath(const QString& path);
         void runAll();
         // Shows the assistant dock and submits `text` (scripting).

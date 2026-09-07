@@ -35,6 +35,12 @@ namespace sirius::app {
         QString cursorText() const;
         QString zoomText() const;         // "100 %"
 
+        // Scripting / testing: real mouse events on the XY pane, positions in
+        // voxels; events are processed between the moves as they would be
+        // for a user. --stroke and --wheel on the command line use these.
+        void syntheticStroke(const QPointF& fromVoxel, const QPointF& toVoxel, int moves);
+        void syntheticWheel(const QPointF& atVoxel, double steps);
+
     signals:
         void cursorChanged(const QString& text);
         void zoomChanged(const QString& text);

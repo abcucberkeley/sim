@@ -12,6 +12,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QCoreApplication>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QElapsedTimer>
 #include <QPainter>
 #include <QShortcut>
 #include <QStackedWidget>
@@ -124,6 +128,37 @@ namespace sirius::app {
         int displayIndex = -1;
         QImage xyImg, xzImg, yzImg, mipImg, cmpLeftImg, cmpRightImg;
         int xyFactor = 1, mipFactor = 1, cmpFactor = 1;
+        // Rendered voxel regions of the XY-like panes: the visible part plus
+        // a margin. Panning out of them, or a factor change, re-renders.
+        QRect xyRegion, cmpRegion, cmpLeftRegion;
+        // The voxels a pane shows now (no margin), for containment checks.
+        static QRect visibleVoxels(const SlicePane* pane, Index cols, Index rows) {
+            const QPointF a = pane->toVoxel(QPointF(0, 0));
+            const QPointF b = pane->toVoxel(QPointF(pane->width(), pane->height()));
+            const int x0 = std::clamp(static_cast<int>(std::floor(std::min(a.x(), b.x()))), 0, static_cast<int>(std::max<Index>(cols - 1, 0)));
+            const int y0 = std::clamp(static_cast<int>(std::floor(std::min(a.y(), b.y()))), 0, static_cast<int>(std::max<Index>(rows - 1, 0)));
+            const int x1 = std::clamp(static_cast<int>(std::ceil(std::max(a.x(), b.x()))), x0 + 1, static_cast<int>(cols));
+            const int y1 = std::clamp(static_cast<int>(std::ceil(std::max(a.y(), b.y()))), y0 + 1, static_cast<int>(rows));
+            return QRect(x0, y0, x1 - x0, y1 - y0);
+        }
+        // What to render: the visible voxels grown by a quarter of their size
+        // on every side, aligned to the factor; the whole plane when that is
+        // about as big anyway.
+        static QRect renderRegion(const SlicePane* pane, int factor, Index cols, Index rows) {
+            if (cols <= 0 || rows <= 0) return QRect();
+            const QRect vis = visibleVoxels(pane, cols, rows);
+            const int mx = std::max(factor, vis.width() / 4), my = std::max(factor, vis.height() / 4);
+            int x0 = std::max(0, vis.x() - mx), y0 = std::max(0, vis.y() - my);
+            int x1 = std::min(static_cast<int>(cols), vis.x() + vis.width() + mx);
+            int y1 = std::min(static_cast<int>(rows), vis.y() + vis.height() + my);
+            x0 = (x0 / factor) * factor;
+            y0 = (y0 / factor) * factor;
+            x1 = std::min(static_cast<int>(cols), ((x1 + factor - 1) / factor) * factor);
+            y1 = std::min(static_cast<int>(rows), ((y1 + factor - 1) / factor) * factor);
+            const QRect r(x0, y0, x1 - x0, y1 - y0);
+            const QRect whole(0, 0, static_cast<int>(cols), static_cast<int>(rows));
+            return static_cast<double>(r.width()) * r.height() >= 0.7 * static_cast<double>(cols) * rows ? whole : r;
+        }
         struct Dirty {
             bool xy = true, xz = true, yz = true, mip = true, cmp = true, vol = true;
         } dirty;
@@ -356,6 +391,7 @@ namespace sirius::app {
         grid->setContentsMargins(0, 0, 0, 0);
         grid->setSpacing(2);
         xy = new SlicePane(SlicePane::Kind::XY, orthoPage);
+        xy->setObjectName(QStringLiteral("xy"));
         yz = new SlicePane(SlicePane::Kind::YZ, orthoPage);
         xz = new SlicePane(SlicePane::Kind::XZ, orthoPage);
         mip = new SlicePane(SlicePane::Kind::MIP, orthoPage);
@@ -885,10 +921,18 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::layoutPanes() {
         if (!model.valid()) return;
+        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+        QElapsedTimer clock;
+        if (trace) clock.start();
+        struct Report {
+            bool on;
+            QElapsedTimer& c;
+            ~Report() { if (on) qInfo("layoutPanes %lld us", c.nsecsElapsed() / 1000); }
+        } report{trace, clock};
         const ViewState& s = vs();
         const double za = zAspect();
         // XY: fit x state.zoom, offset by the pan
-        xy->setContent(xyImg, xyFactor, nx(), ny());   // keeps cols/rows current before fitView
+        xy->setGrid(nx(), ny());   // keeps cols/rows current before fitView (the image keeps its origin)
         const SlicePane::View fitV = xy->fitView(1.0, 1.0);
         SlicePane::View v;
         v.zx = v.zy = fitV.zx * s.zoom;
@@ -951,7 +995,18 @@ namespace sirius::app {
             mipFactor = mipWant;
             dirty.mip = true;
         }
-        xy->setSmooth(v.zx * xyFactor < 1.0);
+        xy->setSmooth(v.zx * xyFactor * xy->devicePixelRatioF() < 1.0);
+        // the view moved out of what was rendered (pan / zoom / resize): render again
+        if (!dirty.xy && xy->hasContent() && !xyRegion.isEmpty() && !xyRegion.contains(visibleVoxels(xy, nx(), ny()))) {
+            dirty.xy = true;
+            scheduleUpdate();
+        }
+        if (!dirty.cmp && s.mode == ViewMode::Compare && cmpRight->hasContent() && !cmpRegion.isEmpty() &&
+            (!cmpRegion.contains(visibleVoxels(cmpRight, nx(), ny())) ||
+             (rawModel.valid() && !cmpLeftRegion.isEmpty() && !cmpLeftRegion.contains(visibleVoxels(cmpLeft, rawModel.dims().x, rawModel.dims().y))))) {
+            dirty.cmp = true;
+            scheduleUpdate();
+        }
         // overlays that depend on the view
         const ViewState& st = vs();
         const bool locked = st.tool != ViewerTool::Probe;
@@ -999,28 +1054,65 @@ namespace sirius::app {
         xy->setMessage({});
         const ViewState& s = vs();
         const Index t = curT(), z = curZ();
+        // SIRIUS_TRACE_VIEW=1 prints what each pane costs (render, label overlay, hand-over)
+        static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+        QElapsedTimer clock;
+        auto lap = [&clock](const char* what, qint64& into) {
+            (void)what;
+            into = clock.nsecsElapsed() / 1000;
+            clock.restart();
+        };
         if (s.mode == ViewMode::Ortho) {
             if (dirty.xy) {
-                model.renderXY(t, z, s, xyFactor, xyImg);
-                if (s.labels) model.overlayLabelsXY(t, z, xyFactor, s, xyImg);
-                xy->setContent(xyImg, xyFactor, nx(), ny());
+                qint64 r = 0, o = 0, c = 0;
+                clock.start();
+                xyRegion = renderRegion(xy, xyFactor, nx(), ny());
+                model.renderXY(t, z, s, xyFactor, xyImg, xyRegion);
+                lap("render", r);
+                if (s.labels) model.overlayLabelsXY(t, z, xyFactor, s, xyImg, xyRegion);
+                lap("overlay", o);
+                xy->setContent(xyImg, xyFactor, nx(), ny(), xyRegion.topLeft());
+                lap("content", c);
+                if (trace) {
+                    const QRect vis = visibleVoxels(xy, nx(), ny());
+                    qInfo("view xy %dx%d f%d at %d,%d (visible %d,%d %dx%d · pane %dx%d · zx %.3f ox %.1f): render %lld us · labels %lld us · content %lld us",
+                          xyImg.width(), xyImg.height(), xyFactor, xyRegion.x(), xyRegion.y(), vis.x(), vis.y(), vis.width(), vis.height(),
+                          xy->width(), xy->height(), xy->view().zx, xy->view().ox, r, o, c);
+                }
                 dirty.xy = false;
             }
             if (dirty.xz) {
+                qint64 r = 0, o = 0, c = 0;
+                clock.start();
                 model.renderXZ(t, curY(), s, xzImg);
+                lap("render", r);
                 if (s.labels) model.overlayLabelsXZ(t, curY(), s, xzImg);
+                lap("overlay", o);
                 xz->setContent(xzImg, 1, nx(), nz());
+                lap("content", c);
+                if (trace) qInfo("view xz %dx%d: render %lld us · labels %lld us · content %lld us", xzImg.width(), xzImg.height(), r, o, c);
                 dirty.xz = false;
             }
             if (dirty.yz) {
+                qint64 r = 0, o = 0, c = 0;
+                clock.start();
                 model.renderYZ(t, curX(), s, yzImg);
+                lap("render", r);
                 if (s.labels) model.overlayLabelsYZ(t, curX(), s, yzImg);
+                lap("overlay", o);
                 yz->setContent(yzImg, 1, nz(), ny());
+                lap("content", c);
+                if (trace) qInfo("view yz %dx%d: render %lld us · labels %lld us · content %lld us", yzImg.width(), yzImg.height(), r, o, c);
                 dirty.yz = false;
             }
             if (dirty.mip) {
+                qint64 r = 0, c = 0;
+                clock.start();
                 model.renderMIP(t, s, mipFactor, mipImg);
+                lap("render", r);
                 mip->setContent(mipImg, mipFactor, nx(), ny());
+                lap("content", c);
+                if (trace) qInfo("view mip %dx%d f%d: render %lld us · content %lld us", mipImg.width(), mipImg.height(), mipFactor, r, c);
                 dirty.mip = false;
             }
             if (model.volumeTooLarge()) refreshHints();
@@ -1029,14 +1121,16 @@ namespace sirius::app {
                 if (rawModel.valid()) {
                     const Index rt = std::clamp<Index>(t, 0, rawModel.dims().t - 1);
                     const Index rz = std::clamp<Index>(z, 0, rawModel.dims().z - 1);
-                    rawModel.renderXY(rt, rz, s, cmpFactor, cmpLeftImg);
-                    cmpLeft->setContent(cmpLeftImg, cmpFactor, rawModel.dims().x, rawModel.dims().y);
+                    cmpLeftRegion = renderRegion(cmpLeft, cmpFactor, rawModel.dims().x, rawModel.dims().y);
+                    rawModel.renderXY(rt, rz, s, cmpFactor, cmpLeftImg, cmpLeftRegion);
+                    cmpLeft->setContent(cmpLeftImg, cmpFactor, rawModel.dims().x, rawModel.dims().y, cmpLeftRegion.topLeft());
                 } else {
                     cmpLeft->clearContent();
                 }
-                model.renderXY(t, z, s, cmpFactor, cmpRightImg);
-                if (s.labels) model.overlayLabelsXY(t, z, cmpFactor, s, cmpRightImg);
-                cmpRight->setContent(cmpRightImg, cmpFactor, nx(), ny());
+                cmpRegion = renderRegion(cmpRight, cmpFactor, nx(), ny());
+                model.renderXY(t, z, s, cmpFactor, cmpRightImg, cmpRegion);
+                if (s.labels) model.overlayLabelsXY(t, z, cmpFactor, s, cmpRightImg, cmpRegion);
+                cmpRight->setContent(cmpRightImg, cmpFactor, nx(), ny(), cmpRegion.topLeft());
                 dirty.cmp = false;
             }
         } else {
@@ -1237,6 +1331,14 @@ namespace sirius::app {
                 break;
             case ViewerTool::Paint:
                 if (painting) {
+                    static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+                    QElapsedTimer dragClock;
+                    if (trace) dragClock.start();
+                    struct Report {
+                        bool on;
+                        QElapsedTimer& c;
+                        ~Report() { if (on) qInfo("drag: paint handling %lld us", c.nsecsElapsed() / 1000); }
+                    } report{trace, dragClock};
                     const bool erase = s.paintTool == PaintTool::Erase || m.testFlag(Qt::AltModifier);
                     // stamp along the path so fast strokes stay continuous
                     const double spacing = std::max(1.0, s.brushPx / 4.0);
@@ -1474,6 +1576,54 @@ namespace sirius::app {
         if (s.mode == ViewMode::Volume && impl_->volume) return impl_->volume->grabImage();
         QWidget* page = s.mode == ViewMode::Ortho ? impl_->orthoPage : impl_->comparePage;
         return page->grab().toImage();
+    }
+
+    void ViewerWidget::syntheticStroke(const QPointF& fromVoxel, const QPointF& toVoxel, int moves) {
+        SlicePane* pane = impl_->xy;
+        if (!pane || !impl_->model.valid()) return;
+        moves = std::max(1, moves);
+        auto at = [pane](const QPointF& v) { return pane->toScreen(v); };
+        auto send = [pane](QEvent::Type type, const QPointF& pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent e(type, pos, pane->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+            QCoreApplication::sendEvent(pane, &e);
+        };
+        QElapsedTimer clock;
+        clock.start();
+        send(QEvent::MouseButtonPress, at(fromVoxel), Qt::LeftButton, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        qint64 inSend = 0, inEvents = 0;
+        QElapsedTimer part;
+        for (int i = 1; i <= moves; ++i) {
+            const double f = static_cast<double>(i) / moves;
+            part.start();
+            send(QEvent::MouseMove, at(fromVoxel + (toVoxel - fromVoxel) * f), Qt::NoButton, Qt::LeftButton);
+            inSend += part.nsecsElapsed() / 1000;
+            part.start();
+            QCoreApplication::processEvents();
+            inEvents += part.nsecsElapsed() / 1000;
+        }
+        qInfo("stroke: per move %lld us in the move handler, %lld us in the deferred events", inSend / moves, inEvents / moves);
+        send(QEvent::MouseButtonRelease, at(toVoxel), Qt::LeftButton, Qt::NoButton);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::processEvents();
+        qInfo("stroke: %d moves from (%.0f, %.0f) to (%.0f, %.0f) in %lld ms", moves, fromVoxel.x(), fromVoxel.y(), toVoxel.x(),
+              toVoxel.y(), static_cast<long long>(clock.elapsed()));
+    }
+
+    void ViewerWidget::syntheticWheel(const QPointF& atVoxel, double steps) {
+        SlicePane* pane = impl_->xy;
+        if (!pane || !impl_->model.valid()) return;
+        const QPointF pos = pane->toScreen(atVoxel);
+        QElapsedTimer clock;
+        clock.start();
+        QWheelEvent e(pos, pane->mapToGlobal(pos), QPoint(), QPoint(0, static_cast<int>(std::lround(steps * 120.0))), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(pane, &e);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::processEvents();
+        qInfo("wheel: %.1f steps at (%.0f, %.0f) in %lld ms", steps, atVoxel.x(), atVoxel.y(), static_cast<long long>(clock.elapsed()));
     }
 
     QString ViewerWidget::cursorText() const { return impl_->cursorText; }

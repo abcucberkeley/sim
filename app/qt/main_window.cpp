@@ -619,6 +619,14 @@ namespace sirius::app {
         }
 
         void refreshActions() {
+            static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+            QElapsedTimer clock;
+            if (trace) clock.start();
+            struct Report {
+                bool on;
+                QElapsedTimer& c;
+                ~Report() { if (on) qInfo("refreshActions %lld us", c.nsecsElapsed() / 1000); }
+            } report{trace, clock};
             Workbench& w = wb();   // history() is non-const
             const int i = w.selectedIndex();
             const Pipeline& p = w.pipeline();
@@ -1070,6 +1078,8 @@ namespace sirius::app {
         }
         impl_->openWith(path, OpenOptions{});
     }
+
+    ViewerWidget& MainWindow::viewer() { return *impl_->viewer; }
 
     void MainWindow::openPipelinePath(const QString& path) {
         try {

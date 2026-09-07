@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QElapsedTimer>
 #include <QTableWidget>
 #include <QResizeEvent>
 #include <QMenu>
@@ -589,6 +590,14 @@ namespace sirius::app {
         }
 
         void refresh() {
+            static const bool trace = qEnvironmentVariableIsSet("SIRIUS_TRACE_VIEW");
+            QElapsedTimer clock;
+            if (trace) clock.start();
+            struct Report {
+                bool on;
+                QElapsedTimer& c;
+                ~Report() { if (on) qInfo("diagnostics refresh %lld us", c.nsecsElapsed() / 1000); }
+            } report{trace, clock};
             const Workbench& wb = bridge.wb();
             const int sel = wb.selectedIndex();
             const Pipeline& p = wb.pipeline();

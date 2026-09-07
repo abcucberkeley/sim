@@ -1,5 +1,7 @@
 #include "core/workbench.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1108,8 +1110,22 @@ namespace sirius::app {
     }
 
     void Workbench::paintLabels(Index z, Index y, Index x, bool erase) {
+        static const bool trace = std::getenv("SIRIUS_TRACE_VIEW") != nullptr;
+        const auto t0 = std::chrono::steady_clock::now();
         auto labels = viewedLabels();
         if (!labels) return;
+        const auto t1 = std::chrono::steady_clock::now();
+        struct Report {
+            bool on;
+            std::chrono::steady_clock::time_point t0, t1;
+            ~Report() {
+                if (!on) return;
+                const auto t2 = std::chrono::steady_clock::now();
+                std::fprintf(stderr, "paintLabels: lookup %lld us · edit+notify %lld us\n",
+                             static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()),
+                             static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count()));
+            }
+        } report{trace, t0, t1};
         if (strokeCounter_ == 0) beginPaintStroke();
         const double radius = std::max(1.0, view_.brushPx / 2.0);
         const Index zRadius = view_.paint3d ? std::max<Index>(1, view_.brushPx / 6) : 0;

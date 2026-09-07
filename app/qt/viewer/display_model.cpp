@@ -252,57 +252,103 @@ namespace sirius::app {
         const int h = static_cast<int>((rows + factor - 1) / factor);
         if (img.width() != w || img.height() != h || img.format() != QImage::Format_RGB32)
             img = QImage(std::max(w, 1), std::max(h, 1), QImage::Format_RGB32);
-        bool any = false;
-        for (const ChannelPlane& cp : chans) any = any || cp.data;
-        if (!any) {
+        std::vector<const ChannelPlane*> live;
+        for (const ChannelPlane& cp : chans)
+            if (cp.data) live.push_back(&cp);
+        if (live.empty()) {
             img.fill(QColor(0x0a, 0x09, 0x09));
             return;
         }
-        // 2 x 2 mini-average when sub-sampling keeps noisy data from sparkling
+        // Per channel: a row of grey levels first (a tight loop the compiler
+        // vectorises), then the tinted sum through a 256-entry packed table.
+        // 2 x 2 mini-average when sub-sampling keeps noisy data from sparkling.
         const int sub = factor >= 2 ? 2 : 1;
+        std::vector<float> rowBuf(static_cast<std::size_t>(w));
+        std::vector<std::uint8_t> grey(static_cast<std::size_t>(w));
+        std::vector<std::array<std::uint32_t, 256>> tables(live.size());
+        for (std::size_t k = 0; k < live.size(); ++k) {
+            const ChannelPlane& cp = *live[k];
+            for (int i = 0; i < 256; ++i) {
+                const int gi = cp.lut ? (*cp.lut)[static_cast<std::size_t>(i)] : i;
+                tables[k][static_cast<std::size_t>(i)] = (static_cast<std::uint32_t>((gi * cp.tint[0]) >> 8) << 16) |
+                                                        (static_cast<std::uint32_t>((gi * cp.tint[1]) >> 8) << 8) |
+                                                        static_cast<std::uint32_t>((gi * cp.tint[2]) >> 8);
+            }
+        }
+        std::vector<std::uint32_t> acc(static_cast<std::size_t>(w) * 3);
         for (int y = 0; y < h; ++y) {
             std::uint32_t* dst = reinterpret_cast<std::uint32_t*>(img.scanLine(y));
             const Index y0 = static_cast<Index>(y) * factor;
-            for (int x = 0; x < w; ++x) {
-                const Index x0 = static_cast<Index>(x) * factor;
-                int r = 0, g = 0, b = 0;
-                for (const ChannelPlane& cp : chans) {
-                    if (!cp.data) continue;
-                    float v;
-                    if (sub == 1) {
-                        v = cp.data[y0 * cp.rowStride + x0 * cp.colStride];
-                    } else {
-                        const Index y1 = std::min(y0 + 1, rows - 1), x1 = std::min(x0 + 1, cols - 1);
-                        v = 0.25f * (cp.data[y0 * cp.rowStride + x0 * cp.colStride] +
-                                     cp.data[y0 * cp.rowStride + x1 * cp.colStride] +
-                                     cp.data[y1 * cp.rowStride + x0 * cp.colStride] +
-                                     cp.data[y1 * cp.rowStride + x1 * cp.colStride]);
+            const Index y1 = std::min(y0 + 1, rows - 1);
+            std::fill(acc.begin(), acc.end(), 0u);
+            for (std::size_t k = 0; k < live.size(); ++k) {
+                const ChannelPlane& cp = *live[k];
+                const float* r0 = cp.data + y0 * cp.rowStride;
+                const float* r1 = cp.data + y1 * cp.rowStride;
+                float* rb = rowBuf.data();
+                if (sub == 1 && cp.colStride == 1) {
+                    if (factor == 1) std::copy_n(r0, w, rb);
+                    else
+                        for (int x = 0; x < w; ++x) rb[x] = r0[static_cast<Index>(x) * factor];
+                } else if (sub == 1) {
+                    for (int x = 0; x < w; ++x) rb[x] = r0[static_cast<Index>(x) * factor * cp.colStride];
+                } else {
+                    for (int x = 0; x < w; ++x) {
+                        const Index x0 = static_cast<Index>(x) * factor, x1 = std::min(x0 + 1, cols - 1);
+                        rb[x] = 0.25f * (r0[x0 * cp.colStride] + r0[x1 * cp.colStride] + r1[x0 * cp.colStride] + r1[x1 * cp.colStride]);
                     }
-                    const float scale = 255.0f / (cp.window.hi - cp.window.lo);
-                    const float gf = (v - cp.window.lo) * scale;
-                    // NaN compares false on both sides and maps to 0
-                    int gi = gf > 255.0f ? 255 : (gf > 0.0f ? static_cast<int>(gf) : 0);
-                    if (cp.lut) gi = (*cp.lut)[static_cast<std::size_t>(gi)];
-                    r += (gi * cp.tint[0]) >> 8;
-                    g += (gi * cp.tint[1]) >> 8;
-                    b += (gi * cp.tint[2]) >> 8;
                 }
-                dst[x] = packRgb(r, g, b);
+                const float scale = 255.0f / (cp.window.hi - cp.window.lo);
+                const float lo = cp.window.lo;
+                std::uint8_t* g = grey.data();
+                for (int x = 0; x < w; ++x) {
+                    const float gf = (rb[x] - lo) * scale;
+                    // NaN compares false on both sides and maps to 0
+                    g[x] = static_cast<std::uint8_t>(gf > 255.0f ? 255 : (gf > 0.0f ? static_cast<int>(gf) : 0));
+                }
+                const std::array<std::uint32_t, 256>& table = tables[k];
+                if (live.size() == 1) {
+                    for (int x = 0; x < w; ++x) dst[x] = 0xff000000u | table[g[x]];
+                } else {
+                    std::uint32_t* a = acc.data();
+                    for (int x = 0; x < w; ++x) {
+                        const std::uint32_t t = table[g[x]];
+                        a[x * 3] += (t >> 16) & 0xff;
+                        a[x * 3 + 1] += (t >> 8) & 0xff;
+                        a[x * 3 + 2] += t & 0xff;
+                    }
+                }
+            }
+            if (live.size() > 1) {
+                const std::uint32_t* a = acc.data();
+                for (int x = 0; x < w; ++x)
+                    dst[x] = packRgb(static_cast<int>(a[x * 3]), static_cast<int>(a[x * 3 + 1]), static_cast<int>(a[x * 3 + 2]));
             }
         }
     }
 
-    void DisplayModel::renderXY(Index t, Index z, const ViewState& vs, int factor, QImage& img) {
+    namespace {
+        // The part of a (rows, cols) plane a region asks for, clamped; empty = all.
+        QRect planeRegion(const QRect& region, Index cols, Index rows) {
+            const QRect whole(0, 0, static_cast<int>(cols), static_cast<int>(rows));
+            if (region.isEmpty()) return whole;
+            return region.intersected(whole);
+        }
+    } // namespace
+
+    void DisplayModel::renderXY(Index t, Index z, const ViewState& vs, int factor, QImage& img, const QRect& region) {
         const Dims5& d = meta_.dims;
+        const QRect r = planeRegion(region, d.x, d.y);
         std::vector<ChannelPlane> chans = visibleChannels(vs, t);
         Index k = 0;
         for (Index c = 0; c < d.c; ++c) {
             if (!vs.channelOn(c)) continue;
-            chans[static_cast<std::size_t>(k)].data = plane(c, t, z);
+            const float* p = plane(c, t, z);
+            chans[static_cast<std::size_t>(k)].data = p ? p + static_cast<Index>(r.y()) * d.x + r.x() : nullptr;
             chans[static_cast<std::size_t>(k)].rowStride = d.x;
             ++k;
         }
-        blend(std::move(chans), d.y, d.x, factor, img);
+        blend(std::move(chans), r.height(), r.width(), factor, img);
     }
 
     void DisplayModel::renderXZ(Index t, Index y, const ViewState& vs, QImage& img) {
@@ -366,19 +412,26 @@ namespace sirius::app {
         if (!lab || img.isNull()) return;
         factor = std::max(factor, 1);
         const int w = img.width(), h = img.height();
-        // sub-sampled label plane, so outlines are computed at display resolution
-        labelScratch_.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
-        for (int y = 0; y < h; ++y) {
-            const Index sy = std::min<Index>(static_cast<Index>(y) * factor, rows - 1);
-            for (int x = 0; x < w; ++x) {
-                const Index sx = std::min<Index>(static_cast<Index>(x) * factor, cols - 1);
-                labelScratch_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)] =
-                    lab[sy * rowStride + sx * colStride];
+        // The label plane at display resolution: read in place when the image
+        // pixel is one voxel and columns are contiguous, else sub-sampled
+        // into scratch, so outlines are computed at display resolution.
+        const bool direct = factor == 1 && colStride == 1 && w <= cols && h <= rows;
+        if (!direct) {
+            labelScratch_.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
+            for (int y = 0; y < h; ++y) {
+                const Index sy = std::min<Index>(static_cast<Index>(y) * factor, rows - 1);
+                for (int x = 0; x < w; ++x) {
+                    const Index sx = std::min<Index>(static_cast<Index>(x) * factor, cols - 1);
+                    labelScratch_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)] =
+                        lab[sy * rowStride + sx * colStride];
+                }
             }
         }
+        const std::uint32_t* grid = direct ? lab : labelScratch_.data();
+        const Index stride = direct ? rowStride : static_cast<Index>(w);
         const int fill = static_cast<int>(std::lround(std::clamp(opacity, 0.0f, 1.0f) * 256));
         const int edge = 230;
-        auto at = [&](int y, int x) { return labelScratch_[static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)]; };
+        auto at = [grid, stride](int y, int x) { return grid[static_cast<Index>(y) * stride + x]; };
         for (int y = 0; y < h; ++y) {
             std::uint32_t* dst = reinterpret_cast<std::uint32_t*>(img.scanLine(y));
             for (int x = 0; x < w; ++x) {
@@ -403,11 +456,12 @@ namespace sirius::app {
         }
     }
 
-    void DisplayModel::overlayLabelsXY(Index t, Index z, int factor, const ViewState& vs, QImage& img) {
+    void DisplayModel::overlayLabelsXY(Index t, Index z, int factor, const ViewState& vs, QImage& img, const QRect& region) {
         const LabelVolume* L = labels();
         if (!L || t >= L->t() || z >= L->z()) return;
-        overlay(L->plane(t, z), L->y(), L->x(), L->x(), 1, factor, static_cast<float>(vs.labelOpacity),
-                vs.selectedLabel, img);
+        const QRect r = planeRegion(region, L->x(), L->y());
+        overlay(L->plane(t, z) + static_cast<Index>(r.y()) * L->x() + r.x(), r.height(), r.width(), L->x(), 1, factor,
+                static_cast<float>(vs.labelOpacity), vs.selectedLabel, img);
     }
 
     void DisplayModel::overlayLabelsXZ(Index t, Index y, const ViewState& vs, QImage& img) {

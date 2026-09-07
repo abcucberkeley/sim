@@ -376,9 +376,12 @@ build/linux-gcc-app-dev/app/sirius-app --pipeline examples/sim_bundled.sirius.to
 Command line: `--dataset`, `--pipeline`, `--run`, and for scripting and smoke tests
 `--tool '{"name":"set_view","args":{"mode":"3d"}}'` (any assistant tool), `--action
 "Export result"` (a menu item by text), `--ask "…"` (a message to the assistant),
-`--screenshot out.png` (grab the window, and any dialog, after the run and quit) and
-`--quit-after ms`. `QT_QPA_PLATFORM=offscreen` runs without a display (the 3D view then
-shows a notice: Qt's offscreen platform has no OpenGL widgets).
+`--screenshot out.png` (grab the window, and any dialog, after the run and quit),
+`--wheel x,y,steps` and `--stroke x0,y0,x1,y1,moves` (real mouse events on the XY pane,
+in voxels, for zoom / paint timing) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
+what every pane render, label overlay, paint and stroke costs. `QT_QPA_PLATFORM=offscreen`
+runs without a display (the 3D view then shows a notice: Qt's offscreen platform has no
+OpenGL widgets).
 
 Layout: `app/core` is Qt-free and unit-tested without a display (`tests/test_app_*.cpp`:
 array model, parameters, pipeline files, executor caching, workbench and undo, tool API,
