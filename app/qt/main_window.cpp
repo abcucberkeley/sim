@@ -29,7 +29,10 @@
 
 #include "core/export.hpp"
 #include "qt/dialogs/export_dialog.hpp"
+#include "qt/dialogs/folder_dataset_dialog.hpp"
+#include "qt/dialogs/model_hub_dialog.hpp"
 #include "qt/dialogs/open_dataset_dialog.hpp"
+#include "qt/dialogs/plugin_manager.hpp"
 #include "qt/dialogs/preferences_dialog.hpp"
 #include "qt/panels/assistant_panel.hpp"
 #include "qt/panels/diagnostics_panel.hpp"
@@ -118,6 +121,7 @@ namespace sirius::app {
         DiagnosticsPanel* diagnostics = nullptr;
         AssistantPanel* assistant = nullptr;
         HelpWindow* help = nullptr;
+        PluginManagerDialog* plugins = nullptr;   // created on first use
         QDockWidget* opsDock = nullptr;
         QDockWidget* paramsDock = nullptr;
         QDockWidget* diagDock = nullptr;
@@ -217,6 +221,8 @@ namespace sirius::app {
             // File
             QMenu* file = bar->addMenu(QStringLiteral("File"));
             action(file, QStringLiteral("Open dataset…"), QKeySequence::Open, [this] { openDataset(); });
+            action(file, QStringLiteral("Open folder as dataset…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O),
+                   [this] { openFolderDataset(); });
             recentMenu = file->addMenu(QStringLiteral("Open recent"));
             closeDataset = action(file, QStringLiteral("Close dataset"), QKeySequence::Close, [this] { wb().closeDataset(); });
             file->addSeparator();
@@ -332,6 +338,7 @@ namespace sirius::app {
             // Segment
             QMenu* segment = bar->addMenu(QStringLiteral("Segment"));
             action(segment, QStringLiteral("Load Torch model…"), QKeySequence(Qt::CTRL | Qt::Key_M), [this] { loadTorchModel(); });
+            action(segment, QStringLiteral("Download model…"), QKeySequence(), [this] { modelHub(); });
             action(segment, QStringLiteral("Run segmentation"), QKeySequence(), [this] {
                 const int i = segmentationStep();
                 if (i < 0) wb().logLine("Run segmentation: add a segmentation step first (Process ▸ Add operation).");
@@ -398,6 +405,7 @@ namespace sirius::app {
             assistantAction->setText(QStringLiteral("Assistant"));
             assistantAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_5));
             window->addAction(assistantAction);
+            action(window, QStringLiteral("User operations…"), QKeySequence(Qt::ALT | Qt::Key_6), [this] { pluginManager(); });
 
             // Help
             QMenu* helpMenu = bar->addMenu(QStringLiteral("Help"));
@@ -687,6 +695,51 @@ namespace sirius::app {
             return -1;
         }
 
+        // The segmentation step the model goes to: the selected one, else the
+        // first, else a new one.
+        int segmentationStepOrNew() {
+            int i = segmentationStep();
+            if (i < 0 || wb().pipeline().at(i).kind != "seg") {
+                if (!findOperation("seg")) return -1;
+                i = wb().pipeline().indexOf(wb().addStep("seg"));
+            }
+            return i;
+        }
+
+        void modelHub() {
+            ModelHubDialog dialog(bridge, self);
+            if (dialog.exec() != QDialog::Accepted || dialog.chosenModel().isEmpty()) return;
+            const int i = segmentationStepOrNew();
+            if (i < 0) return;
+            wb().setStepParam(i, "model", toStd(dialog.chosenModel()));
+            wb().select(i);
+        }
+
+        // A folder with a manifest opens directly; otherwise the pattern
+        // dialog builds one first.
+        void openFolderDataset() {
+            const QString folder = QFileDialog::getExistingDirectory(self, QStringLiteral("Open folder as dataset"), lastDir);
+            if (folder.isEmpty()) return;
+            lastDir = folder;
+            if (isFolderDataset(toStd(folder))) {
+                openWith(folder, OpenOptions{});
+                return;
+            }
+            FolderDatasetDialog dialog(bridge, folder, self);
+            dialog.exec();
+        }
+
+        void pluginManager(const QString& file = {}) {
+            if (!plugins) {
+                plugins = new PluginManagerDialog(bridge, self);
+                plugins->setAttribute(Qt::WA_DeleteOnClose, false);
+            }
+            if (!file.isEmpty()) plugins->openFile(file);
+            plugins->show();
+            plugins->raise();
+            plugins->activateWindow();
+        }
+
         void loadTorchModel() {
             int i = segmentationStep();
             if (i < 0 || wb().pipeline().at(i).kind != "seg") {
@@ -800,6 +853,7 @@ namespace sirius::app {
 
         // panel <-> window wiring
         connect(d.ops, &OpsPanel::exportRequested, this, [this] { impl_->exportResultDialog(); });
+        connect(d.ops, &OpsPanel::managePluginsRequested, this, [this] { impl_->pluginManager(); });
         connect(d.params, &ParamsPanel::helpRequested, this, [this](bool open) {
             if (open) impl_->showHelpForSelected();
             else impl_->help->hide();
