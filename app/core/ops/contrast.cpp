@@ -16,9 +16,6 @@ namespace sirius::app {
 
     namespace {
 
-        constexpr const char* kPercentiles = "Percentiles";
-        constexpr const char* kManual = "Manual";
-
         struct ChannelWindow {
             float lo = 0.0f, hi = 1.0f;
             float dataMin = 0.0f, dataMax = 1.0f;
@@ -84,13 +81,13 @@ namespace sirius::app {
             d.summary = summary;
             const double lo = params.getDouble("lo_percentile", 0.2), hi = params.getDouble("hi_percentile", 99.8);
             const double gamma = params.getDouble("gamma", 1.0);
-            const bool manual = params.getString("mode", kPercentiles) == kManual;
+            const bool automatic = !(params.getDouble("max", 0.0) > params.getDouble("min", 0.0));
+            ContrastWindow eff;
+            if (automatic) eff = contrastWindow(input, params, 0, maxPlanes);
             for (Index c = 0; c < input.meta.dims.c; ++c) {
                 ChannelWindow w = windowOf(input, c, lo, hi, gamma, maxPlanes);
-                if (manual) {
-                    w.histogram.lo = static_cast<float>(params.getDouble("min", w.dataMin));
-                    w.histogram.hi = static_cast<float>(params.getDouble("max", w.dataMax));
-                }
+                w.histogram.lo = automatic ? eff.lo : static_cast<float>(params.getDouble("min", w.dataMin));
+                w.histogram.hi = automatic ? eff.hi : static_cast<float>(params.getDouble("max", w.dataMax));
                 d.histograms.push_back(w.histogram);
             }
             return d;
@@ -109,14 +106,13 @@ namespace sirius::app {
                 info_.helpPage = "contrast";
                 info_.livePreview = true;
                 info_.params = {
-                    choiceParam("mode", "Window", {kPercentiles, kManual}, kPercentiles)
-                        .withHelp("Percentiles of the data, or an explicit min / max"),
-                    doubleParam("lo_percentile", "Low percentile", 0.2).range(0.0, 50.0, 0.1, 2).withUnit("%"),
-                    doubleParam("hi_percentile", "High percentile", 99.8).range(50.0, 100.0, 0.1, 2).withUnit("%"),
-                    doubleParam("min", "Min", 0.0).withHelp("Manual window: values at or below map to 0"),
-                    doubleParam("max", "Max", 1.0).withHelp("Manual window: values at or above map to 1"),
+                    doubleParam("min", "Min", 0.0).withHelp("Values at or below map to 0"),
+                    doubleParam("max", "Max", 0.0).withHelp("Values at or above map to 1; max <= min means automatic (the percentiles)"),
                     doubleParam("gamma", "Gamma", 1.0).range(0.1, 5.0, 0.05, 2),
-                    boolParam("per_channel", "Per channel", true).withHelp("Separate window for every channel"),
+                    doubleParam("lo_percentile", "Auto low percentile", 0.2).range(0.0, 50.0, 0.1, 2).withUnit("%")
+                        .withHelp("Auto sets Min to this percentile of the input").asAdvanced(),
+                    doubleParam("hi_percentile", "Auto high percentile", 99.8).range(50.0, 100.0, 0.1, 2).withUnit("%")
+                        .withHelp("Auto sets Max to this percentile of the input").asAdvanced(),
                     boolParam("bake", "Bake into data", true)
                         .withHelp("The step rewrites intensities into 0..1; kept for future display-only use")
                         .asAdvanced(),
@@ -125,7 +121,12 @@ namespace sirius::app {
 
             const OpInfo& info() const noexcept override { return info_; }
 
-            // Histograms update live while the percentiles are dragged.
+            // A new step starts with the auto window of the data it sees.
+            ParamSet initialParams(const ParamSet& defaults, const StepInput& input) const override {
+                return contrastAutoParams(defaults, input);
+            }
+
+            // Histograms update live while the window is dragged.
             std::optional<Diagnostics> preview(const StepInput& input, const ParamSet& params) const override {
                 if (!input.hasArray() && !input.source) return std::nullopt;
                 return contrastPreview(input, params);
@@ -133,11 +134,11 @@ namespace sirius::app {
 
             std::string summary(const ParamSet& params, const DatasetMeta&) const override {
                 char buf[64];
-                if (params.getString("mode", kPercentiles) == kManual)
-                    std::snprintf(buf, sizeof buf, "window %.4g – %.4g", params.getDouble("min", 0.0), params.getDouble("max", 1.0));
-                else
-                    std::snprintf(buf, sizeof buf, "percentile %.1f – %.1f", params.getDouble("lo_percentile", 0.2),
+                if (params.getDouble("max", 0.0) <= params.getDouble("min", 0.0))
+                    std::snprintf(buf, sizeof buf, "auto %.1f – %.1f %%", params.getDouble("lo_percentile", 0.2),
                                   params.getDouble("hi_percentile", 99.8));
+                else
+                    std::snprintf(buf, sizeof buf, "window %.4g – %.4g", params.getDouble("min", 0.0), params.getDouble("max", 0.0));
                 const double gamma = params.getDouble("gamma", 1.0);
                 char g[32];
                 std::snprintf(g, sizeof g, "γ %.2g", gamma);
@@ -147,12 +148,8 @@ namespace sirius::app {
 
             Validation validate(const ParamSet& params, const DatasetMeta& input) const override {
                 Validation v = Operation::validate(params, input);
-                if (params.getString("mode", kPercentiles) == kManual) {
-                    if (params.getDouble("min", 0.0) >= params.getDouble("max", 1.0))
-                        v.errors.push_back("Min must be below max.");
-                } else if (params.getDouble("lo_percentile") >= params.getDouble("hi_percentile")) {
-                    v.errors.push_back("The low percentile must be below the high one.");
-                }
+                if (params.getDouble("lo_percentile") >= params.getDouble("hi_percentile"))
+                    v.errors.push_back("The auto low percentile must be below the high one.");
                 return v;
             }
 
@@ -171,38 +168,14 @@ namespace sirius::app {
                 ctx.report(0.0, "reading");
                 ArrayPtr in = input.materialize([&](double f, const std::string& m) { ctx.report(0.4 * f, m); });
                 auto result = std::make_shared<Array5>(in->clone());
-                const double lo = params.getDouble("lo_percentile", 0.2), hi = params.getDouble("hi_percentile", 99.8);
                 const float gamma = static_cast<float>(params.getDouble("gamma", 1.0));
-                const bool perChannel = params.getBool("per_channel", true);
-                const bool manual = params.getString("mode", kPercentiles) == kManual;
-                const Dims5& d = meta.dims;
-                const Index channelSize = d.t * d.z * d.planeSize();
-                StepInput full{meta, result, nullptr, input.labels};
-                std::string note;
-                if (manual) {
-                    const float mn = static_cast<float>(params.getDouble("min", 0.0)), mx = static_cast<float>(params.getDouble("max", 1.0));
-                    rescaleGamma(result->data(), result->numel(), mn, mx, gamma);
-                    char buf[64];
-                    std::snprintf(buf, sizeof buf, "%g – %g", mn, mx);
-                    note = buf;
-                } else if (perChannel) {
-                    for (Index c = 0; c < d.c; ++c) {
-                        ctx.throwIfCancelled();
-                        ctx.report(0.4 + 0.6 * static_cast<double>(c) / d.c, "channel " + std::to_string(c));
-                        const ChannelWindow w = windowOf(full, c, lo, hi, gamma, 0);
-                        float* p = result->plane(c, 0, 0);
-                        rescaleGamma(p, channelSize, w.lo, w.hi, gamma);
-                        char buf[64];
-                        std::snprintf(buf, sizeof buf, "%s%g – %g", c ? " · " : "", w.lo, w.hi);
-                        note += buf;
-                    }
-                } else {
-                    const auto pct = percentiles(result->data(), result->numel(), lo, hi);
-                    rescaleGamma(result->data(), result->numel(), pct.first, pct.second, gamma);
-                    char buf[64];
-                    std::snprintf(buf, sizeof buf, "%g – %g", pct.first, pct.second);
-                    note = buf;
-                }
+                const ContrastWindow cw = contrastWindow(StepInput{meta, in, nullptr, nullptr}, params, 0, 0);
+                const float mn = cw.lo, mx = cw.hi;
+                ctx.report(0.5, "rescaling");
+                rescaleGamma(result->data(), result->numel(), mn, mx, gamma);
+                char nb[64];
+                std::snprintf(nb, sizeof nb, "%g – %g", mn, mx);
+                std::string note = nb;
                 out.array = result;
                 out.labels = input.labels ? input.labels->clone() : nullptr;
                 out.ranOn = Backend::Cpu;
@@ -225,26 +198,38 @@ namespace sirius::app {
         if (const Operation* op = findOperation("contrast")) params.applyDefaults(op->info().params);
         ContrastWindow out;
         out.gamma = static_cast<float>(params.getDouble("gamma", 1.0));
-        out.manual = params.getString("mode", kPercentiles) == kManual;
-        if (out.manual) {
-            out.lo = static_cast<float>(params.getDouble("min", 0.0));
-            out.hi = static_cast<float>(params.getDouble("max", 1.0));
+        out.lo = static_cast<float>(params.getDouble("min", 0.0));
+        out.hi = static_cast<float>(params.getDouble("max", 0.0));
+        const bool automatic = !(out.hi > out.lo);
+        if (!wantRange && !automatic) return out;
+        if (automatic) {
+            // one window for every channel: the extreme percentiles across them
+            const ParamSet a = contrastAutoParams(params, input);
+            out.lo = static_cast<float>(a.getDouble("min", 0.0));
+            out.hi = static_cast<float>(a.getDouble("max", 1.0));
             if (!wantRange) return out;
         }
         const ChannelWindow w = windowOf(input, c, params.getDouble("lo_percentile", 0.2),
                                          params.getDouble("hi_percentile", 99.8), out.gamma, maxPlanes);
         out.dataMin = w.dataMin;
         out.dataMax = w.dataMax;
-        if (!out.manual) {
-            out.lo = w.lo;
-            out.hi = w.hi;
-        }
         return out;
     }
 
-    ParamSet contrastAutoParams(const ParamSet& current) {
+    ParamSet contrastAutoParams(const ParamSet& current, const StepInput& input) {
         ParamSet p = current;
-        p.set("mode", std::string(kPercentiles));
+        if (const Operation* op = findOperation("contrast")) p.applyDefaults(op->info().params);
+        // percentiles over every channel's samples, one window for all
+        float lo = std::numeric_limits<float>::infinity(), hi = -lo;
+        for (Index c = 0; c < input.meta.dims.c; ++c) {
+            const ChannelWindow w = windowOf(input, c, p.getDouble("lo_percentile", 0.2), p.getDouble("hi_percentile", 99.8),
+                                             p.getDouble("gamma", 1.0), 8);
+            lo = std::min(lo, w.lo);
+            hi = std::max(hi, w.hi);
+        }
+        if (!(lo < hi)) { lo = 0.0f; hi = 1.0f; }
+        p.set("min", static_cast<double>(lo));
+        p.set("max", static_cast<double>(hi));
         return p;
     }
 
@@ -257,7 +242,6 @@ namespace sirius::app {
             mx = std::max(mx, w.dataMax);
         }
         if (!(mn < mx)) { mn = 0.0f; mx = 1.0f; }
-        p.set("mode", std::string(kManual));
         p.set("min", static_cast<double>(mn));
         p.set("max", static_cast<double>(mx));
         p.set("gamma", 1.0);

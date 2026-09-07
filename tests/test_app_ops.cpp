@@ -335,8 +335,9 @@ TEST_CASE("Contrast rescales every channel into 0..1 and reports histograms", "[
     REQUIRE(out.diagnostics.histograms.size() == 2);
     CHECK(out.diagnostics.histograms[0].bins.size() == 30);
     CHECK(out.diagnostics.histograms[1].channel == "ch1");
-    // per channel: channel 1 (values ~1000+) also spans the full range
-    CHECK_THAT(out.array->at(1, 0, 0, 0, 0), WithinAbs(0.0, 1e-6));
+    // one window for every channel: channel 1 (values ~1000+) sits at the top of it
+    CHECK(out.array->at(1, 0, 0, 0, 0) > 0.5f);
+    CHECK(out.diagnostics.histograms[0].lo == out.diagnostics.histograms[1].lo);
 
     SECTION("the live preview needs no run") {
         const Diagnostics d = contrastPreview(inputOf(rampArray(dims), meta), p);
@@ -784,7 +785,7 @@ TEST_CASE("Deconvolve runs Richardson-Lucy with a theoretical PSF", "[app][ops][
     }
 }
 
-TEST_CASE("Contrast manual window, Auto / Reset helpers and live preview", "[app][ops][contrast]") {
+TEST_CASE("Contrast window, Auto / Reset helpers and live preview", "[app][ops][contrast]") {
     const Operation& op = requireOperation("contrast");
     CHECK(op.info().livePreview);
     const Dims5 dims{1, 1, 2, 8, 8};
@@ -796,11 +797,13 @@ TEST_CASE("Contrast manual window, Auto / Reset helpers and live preview", "[app
     const StepInput in{meta, arr, nullptr, nullptr};
 
     ParamSet p = op.defaults();
-    p.set("mode", std::string("Manual"));
+    // the default (empty) window is automatic
+    const ContrastWindow autoW = contrastWindow(in, p, 0, 0, true);
+    CHECK(autoW.hi > autoW.lo);
+    CHECK(op.summary(p, meta).rfind("auto", 0) == 0);
     p.set("min", 2.0);
     p.set("max", 4.0);
     const ContrastWindow w = contrastWindow(in, p, 0, 0, true);
-    CHECK(w.manual);
     CHECK(w.lo == 2.0f);
     CHECK(w.hi == 4.0f);
     CHECK_THAT(w.dataMin, WithinAbs(0.0, 1e-6));
@@ -815,23 +818,26 @@ TEST_CASE("Contrast manual window, Auto / Reset helpers and live preview", "[app
     const Index mid = out.array->numel() * 3 / 10;                        // value ≈ 3 -> 0.5
     CHECK_THAT(out.array->data()[mid], WithinAbs(0.5, 0.05));
 
-    SECTION("validation rejects an empty window") {
+    SECTION("an empty window falls back to automatic instead of failing") {
         p.set("max", 2.0);
-        CHECK_FALSE(op.validate(p, meta).ok());
+        CHECK(op.validate(p, meta).ok());
+        const ContrastWindow e = contrastWindow(in, p, 0, 0);
+        CHECK(e.hi > e.lo);
     }
-    SECTION("Auto returns to percentiles, Reset spans the data") {
-        ParamSet a = contrastAutoParams(p);
-        CHECK(a.getString("mode") == "Percentiles");
+    SECTION("Auto takes the percentiles, Reset the full range, a new step starts on Auto") {
+        ParamSet a = p;
         a.set("lo_percentile", 5.0);    // 128 samples: the 0.2 / 99.8 defaults are the end points
         a.set("hi_percentile", 95.0);
+        a = contrastAutoParams(a, in);
+        CHECK(a.getDouble("min") > 0.0);
+        CHECK(a.getDouble("max") < 10.0);
+        CHECK(a.getDouble("min") < a.getDouble("max"));
         const ParamSet r = contrastResetParams(a, in);
-        CHECK(r.getString("mode") == "Manual");
         CHECK_THAT(r.getDouble("min"), WithinAbs(0.0, 1e-6));
         CHECK_THAT(r.getDouble("max"), WithinAbs(10.0, 1e-6));
         CHECK(r.getDouble("gamma") == 1.0);
-        const ContrastWindow pw = contrastWindow(in, a, 0, 0);
-        CHECK_FALSE(pw.manual);
-        CHECK(pw.lo > 0.0f);
-        CHECK(pw.hi < 10.0f);
+        const ParamSet initial = op.initialParams(op.defaults(), in);
+        CHECK(initial.getDouble("max") > initial.getDouble("min"));
+        CHECK(initial.getDouble("max") > 5.0);
     }
 }

@@ -1,22 +1,23 @@
 ---
 title: Contrast adjustment
-figure: Histogram with percentile handles
+figure: Histogram with the min / max window
 ---
 
-Linear rescale between two percentiles of the intensity histogram, then an optional gamma. Display-only unless baked into the export.
+Linear rescale of the intensities between a **min** and a **max**, then an optional gamma. While the step has not been run the viewer shows its input through the current window, so the sliders update the image at once; running the step bakes the mapping into the data for the steps after it and for export.
 
 $$
-I' = \left(\frac{\text{clip}(I, p_{lo}, p_{hi}) - p_{lo}}{p_{hi} - p_{lo}}\right)^{1/\gamma}
+I' = \left(\frac{\text{clip}(I, \min, \max) - \min}{\max - \min}\right)^{1/\gamma}
 $$
 
 ## Parameters
 
 | Parameter | Explanation |
 |---|---|
-| **Percentiles** <br> 0.1 – 99.9 | Robust min/max that ignore hot pixels and background. The histogram panel greys out the tails that are clipped. |
-| **Gamma** <br> 0.5 – 2 | Below 1 lifts dim structures; above 1 emphasises bright ones. |
-| **Per channel** <br> on · off | Compute the percentiles for each channel separately (the default) or once over all channels, which preserves relative brightness between them. |
+| **Min · Max** <br> data range | The window: values at or below min map to 0, at or above max to 1. The sliders span the input's intensity range; the histogram panel greys out the clipped tails. |
+| **Gamma** <br> 0.1 – 5 | Below 1 lifts dim structures; above 1 emphasises bright ones. |
+| **Auto** <br> button | Sets min and max to the *auto percentiles* (0.2 and 99.8 by default, under *More parameters…*) of the input, over every channel. A newly added step starts this way. |
+| **Reset** <br> button | Min and max over the input's full range, gamma 1: no clipping. |
 
 ## Note
 
-The output is in the range 0 – 1. Export with *uint16 (rescale)* to keep 16-bit precision, or *float32* to keep the exact values.
+The output is in the range 0 – 1. Export with *uint16 (rescale)* to keep 16-bit precision, or *float32* to keep the exact values. One window applies to every channel; put a Merge step after Contrast to colour channels.

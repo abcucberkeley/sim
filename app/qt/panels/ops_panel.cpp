@@ -8,6 +8,8 @@
 #include <QGridLayout>
 #include <algorithm>
 
+#include <QPen>
+#include <QEnterEvent>
 #include <QLabel>
 #include <QResizeEvent>
 #include <QMouseEvent>
@@ -69,6 +71,35 @@ namespace sirius::app {
         }
 
         // One step row: grid 22 | 1fr | auto.
+        // 20 x 20 waste-bin icon in the ◉ button's style: neutral outline,
+        // accent on hover (the glyph fonts have no reliable bin symbol).
+        class TrashButton : public QAbstractButton {
+        public:
+            explicit TrashButton(QWidget* parent = nullptr) : QAbstractButton(parent) {
+                setFixedSize(20, 20);
+                setCursor(Qt::PointingHandCursor);
+                setFocusPolicy(Qt::NoFocus);
+            }
+
+        protected:
+            void paintEvent(QPaintEvent*) override {
+                QPainter p(this);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                const QColor c = underMouse() ? theme::kAccent : theme::kNeutral400;
+                p.setPen(QPen(c, 1.5));
+                p.drawRect(QRectF(0.75, 0.75, width() - 1.5, height() - 1.5));
+                p.setPen(QPen(c, 1.2));
+                // lid, handle, can, two ribs
+                p.drawLine(QPointF(5.0, 6.5), QPointF(15.0, 6.5));
+                p.drawLine(QPointF(8.5, 4.5), QPointF(11.5, 4.5));
+                p.drawRect(QRectF(6.5, 6.5, 7.0, 8.5));
+                p.drawLine(QPointF(9.0, 9.0), QPointF(9.0, 13.0));
+                p.drawLine(QPointF(11.0, 9.0), QPointF(11.0, 13.0));
+            }
+            void enterEvent(QEnterEvent*) override { update(); }
+            void leaveEvent(QEvent*) override { update(); }
+        };
+
         class StepRow : public ClickRow {
         public:
             StepRow(WorkbenchBridge& bridge, QWidget* parent) : ClickRow(parent), bridge_(bridge) {
@@ -141,10 +172,13 @@ namespace sirius::app {
                 view_->setGlyphPx(10);
                 view_->setIdleColor(theme::kNeutral400);
                 view_->setToolTip(QStringLiteral("Show this step's output in the viewer"));
+                remove_ = new TrashButton(right);
+                remove_->setToolTip(QStringLiteral("Remove this step (⌫)"));
                 rightLayout->addWidget(up_);
                 rightLayout->addWidget(down_);
                 rightLayout->addSpacing(4);
                 rightLayout->addWidget(view_);
+                rightLayout->addWidget(remove_);
                 grid->addWidget(right, 0, 2, 2, 1, Qt::AlignVCenter);
 
                 connect(this, &ClickRow::clicked, this, [this] { bridge_.wb().select(index_); });
@@ -154,6 +188,7 @@ namespace sirius::app {
                 connect(up_, &QAbstractButton::clicked, this, [this] { bridge_.wb().moveStep(index_, -1); });
                 connect(down_, &QAbstractButton::clicked, this, [this] { bridge_.wb().moveStep(index_, +1); });
                 connect(view_, &QAbstractButton::clicked, this, [this] { bridge_.wb().view(index_); });
+                connect(remove_, &QAbstractButton::clicked, this, [this] { bridge_.wb().removeStep(index_); });
             }
 
             void refresh(int index) {
@@ -165,6 +200,7 @@ namespace sirius::app {
                 setSelected(selected);
                 enable_->setVisible(!step.pinned);
                 pin_->setVisible(step.pinned);
+                remove_->setVisible(!step.pinned);
                 enable_->setChecked(step.enabled);
                 fullName_ = fromStd(step.name);
                 name_->setToolTip(fullName_);
@@ -236,6 +272,7 @@ namespace sirius::app {
             GlyphButton* up_ = nullptr;
             GlyphButton* down_ = nullptr;
             GlyphButton* view_ = nullptr;
+            TrashButton* remove_ = nullptr;
         };
 
         // Grouped dropdown: 82 px group caption column | items.

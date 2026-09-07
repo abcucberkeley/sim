@@ -448,6 +448,15 @@ namespace sirius::app {
         const Snapshot before = snapshot();
         const StepId id = pipeline_.add(kind, at);
         const int index = pipeline_.indexOf(id);
+        // let the operation seed its parameters from the data it will see
+        if (auto upstream = upstreamOutput(index)) {
+            try {
+                Step& s = pipeline_.at(index);
+                s.params = s.op().initialParams(s.params, upstream->asInput());
+            } catch (const std::exception& e) {
+                logLine(std::string("Initial parameters: ") + e.what());
+            }
+        }
         selected_ = viewed_ = index;
         onStepSelected(index);
         pushEdit("Add " + pipeline_.at(index).name, before);

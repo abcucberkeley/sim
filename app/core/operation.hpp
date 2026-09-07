@@ -129,6 +129,9 @@ namespace sirius::app {
         // histograms update live while the percentiles are dragged). Default:
         // none; the workbench then shows a generic shape preview.
         virtual std::optional<Diagnostics> preview(const StepInput&, const ParamSet&) const { return std::nullopt; }
+        // Parameters a freshly added step should start with, given its input
+        // (Contrast takes its window from the data). Default: the defaults.
+        virtual ParamSet initialParams(const ParamSet& defaults, const StepInput&) const { return defaults; }
 
         // Convenience for implementations.
         const std::string& kind() const noexcept { return info().kind; }

@@ -701,7 +701,7 @@ namespace sirius::app {
         // input's range, gamma, Auto / Reset. Every edit is a parameter
         // change, so the viewer's live preview follows it and it is undoable.
         void buildContrast(const Step& step, const OpInfo& info, const DatasetMeta& input, QVBoxLayout* into) {
-            std::vector<std::string> done{"mode", "lo_percentile", "hi_percentile", "min", "max", "gamma"};
+            std::vector<std::string> done{"min", "max", "gamma"};
             auto specOf = [&](const char* key) -> const ParamSpec* {
                 for (const ParamSpec& sp : info.params)
                     if (sp.key == key) return &sp;
@@ -726,22 +726,8 @@ namespace sirius::app {
             const double span = dataMax - dataMin;
             const int decimals = span >= 100.0 ? 1 : span >= 10.0 ? 2 : span >= 1.0 ? 3 : 4;
 
-            // mode
-            auto* mode = new SegmentedControl(QStringList{QStringLiteral("Percentiles"), QStringLiteral("Manual")}, body);
-            mode->setCurrentText(fromStd(step.params.getString("mode", "Percentiles")));
-            into->addWidget(field(QStringLiteral("Window"), mode, body));
-
-            // percentiles (generic editors)
-            auto* pctRow = new QWidget(body);
-            auto* pg = new QGridLayout(pctRow);
-            pg->setContentsMargins(0, 0, 0, 0);
-            pg->setHorizontalSpacing(10);
-            if (const ParamSpec* lo = specOf("lo_percentile")) pg->addWidget(field(fromStd(lo->label), editor(*lo, step.params, input, pctRow), pctRow), 0, 0);
-            if (const ParamSpec* hi = specOf("hi_percentile")) pg->addWidget(field(fromStd(hi->label), editor(*hi, step.params, input, pctRow), pctRow), 0, 1);
-            into->addWidget(pctRow);
-
             // manual min / max: slider + spin box over the data range
-            auto* manualBox = new QWidget(body);
+            auto* manualBox = new QWidget(body);   // min / max sliders over the data range
             auto* mv = new QVBoxLayout(manualBox);
             mv->setContentsMargins(0, 0, 0, 0);
             mv->setSpacing(10);
@@ -753,7 +739,7 @@ namespace sirius::app {
                 auto* slider = new QSlider(Qt::Horizontal, row);
                 slider->setRange(0, 1000);
                 auto* spin = new QDoubleSpinBox(row);
-                spin->setRange(lo, hi);
+                spin->setRange(-1e12, 1e12);   // the slider spans the data; typed values are not clamped
                 spin->setDecimals(dec);
                 spin->setSingleStep((hi - lo) / 200.0);
                 spin->setValue(value);
@@ -762,29 +748,55 @@ namespace sirius::app {
                 h->addWidget(slider, 1);
                 h->addWidget(spin);
                 const std::string k = key;
-                QObject::connect(slider, &QSlider::valueChanged, panel, [this, k, lo, hi, spin](int v) {
+                auto commit = [this, k](double value, bool merge) {
+                    const Step* st = this->step();
+                    if (!st) return;
+                    ParamSet np = st->params;
+                    if (!(np.getDouble("max", 0.0) > np.getDouble("min", 0.0)))   // leave automatic: pin the other bound
+                        if (auto up = bridge.wb().upstreamOutput(index())) {
+                            const ContrastWindow eff = contrastWindow(up->asInput(), np, 0, 8);
+                            np.set("min", static_cast<double>(eff.lo));
+                            np.set("max", static_cast<double>(eff.hi));
+                        }
+                    np.set(k, value);
+                    bridge.wb().setStepParams(index(), np, "Step " + Step::number(index()) + " · " + (k == "min" ? "Min" : "Max"),
+                                              merge ? k : std::string());
+                };
+                QObject::connect(slider, &QSlider::valueChanged, panel, [this, lo, hi, spin, commit](int v) {
                     if (updating) return;
                     const double value = lo + (hi - lo) * v / 1000.0;
                     QSignalBlocker b(spin);
                     spin->setValue(value);
-                    setParam(k, value, true);   // one undo entry per drag
+                    commit(value, true);   // one undo entry per drag
                 });
-                QObject::connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), panel, [this, k, lo, hi, slider](double v) {
+                QObject::connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), panel, [this, lo, hi, slider, commit](double v) {
                     if (updating) return;
                     QSignalBlocker b(slider);
-                    slider->setValue(static_cast<int>(std::lround((v - lo) / (hi - lo) * 1000.0)));
-                    setParam(k, v, false);
+                    slider->setValue(static_cast<int>(std::lround(std::clamp((v - lo) / (hi - lo), 0.0, 1.0) * 1000.0)));
+                    commit(v, false);
                 });
-                updaters[k] = [slider, spin, k, lo, hi](const ParamSet& p) {
-                    const double v = p.getDouble(k, lo);
+                updaters[k] = [this, slider, spin, k, lo, hi](const ParamSet& p) {
+                    double v = p.getDouble(k, lo);
+                    if (!(p.getDouble("max", 0.0) > p.getDouble("min", 0.0)))   // automatic: show the resolved window
+                        if (auto up = bridge.wb().upstreamOutput(index())) {
+                            const ContrastWindow eff = contrastWindow(up->asInput(), p, 0, 8);
+                            v = k == "min" ? eff.lo : eff.hi;
+                        }
                     QSignalBlocker b1(slider), b2(spin);
                     spin->setValue(v);
-                    slider->setValue(static_cast<int>(std::lround((v - lo) / (hi - lo) * 1000.0)));
+                    slider->setValue(static_cast<int>(std::lround(std::clamp((v - lo) / (hi - lo), 0.0, 1.0) * 1000.0)));
                 };
                 mv->addWidget(field(label, row, manualBox));
             };
-            sliderRow("min", QStringLiteral("Min"), dataMin, dataMax, decimals, step.params.getDouble("min", dataMin));
-            sliderRow("max", QStringLiteral("Max"), dataMin, dataMax, decimals, step.params.getDouble("max", dataMax));
+            // an empty window (the default) is automatic: show what it resolves to
+            double curMin = step.params.getDouble("min", 0.0), curMax = step.params.getDouble("max", 0.0);
+            if (!(curMax > curMin) && upstream) {
+                const ContrastWindow eff = contrastWindow(upstream->asInput(), step.params, 0, 8);
+                curMin = eff.lo;
+                curMax = eff.hi;
+            }
+            sliderRow("min", QStringLiteral("Min"), dataMin, dataMax, decimals, curMin);
+            sliderRow("max", QStringLiteral("Max"), dataMin, dataMax, decimals, curMax);
             into->addWidget(manualBox);
 
             // gamma: slider (0.1 .. 5) with the generic spin box
@@ -811,20 +823,6 @@ namespace sirius::app {
                 into->addWidget(field(fromStd(g->label), row, body));
             }
 
-            // mode switches which window editors show
-            auto applyMode = [pctRow, manualBox, mode](const QString& m) {
-                const bool manual = m == QLatin1String("Manual");
-                pctRow->setVisible(!manual);
-                manualBox->setVisible(manual);
-                mode->setCurrentText(m);
-            };
-            applyMode(fromStd(step.params.getString("mode", "Percentiles")));
-            QObject::connect(mode, &SegmentedControl::changed, panel, [this, mode, applyMode](int) {
-                applyMode(mode->currentText());
-                setParam("mode", toStd(mode->currentText()), false);
-            });
-            updaters["mode"] = [applyMode](const ParamSet& p) { applyMode(fromStd(p.getString("mode", "Percentiles"))); };
-
             // Auto / Reset
             auto* buttons = new QWidget(body);
             auto* bh = new QHBoxLayout(buttons);
@@ -834,11 +832,12 @@ namespace sirius::app {
             auto* resetBtn = new QPushButton(QStringLiteral("Reset"), buttons);
             widgets::setButtonClass(autoBtn, "secondary small");
             widgets::setButtonClass(resetBtn, "ghost small");
-            autoBtn->setToolTip(QStringLiteral("Window on the percentiles above"));
-            resetBtn->setToolTip(QStringLiteral("Manual window over the input's full range, gamma 1"));
+            autoBtn->setToolTip(QStringLiteral("Min / max on the input's percentiles (see More parameters)"));
+            resetBtn->setToolTip(QStringLiteral("Min / max over the input's full range, gamma 1"));
             QObject::connect(autoBtn, &QPushButton::clicked, panel, [this] {
                 const Step* st = this->step();
-                if (st) bridge.wb().setStepParams(index(), contrastAutoParams(st->params), "Auto contrast");
+                auto up = bridge.wb().upstreamOutput(index());
+                if (st && up) bridge.wb().setStepParams(index(), contrastAutoParams(st->params, up->asInput()), "Auto contrast");
             });
             QObject::connect(resetBtn, &QPushButton::clicked, panel, [this] {
                 const Step* st = this->step();

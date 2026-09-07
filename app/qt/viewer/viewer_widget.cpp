@@ -1268,7 +1268,8 @@ namespace sirius::app {
     void ViewerWidget::autoContrast() {
         if (impl_->previewing) {   // the previewed step's own Auto
             const int i = impl_->wb.viewedIndex();
-            impl_->wb.setStepParams(i, contrastAutoParams(impl_->wb.pipeline().at(i).params), "Auto contrast");
+            if (auto up = impl_->wb.upstreamOutput(i))
+                impl_->wb.setStepParams(i, contrastAutoParams(impl_->wb.pipeline().at(i).params, up->asInput()), "Auto contrast");
             return;
         }
         impl_->model.setWindowMode(DisplayModel::WindowMode::Auto);
