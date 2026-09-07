@@ -1,7 +1,7 @@
 // Tests of the built-in operations (app/core/ops): registry, per-operation
 // summaries / validation / output metadata, and run() on small synthetic
 // arrays -- plus the SIM reconstruction of the bundled test data through the
-// Load and SIM steps, and the Torch segmentation step against a fake worker
+// Load and SIM steps, and the Segmentation step against a fake worker
 // speaking the RPC protocol over an in-memory transport.
 
 // requireOperation returns a reference to a registry-owned object; GCC 13's
@@ -136,7 +136,7 @@ TEST_CASE("the built-in operations are registered with complete metadata", "[app
     std::size_t builtins = 0;
     for (const Operation* op : allOperations())
         if (op->kind().rfind("test_", 0) != 0 && !op->info().plugin) ++builtins;   // nor plugins the worker tests load
-    CHECK(builtins == 19);
+    CHECK(builtins == 20);
 
     SECTION("menu groups follow the design's order and exclude Load") {
         const auto groups = operationGroups();
@@ -654,6 +654,79 @@ TEST_CASE("Threshold labels blobs and Label cleanup drops the small ones", "[app
     }
 }
 
+TEST_CASE("Classical segmentation finds blobs with global and local thresholds", "[app][ops][classic]") {
+    const Dims5 dims{1, 1, 9, 60, 24};
+    const DatasetMeta meta = metaFor(dims);
+    auto data = blobArray(dims, 3, 5.0);   // three blobs 10 voxels across
+    // a sloped background that a fixed cut would misjudge
+    for (Index z = 0; z < dims.z; ++z)
+        for (Index y = 0; y < dims.y; ++y)
+            for (Index x = 0; x < dims.x; ++x) data->at(0, 0, z, y, x) += 100.0f + 8.0f * static_cast<float>(y);
+    const Operation& op = requireOperation("classic");
+    ParamSet p = op.defaults();
+    p.set("opening", std::int64_t{0});
+    p.set("min_voxels", std::int64_t{5});
+    p.set("sigma", 0.0);
+    Progress prog;
+    SECTION("Otsu with the watershed keeps the three blobs apart") {
+        const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(r.labels);
+        CHECK(r.labels->stats().size() == 3);
+        CHECK(r.diagnostics.kind == DiagnosticsKind::Segment);
+        CHECK(r.note.find("labels") != std::string::npos);
+        bool threshold = false;
+        for (const DiagnosticFact& f : r.diagnostics.facts) threshold = threshold || f.key == "Threshold";
+        CHECK(threshold);
+    }
+    SECTION("local mean follows the background") {
+        p.set("method", std::string("Local mean"));
+        p.set("window", std::int64_t{15});
+        p.set("local_ratio", 1.5);
+        p.set("post", std::string("Connected components"));
+        const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(r.labels);
+        CHECK(r.labels->stats().size() == 3);
+    }
+    SECTION("a top-hat removes a wide background bump") {
+        for (Index z = 0; z < dims.z; ++z)
+            for (Index y = 0; y < dims.y; ++y)
+                for (Index x = 0; x < dims.x; ++x) data->at(0, 0, z, y, x) += 900.0f * std::exp(-static_cast<float>((y - 30) * (y - 30)) / 400.0f);
+        p.set("method", std::string("Manual"));
+        p.set("value", 700.0);
+        p.set("post", std::string("Connected components"));
+        const StepOutput without = op.run(inputOf(data, meta), p, prog.ctx);
+        p.set("tophat", std::int64_t{6});
+        const StepOutput with = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(with.labels);
+        REQUIRE(without.labels);
+        auto voxels = [](const LabelVolume& L) {
+            Index n = 0;
+            for (const LabelStats& st : L.stats()) n += st.voxels;
+            return n;
+        };
+        CHECK(with.labels->stats().size() == 3);
+        // without the top-hat the bump itself is foreground: far more voxels than three blobs
+        CHECK(voxels(*without.labels) > 2 * voxels(*with.labels));
+    }
+    SECTION("opening drops a speck and hole filling closes a hollow blob") {
+        data->at(0, 0, 4, 1, 1) = 1000.0f;     // one-voxel speck, far from the blobs
+        data->at(0, 0, 4, 10, 12) = 0.0f;      // a hole at the centre of the first blob's middle plane
+        p.set("method", std::string("Manual"));
+        p.set("value", 700.0);
+        p.set("post", std::string("Connected components"));
+        p.set("min_voxels", std::int64_t{0});
+        p.set("fill_holes", false);
+        const StepOutput open = op.run(inputOf(data, meta), p, prog.ctx);
+        CHECK(open.labels->stats().size() == 4);   // the speck is a label of its own
+        CHECK(open.labels->at(0, 4, 10, 12) == 0);
+        p.set("opening", std::int64_t{1});
+        p.set("fill_holes", true);
+        const StepOutput clean = op.run(inputOf(data, meta), p, prog.ctx);
+        CHECK(clean.labels->stats().size() == 3);
+        CHECK(clean.labels->at(0, 4, 10, 12) != 0);
+    }
+}
+
 namespace {
     // A worker that answers hello / model_info / run(torch_segment) with a
     // probability map thresholding the input at 500 (plus a flat boundary
@@ -711,7 +784,7 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("Torch segmentation drives the worker protocol and labels the probabilities", "[app][ops][seg][rpc]") {
+TEST_CASE("Segmentation drives the worker protocol and labels the probabilities", "[app][ops][seg][rpc]") {
     auto pair = rpc::loopbackPair();
     std::thread worker(fakeWorker, std::move(pair.second));
     auto remote = std::make_unique<RemoteWorker>(std::move(pair.first));
@@ -827,7 +900,7 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("Torch segmentation accepts hub and family model specs without a local file", "[app][ops][seg]") {
+TEST_CASE("Segmentation accepts hub and family model specs without a local file", "[app][ops][seg]") {
     const Dims5 dims{1, 1, 4, 8, 8};
     const DatasetMeta meta = metaFor(dims);
     const Operation& op = requireOperation("seg");
@@ -868,7 +941,7 @@ TEST_CASE("Torch segmentation accepts hub and family model specs without a local
           "hf owner/repo · downloads on first run");
 }
 
-TEST_CASE("Torch segmentation takes instance labels from a family model", "[app][ops][seg][rpc]") {
+TEST_CASE("Segmentation takes instance labels from a family model", "[app][ops][seg][rpc]") {
     const bool withProb = GENERATE(true, false);
     auto pair = rpc::loopbackPair();
     std::thread worker(fakeLabelWorker, std::move(pair.second), withProb);

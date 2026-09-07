@@ -4,6 +4,8 @@
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QEvent>
+#include <QSettings>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
 #include <algorithm>
@@ -22,6 +24,7 @@
 #include <QVector>
 
 #include "qt/qt_strings.hpp"
+#include "core/help_pages.hpp"
 #include "qt/theme.hpp"
 #include "qt/widgets/controls.hpp"
 
@@ -277,7 +280,34 @@ namespace sirius::app {
             TrashButton* remove_ = nullptr;
         };
 
-        // Grouped dropdown: 82 px group caption column | items.
+        // One sentence about an operation, from the first paragraph of its help
+        // page, with the markdown and inline maths stripped.
+        QString operationBlurb(const std::string& kind) {
+            std::string intro;
+            try {
+                intro = loadHelpPage(kind).intro;
+            } catch (const std::exception&) {
+                return QString();
+            }
+            std::string out;
+            bool math = false;
+            for (char c : intro) {
+                if (c == '$') { math = !math; continue; }
+                if (math || c == '*' || c == '`' || c == '_' || c == '\n' || c == '\r') {
+                    if (c == '\n' || c == '\r') out += ' ';
+                    continue;
+                }
+                out += c;
+            }
+            // the first sentence, or a trimmed line
+            const std::size_t stop = out.find(". ");
+            if (stop != std::string::npos && stop > 30) out = out.substr(0, stop + 1);
+            if (out.size() > 190) out = out.substr(0, 187) + "…";
+            return fromStd(out).simplified();
+        }
+
+        // Grouped dropdown: 82 px group caption column | items; with
+        // descriptions (a setting) every item carries its one-line blurb.
         class AddMenu : public QFrame {
         public:
             AddMenu(WorkbenchBridge& bridge, QWidget* parent) : QFrame(parent), bridge_(bridge) {
@@ -289,6 +319,7 @@ namespace sirius::app {
                 layout_ = new QVBoxLayout(this);
                 layout_->setContentsMargins(2, 2, 2, 2);
                 layout_->setSpacing(0);
+                details_ = QSettings().value(QStringLiteral("ops/addMenuDetails"), false).toBool();
                 rebuild();
             }
 
@@ -329,6 +360,28 @@ namespace sirius::app {
                     });
                     return link;
                 };
+                // header: what this is, and the descriptions toggle
+                {
+                    auto* head = new QWidget(this);
+                    auto* hl = new QHBoxLayout(head);
+                    hl->setContentsMargins(10, 6, 10, 6);
+                    hl->addWidget(new CaptionLabel(QStringLiteral("Add a step"), head), 1);
+                    auto* toggle = new ClickRow(head);
+                    toggle->setTopRule(0);
+                    auto* tl = new QHBoxLayout(toggle);
+                    tl->setContentsMargins(6, 2, 6, 2);
+                    tl->addWidget(widgets::label(details_ ? QStringLiteral("Hide descriptions") : QStringLiteral("Show descriptions"), 11,
+                                                 theme::kAccent, -1, toggle));
+                    toggle->setToolTip(QStringLiteral("Show a sentence about every operation (kept in the settings)"));
+                    connect(toggle, &ClickRow::clicked, this, [this] {
+                        details_ = !details_;
+                        QSettings().setValue(QStringLiteral("ops/addMenuDetails"), details_);
+                        rebuild();
+                    });
+                    hl->addWidget(toggle);
+                    layout->addWidget(head);
+                    layout->addWidget(new Rule(1, Qt::Horizontal, this));
+                }
                 bool linked = false;
                 for (const auto& [group, ops] : operationGroups()) {
                     auto* row = new QWidget(this);
@@ -347,10 +400,22 @@ namespace sirius::app {
                     for (const Operation* op : ops) {
                         auto* item = new ClickRow(items);
                         item->setTopRule(0);
-                        auto* il = new QHBoxLayout(item);
-                        il->setContentsMargins(10, 6, 10, 6);
+                        auto* il = new QVBoxLayout(item);
+                        il->setContentsMargins(10, details_ ? 7 : 6, 10, details_ ? 7 : 6);
+                        il->setSpacing(2);
                         auto* name = widgets::heading(fromStd(op->info().name), 12, item);
                         il->addWidget(name);
+                        if (details_) {
+                            QString blurb = operationBlurb(op->kind());
+                            if (op->info().plugin && !op->info().source.empty())
+                                blurb = (blurb.isEmpty() ? QString() : blurb + QStringLiteral(" · ")) +
+                                        QStringLiteral("user operation · ") + QFileInfo(fromStd(op->info().source)).fileName();
+                            if (!blurb.isEmpty()) {
+                                auto* text = widgets::label(blurb, 11, theme::kNeutral600, -1, item);
+                                text->setWordWrap(true);
+                                il->addWidget(text);
+                            }
+                        }
                         const std::string kind = op->kind();
                         connect(item, &ClickRow::clicked, this, [this, kind] { add(kind); });
                         itemsLayout->addWidget(item);
@@ -394,6 +459,7 @@ namespace sirius::app {
         private:
             QVBoxLayout* layout_ = nullptr;
             bool stale_ = false;
+            bool details_ = false;
 
             void add(const std::string& kind) {
                 bridge_.wb().addStep(kind);

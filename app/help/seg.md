@@ -1,5 +1,5 @@
 ---
-title: Segmentation with a Torch model
+title: Segmentation
 figure: Tile grid with overlap halo
 ---
 

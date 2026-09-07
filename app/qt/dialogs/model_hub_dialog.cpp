@@ -558,7 +558,7 @@ namespace sirius::app {
         root->setSpacing(12);
         root->addWidget(widgets::heading(QStringLiteral("Model hub"), theme::kH4Px, this));
         auto* intro = widgets::label(
-            QStringLiteral("Segmentation models for the Torch segmentation step: a TorchScript / ONNX file from Hugging Face, a model "
+            QStringLiteral("Segmentation models for the Segmentation step: a TorchScript / ONNX file from Hugging Face, a model "
                            "family the worker's Python packages provide, or a file on this machine."),
             11, theme::kNeutral600, -1, this);
         intro->setWordWrap(true);

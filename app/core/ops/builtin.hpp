@@ -42,6 +42,7 @@ namespace sirius::app {
     std::unique_ptr<Operation> makeRegisterOperation();
     std::unique_ptr<Operation> makeTorchSegmentationOperation();
     std::unique_ptr<Operation> makeThresholdOperation();
+    std::unique_ptr<Operation> makeClassicalSegmentationOperation();
     std::unique_ptr<Operation> makeLabelCleanupOperation();
 
     // Shared helpers for operation implementations (ops/common.cpp).
@@ -56,6 +57,8 @@ namespace sirius::app {
     // "12.8 GB", "412 MB"
     std::string formatBytes(std::uint64_t bytes);
     std::string formatNumber(double v, int decimals);
+    // Otsu's threshold of `n` values (256-bin histogram); NaNs ignored.
+    float otsuThreshold(const float* values, Index n);
     // "~9 s" for `bytes` at a nominal throughput.
     std::string estimatedTime(std::uint64_t bytes, double bytesPerSecond);
     // Input / Output thumbnails, summary and cost facts (the "Einsum / other" panel).

@@ -16,7 +16,7 @@ namespace sirius::app {
             // Combine
             &makeMergeOperation, &makeStitchOperation, &makeRegisterOperation,
             // Segment
-            &makeTorchSegmentationOperation, &makeThresholdOperation, &makeLabelCleanupOperation,
+            &makeTorchSegmentationOperation, &makeThresholdOperation, &makeClassicalSegmentationOperation, &makeLabelCleanupOperation,
         };
     }
 

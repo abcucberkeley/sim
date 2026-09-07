@@ -4,7 +4,7 @@
 // Segmentation models: search Hugging Face, download a TorchScript / ONNX
 // file into the local model cache, or pick a model family the worker's
 // Python packages provide (Cellpose, micro-SAM). The chosen model spec is
-// what the Torch segmentation step's "model" parameter accepts.
+// what the Segmentation step's "model" parameter accepts.
 
 #include <QDialog>
 #include <QString>

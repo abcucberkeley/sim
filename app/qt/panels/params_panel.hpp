@@ -3,7 +3,7 @@
 
 // Right dock: "STEP 05 · INTENSITY" kicker + state, step name + ? help
 // button, the per-kind parameter body (generic form from ParamSpecs plus
-// bespoke editors for Load, SIM, Einsum, Torch segmentation and Merge),
+// bespoke editors for Load, SIM, Einsum, Segmentation and Merge),
 // the BACKEND and CACHE OUTPUT tile rows and the Run step / View / Remove footer.
 
 #include <QWidget>

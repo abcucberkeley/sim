@@ -54,7 +54,7 @@ namespace sirius::app::theme {
     constexpr int kTitleBarH = 38;
     constexpr int kViewerToolbarH = 40;
     constexpr int kStatusBarH = 26;
-    constexpr int kOpsDockW = 290;
+    constexpr int kOpsDockW = 340;
     constexpr int kParamsDockW = 320;
     constexpr int kAssistantW = 330;
     constexpr int kToolStripW = 36;

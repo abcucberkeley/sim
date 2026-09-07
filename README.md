@@ -296,8 +296,7 @@ theoretical OTF; band diagnostics) · Deconvolve (Richardson–Lucy with total-v
 prior) · Volume reconstruction (isotropic resampling for the 3D view) · Einsum reduce,
 Max projection, Mean over time · Contrast (percentile window + gamma, live histograms) ·
 Flat-field · Bleach correction · Deskew + rotate · Crop / pad · Resample · Merge
-channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Torch
-segmentation (a TorchScript / ONNX model run tile-wise by the Python worker, labels by
+channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Segmentation (a TorchScript / ONNX model run tile-wise by the Python worker, labels by
 watershed or connected components; or a model family — Cellpose, micro-SAM — that
 returns labels itself) · Threshold · Label cleanup. Labels are painted,
 filled, merged, split and deleted in the viewer; every edit, parameter change and
@@ -359,6 +358,8 @@ Window ▸ User operations… (also the link at the foot of the add menu) lists 
 plugin files per folder with their load status, creates new ones from a template
 and edits them in a small Python editor; saving reloads the step. Process ▸ Reload
 plugins picks up edits made elsewhere.
+The add-step menu has a *Show descriptions* toggle that puts a sentence under every
+operation, for when the list grows.
 
 **Pipelines** are TOML (`*.sirius.toml`, File ▸ Save pipeline); relative paths in them
 resolve against the file, and the Load step's path opens the dataset when the pipeline

@@ -1,6 +1,8 @@
 #include "qt/panels/diagnostics_panel.hpp"
 
 #include <algorithm>
+#include <functional>
+#include <map>
 #include <array>
 #include <cmath>
 
@@ -18,6 +20,12 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QElapsedTimer>
+#include <QAbstractTableModel>
+#include <QIcon>
+#include <QMouseEvent>
+#include <QPixmap>
+#include <QStyledItemDelegate>
+#include <QTableView>
 #include <QTableWidget>
 #include <QResizeEvent>
 #include <QMenu>
@@ -149,6 +157,156 @@ namespace sirius::app {
             {PaintTool::Lasso, "◠", "Lasso"},
         }};
 
+        // --- label table: a model over the label statistics ------------------------
+        // Tens of thousands of labels are common; a QTableWidget with items and
+        // a link widget per row took 20 s to rebuild after every stroke. The
+        // model answers per cell from the stats vector, so a refresh is a reset.
+        class LabelTableModel : public QAbstractTableModel {
+        public:
+            explicit LabelTableModel(QObject* parent = nullptr) : QAbstractTableModel(parent) {}
+
+            void setLabels(std::shared_ptr<LabelVolume> labels) {
+                beginResetModel();
+                labels_ = std::move(labels);
+                endResetModel();
+            }
+            const std::vector<LabelStats>& stats() const {
+                static const std::vector<LabelStats> none;
+                return labels_ ? labels_->stats() : none;
+            }
+            std::uint32_t idAt(int row) const {
+                const auto& st = stats();
+                return row >= 0 && row < static_cast<int>(st.size()) ? st[static_cast<std::size_t>(row)].id : 0u;
+            }
+            int rowOf(std::uint32_t id) const {
+                const auto& st = stats();
+                for (std::size_t i = 0; i < st.size(); ++i)
+                    if (st[i].id == id) return static_cast<int>(i);
+                return -1;
+            }
+
+            int rowCount(const QModelIndex& parent = QModelIndex()) const override {
+                return parent.isValid() ? 0 : static_cast<int>(stats().size());
+            }
+            int columnCount(const QModelIndex& parent = QModelIndex()) const override { return parent.isValid() ? 0 : 6; }
+
+            QVariant headerData(int section, Qt::Orientation o, int role) const override {
+                if (o != Qt::Horizontal || role != Qt::DisplayRole) return {};
+                static const char* names[] = {"ID", "CLASS", "VOXELS", "CONF.", "FLAG", ""};
+                return section >= 0 && section < 6 ? QString::fromUtf8(names[section]) : QString();
+            }
+
+            QVariant data(const QModelIndex& index, int role) const override {
+                const auto& st = stats();
+                if (!index.isValid() || index.row() < 0 || index.row() >= static_cast<int>(st.size())) return {};
+                const LabelStats& s = st[static_cast<std::size_t>(index.row())];
+                switch (role) {
+                    case Qt::DisplayRole:
+                        switch (index.column()) {
+                            case 0: return QStringLiteral("%1").arg(s.id, 4, 10, QChar('0'));
+                            case 1: return QString::fromStdString(s.cls);
+                            case 2: return groupThousands(s.voxels);
+                            case 3: return QString::number(s.confidence, 'f', 2);
+                            case 4: return QString::fromStdString(s.flagText());
+                            default: return {};
+                        }
+                    case Qt::DecorationRole:
+                        return index.column() == 0 ? QVariant(chip(s.id)) : QVariant();
+                    case Qt::ForegroundRole:
+                        if ((index.column() == 3 && s.confidence < 0.6) || (index.column() == 4 && !s.flags.empty())) return QBrush(theme::kAccent);
+                        return {};
+                    case Qt::FontRole:
+                        if (index.column() == 4 && !s.flags.empty()) return theme::heading(theme::kSmallPx);
+                        return {};
+                    case Qt::UserRole:
+                        return static_cast<uint>(s.id);
+                    default:
+                        return {};
+                }
+            }
+
+        private:
+            // one chip per palette colour, shared by every label of that colour
+            const QPixmap& chip(std::uint32_t id) const {
+                const auto c = labelColor(id);
+                const QRgb key = QColor::fromRgbF(c[0], c[1], c[2]).rgb();
+                auto it = chips_.find(key);
+                if (it == chips_.end()) {
+                    QPixmap pm(10, 10);
+                    pm.fill(QColor(key));
+                    it = chips_.emplace(key, pm).first;
+                }
+                return it->second;
+            }
+
+            std::shared_ptr<LabelVolume> labels_;
+            mutable std::map<QRgb, QPixmap> chips_;
+        };
+
+        // The last column: "merge · split · ✕" painted in accent; a click on a
+        // word calls back with the link and the row's label.
+        class LabelActionDelegate : public QStyledItemDelegate {
+        public:
+            explicit LabelActionDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
+            std::function<void(const QString&, std::uint32_t)> onAction;
+
+            void paint(QPainter* p, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+                QStyledItemDelegate::paint(p, option, QModelIndex());   // background / selection only
+                p->save();
+                p->setFont(theme::font(theme::kSmallPx));
+                p->setPen(theme::kAccent);
+                const QRect r = option.rect.adjusted(6, 0, -6, 0);
+                p->drawText(r, Qt::AlignLeft | Qt::AlignVCenter, text());
+                p->restore();
+                (void)index;
+            }
+            QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const override {
+                return {QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text()) + 12, option.rect.height()};
+            }
+            bool editorEvent(QEvent* e, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override {
+                if (e->type() != QEvent::MouseButtonRelease || !onAction) return false;
+                auto* me = static_cast<QMouseEvent*>(e);
+                if (me->button() != Qt::LeftButton) return false;
+                const QFontMetrics fm(theme::font(theme::kSmallPx));
+                const int x = static_cast<int>(me->position().x()) - option.rect.x() - 6;
+                const int wMerge = fm.horizontalAdvance(QStringLiteral("merge")), wSep = fm.horizontalAdvance(QStringLiteral(" · ")),
+                          wSplit = fm.horizontalAdvance(QStringLiteral("split"));
+                QString link;
+                if (x >= 0 && x <= wMerge) link = QStringLiteral("merge");
+                else if (x >= wMerge + wSep && x <= wMerge + wSep + wSplit) link = QStringLiteral("split");
+                else if (x > wMerge + 2 * wSep + wSplit - 2) link = QStringLiteral("delete");
+                if (link.isEmpty()) return false;
+                onAction(link, model->data(index, Qt::UserRole).toUInt());
+                return true;
+            }
+
+        private:
+            static QString text() { return QStringLiteral("merge · split · ✕"); }
+        };
+
+        class LabelTableView : public QTableView {
+        public:
+            explicit LabelTableView(QWidget* parent = nullptr) : QTableView(parent) {
+                setFrameShape(QFrame::NoFrame);
+                setShowGrid(false);
+                setEditTriggers(QAbstractItemView::NoEditTriggers);
+                setFocusPolicy(Qt::NoFocus);
+                verticalHeader()->setVisible(false);
+                verticalHeader()->setDefaultSectionSize(22);
+                horizontalHeader()->setStretchLastSection(true);
+                horizontalHeader()->setHighlightSections(false);
+                horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                setFont(theme::font(theme::kSmallPx));
+                setStyleSheet(QStringLiteral(
+                    "QTableView { background: %1; border: none; selection-background-color: %2; selection-color: %5; }"
+                    "QTableView::item { padding: 2px 6px; border-bottom: 1px solid %3; }"
+                    "QHeaderView::section { background: %1; border: none; border-bottom: 2px solid %3; color: %4;"
+                    " font-size: 10px; padding: 4px 6px; }")
+                                  .arg(theme::hex(theme::kBg), theme::hex(theme::kSurface), theme::hex(theme::kDivider),
+                                       theme::hex(theme::kNeutral600), theme::hex(theme::kText)));
+            }
+        };
+
         // --- segmentation cleanup ---------------------------------------------------
 
         class SegmentCleanupView : public QWidget {
@@ -256,20 +414,29 @@ namespace sirius::app {
             }
 
             QWidget* buildTable() {
-                table_ = new DiagnosticTableView(this);
+                table_ = new LabelTableView(this);
                 cell(table_);
+                model_ = new LabelTableModel(table_);
+                table_->setModel(model_);
                 table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
                 table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-                table_->setColumnCount(6);
-                table_->setHorizontalHeaderLabels({QStringLiteral("ID"), QStringLiteral("CLASS"), QStringLiteral("VOXELS"),
-                                                   QStringLiteral("CONF."), QStringLiteral("FLAG"), QString()});
-                table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+                auto* actions = new LabelActionDelegate(table_);
+                actions->onAction = [this](const QString& link, std::uint32_t id) { act(link, id); };
+                table_->setItemDelegateForColumn(5, actions);
+                // fixed widths: ResizeToContents would measure every row
+                const QFontMetrics fm(theme::font(theme::kSmallPx));
+                table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+                table_->setColumnWidth(0, fm.horizontalAdvance(QStringLiteral("00000")) + 46);
+                table_->setColumnWidth(1, fm.horizontalAdvance(QStringLiteral("nucleus")) + 28);
+                table_->setColumnWidth(2, fm.horizontalAdvance(QStringLiteral("1 000 000")) + 20);
+                table_->setColumnWidth(3, fm.horizontalAdvance(QStringLiteral("0.00")) + 30);
+                table_->setColumnWidth(4, fm.horizontalAdvance(QStringLiteral("touching border")) + 32);
                 table_->horizontalHeader()->setStretchLastSection(true);
-                QObject::connect(table_, &QTableWidget::itemSelectionChanged, this, [this] {
+                QObject::connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
                     if (updating_) return;
                     const auto rows = table_->selectionModel()->selectedRows();
                     if (rows.isEmpty()) return;
-                    const std::uint32_t id = table_->item(rows.first().row(), 0)->data(Qt::UserRole).toUInt();
+                    const std::uint32_t id = model_->idAt(rows.first().row());
                     ViewState vs = bridge_.wb().viewState();
                     if (vs.selectedLabel == id) return;
                     vs.selectedLabel = id;
@@ -307,55 +474,30 @@ namespace sirius::app {
                 updating_ = true;
                 std::shared_ptr<LabelVolume> labels = bridge_.wb().viewedLabels();
                 const ViewState& vs = bridge_.wb().viewState();
-                table_->setRowCount(0);
                 std::vector<DiagnosticFact> facts;
                 if (!labels || labels->stats().empty()) {
+                    if (model_->rowCount() > 0 || labels != shownLabels_) model_->setLabels(nullptr);
+                    shownLabels_ = nullptr;
                     facts.push_back({"Labels", "none yet"});
                     queue_->setFacts(facts, {}, QStringLiteral("Run the segmentation step to fill the review queue."));
                     updating_ = false;
                     return;
                 }
-                const auto& stats = labels->stats();
-                table_->setRowCount(static_cast<int>(stats.size()));
-                const QFont bold = theme::heading(theme::kSmallPx);
-                int selectedRow = -1;
-                for (int r = 0; r < static_cast<int>(stats.size()); ++r) {
-                    const LabelStats& s = stats[static_cast<std::size_t>(r)];
-                    auto* id = new QTableWidgetItem(QStringLiteral("%1").arg(s.id, 4, 10, QChar('0')));
-                    id->setData(Qt::UserRole, static_cast<uint>(s.id));
-                    QPixmap chip(10, 10);
-                    const auto c = labelColor(s.id);
-                    chip.fill(QColor::fromRgbF(c[0], c[1], c[2]));
-                    id->setIcon(QIcon(chip));
-                    table_->setItem(r, 0, id);
-                    table_->setItem(r, 1, new QTableWidgetItem(QString::fromStdString(s.cls)));
-                    table_->setItem(r, 2, new QTableWidgetItem(groupThousands(s.voxels)));
-                    auto* conf = new QTableWidgetItem(QString::number(s.confidence, 'f', 2));
-                    if (s.confidence < 0.6) conf->setForeground(theme::kAccent);
-                    table_->setItem(r, 3, conf);
-                    auto* flag = new QTableWidgetItem(QString::fromStdString(s.flagText()));
-                    if (!s.flags.empty()) {
-                        flag->setForeground(theme::kAccent);
-                        flag->setFont(bold);
-                    }
-                    table_->setItem(r, 4, flag);
-                    auto* actions = new QLabel(QStringLiteral("<a href=\"merge\" style=\"color:%1;text-decoration:none\">merge</a> · "
-                                                              "<a href=\"split\" style=\"color:%1;text-decoration:none\">split</a> · "
-                                                              "<a href=\"delete\" style=\"color:%1;text-decoration:none\">✕</a>")
-                                                   .arg(theme::hex(theme::kAccent)));
-                    actions->setFont(theme::font(theme::kSmallPx));
-                    actions->setContentsMargins(6, 0, 6, 0);
-                    const std::uint32_t labelId = s.id;
-                    QObject::connect(actions, &QLabel::linkActivated, this, [this, labelId](const QString& link) { act(link, labelId); });
-                    table_->setCellWidget(r, 5, actions);
-                    if (s.id == vs.selectedLabel) selectedRow = r;
+                // the model reads the stats in place; a reset is all a change needs
+                model_->setLabels(labels);
+                shownLabels_ = labels;
+                const int row = vs.selectedLabel ? model_->rowOf(vs.selectedLabel) : -1;
+                if (row >= 0) {
+                    table_->selectRow(row);
+                    table_->scrollTo(model_->index(row, 0), QAbstractItemView::EnsureVisible);
+                } else {
+                    table_->clearSelection();
                 }
-                if (selectedRow >= 0) table_->selectRow(selectedRow);
                 // review queue
                 facts.push_back({"Low confidence (< 0.6)", std::to_string(labels->flaggedCount("low conf"))});
                 facts.push_back({"Touching border", std::to_string(labels->flaggedCount("touching border"))});
                 facts.push_back({"Size outliers", std::to_string(labels->flaggedCount("small") + labels->flaggedCount("merged?"))});
-                facts.push_back({"Reviewed", std::to_string(labels->reviewedCount()) + " / " + std::to_string(stats.size())});
+                facts.push_back({"Reviewed", std::to_string(labels->reviewedCount()) + " / " + std::to_string(labels->stats().size())});
                 queue_->setFacts(facts);
                 updating_ = false;
             }
@@ -367,7 +509,7 @@ namespace sirius::app {
                 } else if (link == QLatin1String("merge")) {
                     std::vector<std::uint32_t> ids{id};
                     for (const QModelIndex& row : table_->selectionModel()->selectedRows()) {
-                        const std::uint32_t other = table_->item(row.row(), 0)->data(Qt::UserRole).toUInt();
+                        const std::uint32_t other = model_->idAt(row.row());
                         if (other != id) ids.push_back(other);
                     }
                     if (ids.size() < 2 && wb.viewState().selectedLabel != 0 && wb.viewState().selectedLabel != id)
@@ -396,7 +538,9 @@ namespace sirius::app {
             QLabel* brushLabel_ = nullptr;
             QSlider* brush_ = nullptr;
             QCheckBox* paint3d_ = nullptr;
-            DiagnosticTableView* table_ = nullptr;
+            LabelTableView* table_ = nullptr;
+            LabelTableModel* model_ = nullptr;
+            std::shared_ptr<LabelVolume> shownLabels_;
             FactsView* queue_ = nullptr;
             bool updating_ = false;
         };

@@ -1,4 +1,4 @@
-// Torch segmentation: a TorchScript model run tile-wise by the Python worker
+// Segmentation: a model run by the Python worker -- a TorchScript / ONNX file tile-wise,
 // (the same worker serves the HPC backend), probabilities turned into
 // instance labels natively. The model may also be a spec the worker resolves
 // itself -- hf:<repo>[:<file>] downloaded from Hugging Face, or a model
@@ -89,7 +89,7 @@ namespace sirius::app {
         public:
             TorchSegmentationOperation() {
                 info_.kind = "seg";
-                info_.name = "Torch segmentation";
+                info_.name = "Segmentation";
                 info_.group = "Segment";
                 info_.kindLabel = "SEGMENT";
                 info_.diagnostics = DiagnosticsKind::Segment;
@@ -157,7 +157,7 @@ namespace sirius::app {
                 const Validation v = validate(p, input.meta);
                 if (!v.ok()) throw std::runtime_error(v.firstError());
                 if (!ctx.remote)
-                    throw std::runtime_error("Torch segmentation needs the Python worker: start it from Preferences ▸ Worker "
+                    throw std::runtime_error("Segmentation needs the Python worker: start it from Preferences ▸ Worker "
                                              "or choose the HPC backend");
                 if (!ctx.remote->supports("torch_segment"))
                     throw std::runtime_error("The connected worker does not implement torch_segment (" +

@@ -5,15 +5,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include <sirius/image_ops.hpp>
 
 namespace sirius::app {
 
-    namespace {
-
-        float otsuThreshold(const float* v, Index n) {
+    float otsuThreshold(const float* v, Index n) {
             float mn = std::numeric_limits<float>::infinity(), mx = -mn;
             for (Index i = 0; i < n; ++i) {
                 if (std::isnan(v[i])) continue;
@@ -45,6 +44,8 @@ namespace sirius::app {
             }
             return mn + (mx - mn) * static_cast<float>(bestBin + 1) / bins;
         }
+
+    namespace {
 
         class ThresholdOperation final : public Operation {
         public:
