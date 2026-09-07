@@ -8,6 +8,12 @@ import os
 import sys
 import tempfile
 import unittest
+
+try:
+    import scipy  # noqa: F401
+    _HAVE_SCIPY = True
+except ImportError:
+    _HAVE_SCIPY = False
 from pathlib import Path
 
 import numpy as np
@@ -162,6 +168,7 @@ class TestSteps(unittest.TestCase):
         self.assertEqual(r.array.shape, (2, 1, 4, 5, 6))
         np.testing.assert_allclose(r.array[:, 0], a.mean(axis=1), rtol=1e-6)
 
+    @unittest.skipUnless(_HAVE_SCIPY, "connected components need scipy")
     def test_threshold_labels_components(self):
         a = np.zeros((1, 1, 4, 10, 10), np.float32)
         a[0, 0, :, 1:3, 1:3] = 5.0
@@ -183,6 +190,7 @@ class TestSteps(unittest.TestCase):
         self.assertEqual(r.array.shape, (1, 2, 8, 4, 4))
         self.assertAlmostEqual(r.meta["voxel_um"][2], 0.2, places=6)
 
+    @unittest.skipUnless(_HAVE_SCIPY, "connected components need scipy")
     def test_channel_by_name(self):
         a = np.zeros((2, 1, 2, 4, 4), np.float32)
         a[1] = 3.0

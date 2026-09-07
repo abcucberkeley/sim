@@ -68,8 +68,11 @@ namespace sirius::app {
                 info_.kind = spec.value("kind", "");
                 if (info_.kind.empty()) throw std::invalid_argument("plugin spec without a kind");
                 info_.name = spec.value("name", info_.kind);
-                info_.group = spec.value("group", "Plugins");
-                info_.kindLabel = upper(info_.group == "Plugins" ? std::string("plugin") : info_.group);
+                // Every user operation sits in its own "User" section of the
+                // add menu; the spec's group only names the row's kind label.
+                info_.group = "User";
+                const std::string declared = spec.value("group", "");
+                info_.kindLabel = upper(declared.empty() || declared == "Plugins" || declared == "User" ? std::string("user") : declared);
                 info_.diagnostics = DiagnosticsKind::Generic;
                 info_.defaultCache = cachePolicyFromString(spec.value("cache", "memory")).value_or(CachePolicy::Memory);
                 info_.separableOverT = spec.value("separable_over_t", false);

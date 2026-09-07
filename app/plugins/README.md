@@ -3,8 +3,8 @@
 A plugin is one Python file that adds a processing step to the workbench.
 The application discovers plugins through its Python worker at start-up and
 on **Process ▸ Reload plugins**, and gives each one a parameter form, an
-entry in the "Add a processing step" menu, undo, caching, assistant tools and
-a help page, all generated from the file. The same file runs unchanged on
+entry in the "User" section of the "Add a processing step" menu, undo,
+caching, assistant tools and a help page, all generated from the file. The same file runs unchanged on
 the HPC backend, because the worker on the cluster loads it too.
 
 Directories searched, in order:
@@ -19,7 +19,7 @@ Directories searched, in order:
 STEP = {
     "kind": "dog_filter",                 # identifier, unique, saved in pipeline files
     "name": "Difference of Gaussians",    # shown in the menu and the step list
-    "group": "Intensity",                 # menu group (Reconstruct, Reduce, Intensity, Geometry, Combine, Segment, or your own)
+    "group": "Intensity",                 # kind label on the step row; the menu lists every plugin under "User"
     "params": [
         {"key": "sigma_lo", "label": "σ low", "type": "double", "default": 1.0, "min": 0.1, "max": 50,
          "unit": "px", "help": "…"},

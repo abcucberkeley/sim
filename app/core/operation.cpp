@@ -163,7 +163,7 @@ namespace sirius::app {
     }
 
     std::vector<std::pair<std::string, std::vector<const Operation*>>> operationGroups() {
-        static const char* order[] = {"Reconstruct", "Reduce", "Intensity", "Geometry", "Combine", "Segment", "Input"};
+        static const char* order[] = {"Reconstruct", "Reduce", "Intensity", "Geometry", "Combine", "Segment", "User", "Input"};
         std::vector<std::pair<std::string, std::vector<const Operation*>>> groups;
         for (const char* g : order) {
             std::vector<const Operation*> ops;
