@@ -41,8 +41,10 @@ __all__ = [
     "StepResult",
     "load_dataset",
     "load_model",
+    "model_cache_dir",
     "model_info",
     "resolve_device",
+    "resolve_model_spec",
     "run_pipeline",
     "run_step",
     "step_kinds",
@@ -896,6 +898,84 @@ def resolve_device(device: str = "auto") -> str:
 
 _model_cache: Dict[Tuple[str, str], Any] = {}
 
+# Model specs beyond a file path (the worker's ``sirius_worker.models`` has
+# the full hub / family machinery; the layout of the download cache is shared):
+#   hf:<owner>/<repo>[:<file>]   a Hugging Face file, downloaded once into
+#                                $SIRIUS_MODEL_CACHE or ~/.sirius/models/hf/<owner>--<repo>/
+#   cellpose:<model>, microsam:<model_type>   package families returning labels
+_MODEL_EXTENSIONS = (".pt", ".pts", ".pth", ".onnx")
+_FAMILY_PREFIXES = ("cellpose:", "microsam:", "micro-sam:", "micro_sam:")
+
+
+def model_cache_dir() -> str:
+    env = os.environ.get("SIRIUS_MODEL_CACHE", "").strip()
+    return os.path.expanduser(env) if env else os.path.join(os.path.expanduser("~"), ".sirius", "models")
+
+
+def _is_hf_spec(spec: str) -> bool:
+    return spec.lower().startswith(("hf:", "huggingface:"))
+
+
+def _is_family_spec(spec: str) -> bool:
+    return spec.lower().startswith(_FAMILY_PREFIXES)
+
+
+def _family_of(spec: str) -> Tuple[str, str]:
+    """('cellpose' | 'microsam', model name) of a family spec."""
+    prefix, _, name = spec.partition(":")
+    family = "cellpose" if prefix.lower() == "cellpose" else "microsam"
+    return family, name.strip()
+
+
+def resolve_model_spec(spec: str, progress: ProgressFn = None) -> str:
+    """A local file path for a path or ``hf:`` spec (downloading the file into
+    the model cache when needed). Family specs are returned unchanged."""
+    spec = (spec or "").strip()
+    if not spec:
+        raise ValueError("no model given")
+    if _is_family_spec(spec) or not _is_hf_spec(spec):
+        return spec
+    body = spec.split(":", 1)[1].lstrip("/")
+    repo, _, filename = body.partition(":")
+    repo = repo.strip().strip("/")
+    if repo.count("/") != 1 or not all(repo.split("/")):
+        raise ValueError(f"model spec '{spec}': expected hf:<owner>/<repo>[:<filename>]")
+    filename = filename.strip()
+    target = os.path.join(model_cache_dir(), "hf", repo.replace("/", "--"))
+    if filename and os.path.isfile(os.path.join(target, filename)):
+        return os.path.join(target, filename)
+    try:
+        from huggingface_hub import HfApi, hf_hub_download  # type: ignore
+    except ImportError as e:
+        raise NotAvailable("hf: model specs need the 'huggingface_hub' package (pip install huggingface_hub)") from e
+    if not filename:
+        names = [s.rfilename for s in (HfApi().model_info(repo).siblings or [])
+                 if s.rfilename.lower().endswith(_MODEL_EXTENSIONS)]
+        if len(names) != 1:
+            raise ValueError(f"hf:{repo} holds {len(names)} model files ({', '.join(names[:10]) or 'none'}); "
+                             f"choose one as hf:{repo}:<filename>")
+        filename = names[0]
+    _progress(progress, 0.0, f"downloading {filename}")
+    os.makedirs(target, exist_ok=True)
+    path = hf_hub_download(repo_id=repo, filename=filename, local_dir=target)
+    _progress(progress, 1.0, filename)
+    return os.path.abspath(path)
+
+
+def _family_info(spec: str) -> Dict[str, Any]:
+    family, name = _family_of(spec)
+    module = "cellpose" if family == "cellpose" else "micro_sam"
+    hint = "pip install cellpose" if family == "cellpose" else "conda install -c conda-forge micro_sam"
+    try:
+        __import__(module)
+        available = True
+    except ImportError:
+        available = False
+    return {"path": spec, "spec": spec, "format": "cellpose" if family == "cellpose" else "micro-sam",
+            "family": family, "model": name, "available": available, "install_hint": "" if available else hint,
+            "returns": "labels", "dtype": "float32", "input_shape": [1, 1, -1, -1, -1],
+            "output_shape": ["labels", -1, -1, -1]}
+
 
 class _OnnxModel:
     """Callable wrapper so ONNX sessions look like a TorchScript module taking numpy."""
@@ -910,10 +990,21 @@ class _OnnxModel:
         return self.session.run(None, {self.input_name: np.asarray(x, dtype=np.float32)})[0]
 
 
-def load_model(path: str, device: str = "auto"):
+def load_model(path: str, device: str = "auto", progress: ProgressFn = None):
     """Load a TorchScript (.pt / .pth / .ts) or ONNX (.onnx, via onnxruntime)
-    model once per (path, device)."""
+    model once per (path, device). ``path`` may be an ``hf:`` spec (downloaded
+    first); ``cellpose:`` / ``microsam:`` specs are not files and run through
+    ``sirius_worker.models.run_family`` instead."""
+    if _is_family_spec(path):
+        family, _ = _family_of(path)
+        raise NotAvailable(f"'{path}' is a {family} model family spec: it returns labels through the worker "
+                           "(sirius_worker.models.run_family), not a loadable tensor model")
     device = resolve_device(device)
+    key = (path.strip(), device)
+    m = _model_cache.get(key)
+    if m is not None:
+        return m
+    path = resolve_model_spec(path, progress)
     key = (os.path.abspath(path), device)
     m = _model_cache.get(key)
     if m is not None:
@@ -938,9 +1029,14 @@ def load_model(path: str, device: str = "auto"):
 
 def model_info(path: str, device: str = "cpu") -> Dict[str, Any]:
     """format, input_shape, output_shape, dtype, size_bytes, channels_out of a
-    model file. TorchScript shapes are probed with a (1, 1, 16, 32, 32) tensor."""
-    m = load_model(path, device)
-    info: Dict[str, Any] = {"path": path, "size_bytes": os.path.getsize(path), "dtype": "float32"}
+    model file. TorchScript shapes are probed with a (1, 1, 16, 32, 32) tensor.
+    Family specs report {format, available, install_hint} without loading."""
+    if _is_family_spec(path):
+        return _family_info(path)
+    spec = path.strip()
+    m = load_model(spec, device)
+    path = resolve_model_spec(spec)
+    info: Dict[str, Any] = {"path": path, "spec": spec, "size_bytes": os.path.getsize(path), "dtype": "float32"}
     if isinstance(m, _OnnxModel):
         info["format"] = "ONNX"
         info["input_shape"] = [int(s) if isinstance(s, int) else -1 for s in m.input_shape]
@@ -1107,10 +1203,25 @@ def step_seg(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any], progre
     post = _choice(_get(params, ("post", "post_processing", "postprocess"), "Watershed on boundary channel"),
                    ["Watershed on boundary channel", "Connected components", "None"],
                    "Watershed on boundary channel")
-    model = load_model(path, device)
     labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
     prob_last = None
     nt = a.shape[1]
+    if _is_family_spec(path):
+        # cellpose: / microsam: models return instance labels themselves
+        try:
+            from sirius_worker import models as hub  # type: ignore
+        except ImportError as e:
+            raise NotAvailable(f"'{path}' needs the sirius_worker package (app/python) on the Python path") from e
+        for t in range(nt):
+            lab, prob = hub.run_family(path, a[c, t], params, device,
+                                       progress=lambda f, m, _t=t: _progress(progress, (_t + f) / nt, m),
+                                       cancelled=cancelled)
+            labels[t] = _remove_small(lab, _int(params, ("min_voxels", "minVoxels"), 0))
+            prob_last = prob
+        return StepResult(a, dict(meta), labels=labels, prob=prob_last,
+                          info={"model": path, "channels_out": int(prob_last.shape[0]) if prob_last is not None else 0,
+                                "labels": int(labels.max()), "post": "model labels"})
+    model = load_model(path, device, progress)
     for t in range(nt):
         prob = tiled_inference(a[c, t], model, tile, overlap, device, _int(params, ("pad_to",), 1),
                                _str(params, ("activation",), "auto"), _bool(params, ("normalize",), True),

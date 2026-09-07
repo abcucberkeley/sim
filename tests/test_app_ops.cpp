@@ -11,6 +11,7 @@
 #endif
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
@@ -752,6 +753,169 @@ TEST_CASE("Torch segmentation drives the worker protocol and labels the probabil
         const StepOutput w = op.run(inputOf(data, meta), p, prog.ctx);
         REQUIRE(w.labels);
         CHECK(w.labels->stats().size() >= 2);
+    }
+    remote->close();
+    worker.join();
+}
+
+namespace {
+    // A worker standing in for a model family (Cellpose / micro-SAM): run
+    // replies with instance labels -- voxels above 500 get id 1 in the lower
+    // half of z and id 2 above -- plus, optionally, a one-channel
+    // probability map; model_info reports the family and its availability.
+    void fakeLabelWorker(std::unique_ptr<rpc::Transport> transport, bool withProb) {
+        std::vector<std::byte> inbox;
+        for (;;) {
+            std::optional<rpc::Message> msg;
+            while (!(msg = rpc::decodeFrame(inbox))) {
+                try {
+                    if (!transport->receive(inbox, std::chrono::milliseconds(2000))) return;
+                } catch (const std::exception&) {
+                    return;
+                }
+            }
+            const nlohmann::json& h = msg->header;
+            const std::string method = h.value("method", "");
+            nlohmann::json reply = {{"id", h.value("id", 0)}, {"type", "result"}};
+            if (method == "hello") {
+                reply["result"] = {{"version", "test"}, {"methods", {"run:torch_segment", "model_info", "hub_search"}},
+                                   {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
+                transport->send(rpc::encodeFrame(reply, {}));
+            } else if (method == "model_info") {
+                const std::string spec = h["params"].value("spec", "");
+                reply["result"] = {{"format", "cellpose"}, {"model", "cyto3"}, {"available", spec.find("nuclei") == std::string::npos},
+                                   {"install_hint", "pip install cellpose"}, {"returns", "labels"}};
+                transport->send(rpc::encodeFrame(reply, {}));
+            } else if (method == "run") {
+                REQUIRE(msg->tensors.size() == 1);
+                CHECK(h["params"]["params"].value("model", "") == "cellpose:cyto3");
+                const rpc::Tensor& in = msg->tensors.front();
+                const Index z = in.shape[0], plane = in.shape[1] * in.shape[2];
+                const Index n = in.numel();
+                std::vector<std::uint32_t> lab(static_cast<std::size_t>(n));
+                std::vector<float> prob(static_cast<std::size_t>(n));
+                const float* v = in.asFloat32();
+                for (Index i = 0; i < n; ++i) {
+                    const bool fg = v[i] > 500.0f;
+                    lab[static_cast<std::size_t>(i)] = fg ? (i / plane < z / 2 ? 1u : 2u) : 0u;
+                    prob[static_cast<std::size_t>(i)] = fg ? 0.9f : 0.05f;
+                }
+                rpc::TensorRef labels;
+                labels.name = "labels";
+                labels.dtype = "uint32";
+                labels.shape = {in.shape[0], in.shape[1], in.shape[2]};
+                labels.data = lab.data();
+                labels.nbytes = lab.size() * sizeof(std::uint32_t);
+                rpc::TensorRef p;
+                p.name = "prob";
+                p.dtype = "float32";
+                p.shape = {1, in.shape[0], in.shape[1], in.shape[2]};
+                p.data = prob.data();
+                p.nbytes = prob.size() * sizeof(float);
+                reply["result"] = {{"labels", 2}, {"format", "cellpose"}, {"model", "cellpose:cyto3"}};
+                std::vector<rpc::TensorRef> out = {labels};
+                if (withProb) out.push_back(p);
+                transport->send(rpc::encodeFrame(reply, out));
+            } else if (method == "cancel") {
+                // nothing running
+            } else {
+                reply["type"] = "error";
+                reply["message"] = "unknown method " + method;
+                transport->send(rpc::encodeFrame(reply, {}));
+            }
+        }
+    }
+} // namespace
+
+TEST_CASE("Torch segmentation accepts hub and family model specs without a local file", "[app][ops][seg]") {
+    const Dims5 dims{1, 1, 4, 8, 8};
+    const DatasetMeta meta = metaFor(dims);
+    const Operation& op = requireOperation("seg");
+    ParamSet p = op.defaults();
+    p.set("model", std::string("/nonexistent/model.pt"));
+    CHECK_FALSE(op.validate(p, meta).ok());
+    for (const char* spec : {"cellpose:cyto3", "microsam:vit_b_lm", "hf:owner/repo", "hf:owner/repo:weights/model.onnx", "CellPose:nuclei"}) {
+        p.set("model", std::string(spec));
+        CHECK(op.validate(p, meta).ok());
+    }
+    p.set("model", std::string("cellpose:cyto3"));
+    CHECK(op.summary(p, meta).find("cellpose cyto3") != std::string::npos);
+    CHECK(op.summary(p, meta).find("model labels") != std::string::npos);   // no watershed for family models
+    p.set("model", std::string("microsam:vit_l_lm"));
+    CHECK(op.summary(p, meta).find("micro-SAM vit_l_lm") != std::string::npos);
+    p.set("model", std::string("hf:owner/repo:weights/model.onnx"));
+    CHECK(op.summary(p, meta).find("hf model.onnx") != std::string::npos);
+    CHECK(op.summary(p, meta).find("watershed") != std::string::npos);
+    const ParamSpec* modelSpec = nullptr;
+    for (const ParamSpec& s : op.info().params)
+        if (s.key == "model") modelSpec = &s;
+    REQUIRE(modelSpec);
+    CHECK(modelSpec->help.find("hf:") != std::string::npos);
+    CHECK(modelSpec->help.find("cellpose:") != std::string::npos);
+    CHECK(modelSpec->help.find("microsam:") != std::string::npos);
+
+    // family info from the worker: availability and the install hint
+    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}}) == "cellpose cyto3 · returns labels");
+    CHECK(torchModelSummary({{"format", "micro-sam"}, {"model", "vit_b_lm"}, {"available", false}, {"install_hint", "pip install micro-sam"}}) ==
+          "micro-sam vit_b_lm · not installed (pip install micro-sam)");
+    CHECK(torchModelSummary({{"format", "hf"}, {"repo", "owner/repo"}, {"available", true}, {"cached", false}}) ==
+          "hf owner/repo · downloads on first run");
+}
+
+TEST_CASE("Torch segmentation takes instance labels from a family model", "[app][ops][seg][rpc]") {
+    const bool withProb = GENERATE(true, false);
+    auto pair = rpc::loopbackPair();
+    std::thread worker(fakeLabelWorker, std::move(pair.second), withProb);
+    auto remote = std::make_unique<RemoteWorker>(std::move(pair.first));
+    CHECK(remote->supports("hub_search"));
+    CHECK(torchModelSummary(torchModelInfo(*remote, "cellpose:cyto3")) == "cellpose cyto3 · returns labels");
+    CHECK(torchModelSummary(torchModelInfo(*remote, "cellpose:nuclei")) == "cellpose cyto3 · not installed (pip install cellpose)");
+
+    const Dims5 dims{1, 1, 9, 40, 20};
+    const DatasetMeta meta = metaFor(dims);
+    auto data = blobArray(dims, 2, 3.0);
+    // what the fake worker labels: id 1 below the middle plane, id 2 from it on
+    std::vector<std::uint32_t> expected(static_cast<std::size_t>(dims.z * dims.planeSize()));
+    bool has1 = false, has2 = false;
+    for (Index z = 0; z < dims.z; ++z)
+        for (Index y = 0; y < dims.y; ++y)
+            for (Index x = 0; x < dims.x; ++x) {
+                const bool fg = data->at(0, 0, z, y, x) > 500.0f;
+                const std::uint32_t id = fg ? (z < dims.z / 2 ? 1u : 2u) : 0u;
+                expected[static_cast<std::size_t>((z * dims.y + y) * dims.x + x)] = id;
+                has1 = has1 || id == 1;
+                has2 = has2 || id == 2;
+            }
+    REQUIRE((has1 && has2));
+
+    const Operation& op = requireOperation("seg");
+    ParamSet p = op.defaults();
+    p.set("model", std::string("cellpose:cyto3"));
+    p.set("post", std::string("Watershed on boundary channel"));   // ignored: the labels come from the model
+    p.set("threshold", 0.99);                                       // likewise
+    REQUIRE(op.validate(p, meta).ok());
+    Progress prog;
+    prog.ctx.remote = remote.get();
+    const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+    REQUIRE(r.labels);
+    CHECK(r.labels->stats().size() == 2);
+    CHECK(r.labels->maxLabel() == 2);
+    const std::uint32_t* got = r.labels->volume(0);
+    CHECK(std::equal(expected.begin(), expected.end(), got));
+    CHECK(r.labels->stats().front().cls == "nucleus");
+    if (withProb) CHECK(r.labels->stats().front().confidence > 0.8);
+    else CHECK(r.labels->stats().front().confidence == 1.0);   // unknown without a probability map
+    CHECK(r.note.find("2 labels") != std::string::npos);
+    CHECK(r.note.find("labels from the model") != std::string::npos);
+    CHECK(r.diagnostics.kind == DiagnosticsKind::Segment);
+    CHECK(r.diagnostics.summary.find("cellpose cyto3") != std::string::npos);
+
+    SECTION("min_voxels still drops small objects") {
+        p.set("min_voxels", std::int64_t{1000000});
+        const StepOutput s = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(s.labels);
+        CHECK(s.labels->stats().empty());
+        CHECK(s.note.find("0 labels") != std::string::npos);
     }
     remote->close();
     worker.join();

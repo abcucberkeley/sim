@@ -1,13 +1,18 @@
 // Torch segmentation: a TorchScript model run tile-wise by the Python worker
 // (the same worker serves the HPC backend), probabilities turned into
-// instance labels natively.
+// instance labels natively. The model may also be a spec the worker resolves
+// itself -- hf:<repo>[:<file>] downloaded from Hugging Face, or a model
+// family (cellpose:<model>, microsam:<model_type>) whose package returns
+// instance labels directly; those skip the threshold / watershed stage here.
 #include "core/ops/builtin.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <vector>
 
 namespace sirius::app {
 
@@ -16,6 +21,56 @@ namespace sirius::app {
         constexpr const char* kWatershed = "Watershed on boundary channel";
         constexpr const char* kComponents = "Connected components";
         constexpr const char* kNone = "None (raw probabilities)";
+
+        std::string lowered(std::string s) {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s;
+        }
+
+        // Specs the worker resolves itself (app/python/sirius_worker/models.py);
+        // everything else is a file path on the worker's host.
+        bool isHubSpec(const std::string& model) {
+            const std::string low = lowered(model);
+            return low.rfind("hf:", 0) == 0 || low.rfind("huggingface:", 0) == 0;
+        }
+
+        bool isFamilySpec(const std::string& model) {
+            const std::string low = lowered(model);
+            return low.rfind("cellpose:", 0) == 0 || low.rfind("microsam:", 0) == 0 || low.rfind("micro-sam:", 0) == 0 ||
+                   low.rfind("micro_sam:", 0) == 0;
+        }
+
+        bool isModelSpec(const std::string& model) { return isHubSpec(model) || isFamilySpec(model); }
+
+        // "cellpose cyto3", "micro-SAM vit_b_lm", "hf model.pt", or the file name.
+        std::string modelLabel(const std::string& model) {
+            if (model.empty()) return "no model";
+            const std::size_t colon = model.find(':');
+            if (isFamilySpec(model)) {
+                const std::string rest = model.substr(colon + 1);
+                return (lowered(model).rfind("cellpose:", 0) == 0 ? "cellpose " : "micro-SAM ") + rest;
+            }
+            if (isHubSpec(model)) {
+                const std::string rest = model.substr(colon + 1);
+                const std::size_t sep = rest.rfind(':');
+                return "hf " + (sep == std::string::npos ? rest : std::filesystem::path(rest.substr(sep + 1)).filename().string());
+            }
+            return std::filesystem::path(model).filename().string();
+        }
+
+        // Instance labels the model produced itself: copied in, small objects
+        // dropped, statistics from the confidence map when the worker sent one.
+        std::uint32_t labelsFromModel(const std::uint32_t* in, const float* confidence, Index z, Index y, Index x,
+                                      const LabelPostOptions& options, LabelVolume& labels, Index t) {
+            const Index n = z * y * x;
+            std::uint32_t* out = labels.volume(t);
+            std::copy_n(in, n, out);
+            const std::uint32_t count = removeSmall(out, n, options.minVoxels);
+            labels.recomputeStats(t, confidence);
+            for (LabelStats& s : labels.stats()) s.cls = options.className;
+            labels.applyFlags(options.flags);
+            return count;
+        }
 
         std::string shapeText(const nlohmann::json& shape) {
             if (!shape.is_array()) return "?";
@@ -45,8 +100,13 @@ namespace sirius::app {
                 info_.producesLabels = true;
                 info_.helpPage = "seg";
                 info_.params = {
-                    pathParam("model", "Torch model").withFilter("Models (*.pt *.pts *.pth *.onnx);;All files (*)")
-                        .withHelp("TorchScript (or ONNX) model taking (1, 1, Z, Y, X) float32"),
+                    pathParam("model", "Model").withFilter("Models (*.pt *.pts *.pth *.onnx);;All files (*)")
+                        .withHelp("A TorchScript / ONNX file taking (1, 1, Z, Y, X) float32, or a spec the worker resolves: "
+                                  "hf:<repo>[:<file>] (Hugging Face, cached in $SIRIUS_MODEL_CACHE or ~/.sirius/models), "
+                                  "cellpose:<model> (cyto3, nuclei, cyto2, ... or a custom model file) or "
+                                  "microsam:<model_type> (vit_b_lm, vit_l_lm, vit_t_lm, vit_b_em_organelles, ...). "
+                                  "Cellpose and micro-SAM return instance labels directly; threshold and post-processing "
+                                  "then do not apply"),
                     channelParam("input_channel", "Input channel", 0),
                     doubleListParam("tile", "Tile", {32.0, 256.0, 256.0}).withUnit("px")
                         .withHelp("Tile extent (z, y, x); must fit GPU memory"),
@@ -69,14 +129,16 @@ namespace sirius::app {
                 const std::string model = p.getString("model");
                 std::string post = p.getString("post", kWatershed);
                 post = post.rfind("Watershed", 0) == 0 ? "watershed" : post == kComponents ? "components" : "probabilities";
-                return joinSummary({model.empty() ? "no model" : std::filesystem::path(model).filename().string(), post});
+                if (isFamilySpec(model)) post = "model labels";
+                return joinSummary({modelLabel(model), post});
             }
 
             Validation validate(const ParamSet& p, const DatasetMeta& in) const override {
                 Validation v = Operation::validate(p, in);
                 const std::string model = p.getString("model");
-                if (model.empty()) v.errors.push_back("Choose a Torch model.");
-                else if (!std::filesystem::exists(model)) v.errors.push_back("Model not found: " + model);
+                // hub / family specs live on the worker's host (or are downloaded there): no file to check here
+                if (model.empty()) v.errors.push_back("Choose a model: a TorchScript / ONNX file, hf:<repo>, cellpose:<model> or microsam:<type>.");
+                else if (!isModelSpec(model) && !std::filesystem::exists(model)) v.errors.push_back("Model not found: " + model);
                 if (in.rgb) v.errors.push_back("Segmentation needs an intensity channel, not an RGB merge.");
                 const std::vector<double> tile = p.getDoubleList("tile");
                 if (tile.size() != 3 || std::any_of(tile.begin(), tile.end(), [](double d) { return d < 1; }))
@@ -125,6 +187,7 @@ namespace sirius::app {
                 double seconds = 0.0;
                 std::uint32_t total = 0;
                 std::string classes;
+                bool fromModel = false;
                 for (Index t = 0; t < d.t; ++t) {
                     ctx.throwIfCancelled();
                     const double base = 0.05 + 0.9 * static_cast<double>(t) / d.t, span = 0.9 / d.t;
@@ -143,25 +206,41 @@ namespace sirius::app {
                     seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                     ctx.throwIfCancelled();
                     const rpc::Tensor* prob = nullptr;
-                    for (const rpc::Tensor& tensor : r.tensors)
+                    const rpc::Tensor* modelLabels = nullptr;
+                    for (const rpc::Tensor& tensor : r.tensors) {
                         if (tensor.name == "prob") prob = &tensor;
-                    if (!prob) throw std::runtime_error("the worker returned no 'prob' tensor");
-                    if (prob->shape.size() != 4 || prob->shape[1] != d.z || prob->shape[2] != d.y || prob->shape[3] != d.x)
-                        throw std::runtime_error("the worker's probabilities do not match the volume");
-                    const float* fg = prob->asFloat32();
-                    const Index volSize = d.z * d.planeSize();
-                    const float* boundary = prob->shape[0] > 1 ? fg + volSize : nullptr;
+                        else if (tensor.name == "labels") modelLabels = &tensor;
+                    }
+                    if (!prob && !modelLabels) throw std::runtime_error("the worker returned neither a 'prob' nor a 'labels' tensor");
+                    const bool probMatches = prob && prob->shape.size() == 4 && prob->shape[1] == d.z && prob->shape[2] == d.y &&
+                                             prob->shape[3] == d.x;
                     if (r.result.contains("class_names") && r.result["class_names"].is_array() && !r.result["class_names"].empty())
                         post.className = r.result["class_names"][0].get<std::string>();
-                    ctx.report(base + span * 0.85, "labelling");
-                    total += labelsFromProbabilities(fg, boundary, d.z, d.y, d.x, post, *labels, t);
+                    if (modelLabels) {
+                        // instance labels straight from the model (Cellpose, micro-SAM); a
+                        // probability map, when sent, only feeds the per-label confidence
+                        if (modelLabels->shape.size() != 3 || modelLabels->shape[0] != d.z || modelLabels->shape[1] != d.y ||
+                            modelLabels->shape[2] != d.x)
+                            throw std::runtime_error("the worker's labels do not match the volume");
+                        ctx.report(base + span * 0.85, "labels");
+                        total += labelsFromModel(modelLabels->asUInt32(), probMatches ? prob->asFloat32() : nullptr, d.z, d.y, d.x,
+                                                 post, *labels, t);
+                        fromModel = true;
+                    } else {
+                        if (!probMatches) throw std::runtime_error("the worker's probabilities do not match the volume");
+                        const float* fg = prob->asFloat32();
+                        const Index volSize = d.z * d.planeSize();
+                        const float* boundary = prob->shape[0] > 1 ? fg + volSize : nullptr;
+                        ctx.report(base + span * 0.85, "labelling");
+                        total += labelsFromProbabilities(fg, boundary, d.z, d.y, d.x, post, *labels, t);
+                    }
                     if (classes.empty() && r.result.contains("model")) classes = r.result["model"].dump();
                 }
                 out.labels = labels;
                 out.ranOn = ctx.backend;
                 out.seconds = seconds;
-                char note[160];
-                std::snprintf(note, sizeof note, "%.1f s · %u labels · %s", seconds, total,
+                char note[200];
+                std::snprintf(note, sizeof note, "%.1f s · %u labels%s · %s", seconds, total, fromModel ? " · labels from the model" : "",
                               ctx.remote->capabilities().device.empty() ? "worker" : ctx.remote->capabilities().device.c_str());
                 out.note = note;
                 out.diagnostics = labelDiagnostics(*labels, summary(p, meta));
@@ -177,13 +256,25 @@ namespace sirius::app {
     } // namespace
 
     nlohmann::json torchModelInfo(RemoteWorker& worker, const std::string& modelPath) {
-        WorkerResult r = worker.call("model_info", {{"path", modelPath}, {"model", modelPath}});
+        // "spec" carries hub / family specs; "path" / "model" keep older workers working
+        WorkerResult r = worker.call("model_info", {{"path", modelPath}, {"model", modelPath}, {"spec", modelPath}});
         return r.result;
     }
 
     std::string torchModelSummary(const nlohmann::json& info) {
         if (!info.is_object()) return "no model";
         std::string out = info.value("format", "TorchScript");
+        if (info.contains("available") && info["available"].is_boolean()) {
+            // a model family (cellpose, micro-sam) or an hf: file not downloaded yet
+            if (info.value("model", std::string()).size()) out += " " + info.value("model", std::string());
+            if (!info["available"].get<bool>()) {
+                const std::string hint = info.value("install_hint", std::string());
+                return out + " · not installed" + (hint.empty() ? "" : " (" + hint + ")");
+            }
+            if (info.contains("cached") && info["cached"].is_boolean() && !info["cached"].get<bool>())
+                return out + " " + info.value("repo", std::string()) + " · downloads on first run";
+            if (!info.contains("input_shape")) return out + " · returns labels";
+        }
         if (info.contains("input_shape")) {
             out += " · in " + shapeText(info["input_shape"]);
             if (info.contains("input_dtype")) out += " " + info["input_dtype"].get<std::string>();

@@ -1,0 +1,301 @@
+"""Tests of the worker's model hub: spec parsing, the download cache layout,
+model families reporting their availability, and the hub_* RPC methods.
+
+Hub calls go to a tiny public repository (hf-internal-testing/tiny-random-bert)
+and are skipped when huggingface_hub is missing or the Hub is unreachable;
+Cellpose / micro-SAM runs are skipped when those packages are not installed.
+
+    python -m unittest app/python/tests/test_models.py
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))  # app/python
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "bindings", "python"))
+
+from sirius_worker import models  # noqa: E402
+from tests.test_protocol import ServerTestCase, _Client  # noqa: E402
+
+TINY_REPO = "hf-internal-testing/tiny-random-bert"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+
+
+def workbench():
+    """This checkout's bindings/python/sirius/workbench.py, loaded from the
+    file so the test covers it even when another sirius package is installed."""
+    import importlib.util
+
+    existing = sys.modules.get("sirius_workbench_checkout")
+    if existing is not None:
+        return existing
+    path = os.path.join(ROOT, "bindings", "python", "sirius", "workbench.py")
+    spec = importlib.util.spec_from_file_location("sirius_workbench_checkout", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["sirius_workbench_checkout"] = module
+    spec.loader.exec_module(module)
+    return module
+
+try:
+    import huggingface_hub  # type: ignore  # noqa: F401
+
+    HAVE_HF = True
+except ImportError:  # pragma: no cover - environment dependent
+    HAVE_HF = False
+
+
+def _online() -> bool:
+    if os.environ.get("HF_HUB_OFFLINE") or os.environ.get("SIRIUS_OFFLINE"):
+        return False
+    try:
+        socket.create_connection(("huggingface.co", 443), timeout=3).close()
+        return True
+    except OSError:
+        return False
+
+
+ONLINE = HAVE_HF and _online()
+
+
+class _CacheCase(unittest.TestCase):
+    """Points $SIRIUS_MODEL_CACHE at a fresh directory for the test."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._old = os.environ.get("SIRIUS_MODEL_CACHE")
+        os.environ["SIRIUS_MODEL_CACHE"] = self.tmp.name
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("SIRIUS_MODEL_CACHE", None)
+        else:
+            os.environ["SIRIUS_MODEL_CACHE"] = self._old
+        self.tmp.cleanup()
+
+
+class TestSpecs(unittest.TestCase):
+    def test_local_path(self):
+        s = models.parse_spec("/data/models/unet.pt")
+        self.assertEqual((s.family, s.name), ("file", "/data/models/unet.pt"))
+        self.assertTrue(models.is_file_spec("C:/x/y.onnx"))
+        self.assertFalse(models.is_family_spec("model.pt"))
+
+    def test_hugging_face(self):
+        s = models.parse_spec("hf:someone/unet3d")
+        self.assertEqual((s.family, s.name, s.filename), ("hf", "someone/unet3d", ""))
+        s = models.parse_spec("hf:someone/unet3d:weights/model.pt")
+        self.assertEqual(s.filename, "weights/model.pt")
+        self.assertEqual(s.text(), "hf:someone/unet3d:weights/model.pt")
+        self.assertEqual(models.parse_spec("HF://someone/unet3d").name, "someone/unet3d")
+        for bad in ("hf:", "hf:noslash", "hf:a/b/c"):
+            with self.assertRaises(models.ModelError):
+                models.parse_spec(bad)
+
+    def test_families(self):
+        s = models.parse_spec("cellpose:cyto3")
+        self.assertEqual((s.family, s.name), ("cellpose", "cyto3"))
+        self.assertEqual(models.parse_spec("cellpose:/models/custom_cp").name, "/models/custom_cp")
+        s = models.parse_spec("microsam:vit_b_lm")
+        self.assertEqual((s.family, s.name), ("microsam", "vit_b_lm"))
+        self.assertEqual(models.parse_spec("micro-sam:vit_l_lm").family, "microsam")
+        self.assertTrue(models.is_family_spec("cellpose:nuclei"))
+        with self.assertRaises(models.ModelError):
+            models.parse_spec("cellpose:")
+        with self.assertRaises(models.ModelError):
+            models.parse_spec("")
+
+
+class TestCache(_CacheCase):
+    def test_layout(self):
+        self.assertEqual(str(models.cache_dir()), self.tmp.name)
+        self.assertEqual(models.repo_dir("owner/repo"), models.cache_dir() / "hf" / "owner--repo")
+        self.assertIsNone(models.cached_path("owner/repo", "model.pt"))
+        self.assertEqual(models.list_cached_models(), [])
+        d = models.repo_dir("owner/repo")
+        d.mkdir(parents=True)
+        (d / "model.pt").write_bytes(b"\x00" * 10)
+        (d / "README.md").write_text("not a model")
+        self.assertEqual(models.cached_path("owner/repo", "model.pt"), str(d / "model.pt"))
+        listed = models.list_cached_models()
+        self.assertEqual([m["spec"] for m in listed], ["hf:owner/repo:model.pt"])
+        self.assertEqual(listed[0]["bytes"], 10)
+        self.assertEqual(listed[0]["repo"], "owner/repo")
+
+    def test_default_cache_is_under_home(self):
+        os.environ.pop("SIRIUS_MODEL_CACHE")
+        self.assertEqual(models.cache_dir(), models.Path.home() / ".sirius" / "models")
+
+    def test_workbench_shares_the_layout(self):
+        wb = workbench()
+        self.assertEqual(wb.model_cache_dir(), self.tmp.name)
+        d = models.repo_dir("owner/repo")
+        d.mkdir(parents=True)
+        (d / "m.pt").write_bytes(b"\x00")
+        # a cached file resolves without touching the network
+        self.assertEqual(wb.resolve_model_spec("hf:owner/repo:m.pt"), str(d / "m.pt"))
+        self.assertEqual(wb.resolve_model_spec("/plain/path.pt"), "/plain/path.pt")
+        self.assertEqual(wb.resolve_model_spec("cellpose:cyto3"), "cellpose:cyto3")
+
+    def test_resolve_missing_file(self):
+        with self.assertRaises(FileNotFoundError):
+            models.resolve("/nonexistent/model.pt")
+
+
+class TestFamilies(unittest.TestCase):
+    def _importable(self, module: str) -> bool:
+        try:
+            __import__(module)
+            return True
+        except ImportError:
+            return False
+
+    def test_family_info_reports_availability_and_install_hint(self):
+        for spec, module, fmt in (("cellpose:cyto3", "cellpose", "cellpose"), ("microsam:vit_b_lm", "micro_sam", "micro-sam")):
+            info = models.family_info(spec)
+            self.assertEqual(info["format"], fmt)
+            self.assertEqual(info["returns"], "labels")
+            self.assertEqual(info["available"], self._importable(module))
+            if not info["available"]:
+                self.assertIn("install", info["install_hint"])
+            else:
+                self.assertEqual(info["install_hint"], "")
+        self.assertIn("cyto3", models.family_info("cellpose:cyto3")["known_models"])
+        self.assertIn("vit_b_lm", models.family_info("microsam:vit_b_lm")["known_models"])
+
+    def test_missing_package_raises_not_available(self):
+        vol = np.zeros((2, 8, 8), np.float32)
+        if not self._importable("cellpose"):
+            with self.assertRaises(models.NotAvailable) as cm:
+                models.run_family("cellpose:cyto3", vol, {}, "cpu")
+            self.assertIn("pip install cellpose", str(cm.exception))
+        if not self._importable("micro_sam"):
+            with self.assertRaises(models.NotAvailable) as cm:
+                models.run_family("microsam:vit_b_lm", vol, {}, "cpu")
+            self.assertIn("micro_sam", str(cm.exception))
+        with self.assertRaises(models.ModelError):
+            models.run_family("/not/a/family.pt", vol, {}, "cpu")
+
+    def test_workbench_family_specs(self):
+        wb = workbench()
+        info = wb.model_info("cellpose:nuclei")
+        self.assertEqual(info["format"], "cellpose")
+        self.assertEqual(info["available"], self._importable("cellpose"))
+        with self.assertRaises(wb.NotAvailable):
+            wb.load_model("microsam:vit_b_lm", "cpu")
+
+
+class TestHubMethods(ServerTestCase, _CacheCase):
+    def setUp(self):
+        _CacheCase.setUp(self)
+
+    def tearDown(self):
+        _CacheCase.tearDown(self)
+
+    def test_capabilities_list_hub_methods(self):
+        c = _Client(self.port, self.token)
+        try:
+            caps = c.hello()["result"]
+            for m in ("hub_search", "hub_files", "hub_download", "models_list", "model_info"):
+                self.assertIn(m, caps["methods"])
+        finally:
+            c.close()
+
+    def test_models_list_and_family_model_info(self):
+        d = models.repo_dir("owner/repo")
+        d.mkdir(parents=True)
+        (d / "net.onnx").write_bytes(b"\x00" * 3)
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("models_list")
+            self.assertEqual(header["type"], "result", header)
+            self.assertEqual(header["result"]["cache"], self.tmp.name)
+            self.assertEqual([m["spec"] for m in header["result"]["models"]], ["hf:owner/repo:net.onnx"])
+            _, header, _ = c.call("model_info", {"spec": "cellpose:cyto3"})
+            self.assertEqual(header["type"], "result", header)
+            self.assertEqual(header["result"]["format"], "cellpose")
+            self.assertIn("available", header["result"])
+            # an hf: file that is not cached yet is described, not downloaded
+            _, header, _ = c.call("model_info", {"path": "hf:owner/other:big.pt"})
+            self.assertEqual(header["type"], "result", header)
+            self.assertEqual(header["result"]["format"], "hf")
+            self.assertFalse(header["result"]["cached"])
+        finally:
+            c.close()
+
+    def test_family_run_without_package_reports_install_hint(self):
+        try:
+            import cellpose  # type: ignore  # noqa: F401
+            self.skipTest("cellpose is installed")
+        except ImportError:
+            pass
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("run", {"kind": "torch_segment", "params": {"model": "cellpose:cyto3"}},
+                                  {"input": np.zeros((2, 8, 8), np.float32)})
+            self.assertEqual(header["type"], "error", header)
+            self.assertIn("pip install cellpose", header["message"])
+        finally:
+            c.close()
+
+    @unittest.skipUnless(ONLINE, "huggingface_hub missing or the Hub is unreachable")
+    def test_hub_search_files_download(self):
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("hub_search", {"query": "tiny-random-bert", "limit": 5})
+            self.assertEqual(header["type"], "result", header)
+            found = header["result"]["models"]
+            self.assertTrue(found)
+            self.assertTrue(all({"id", "downloads", "likes", "tags"} <= set(m) for m in found))
+            _, header, _ = c.call("hub_files", {"repo": TINY_REPO})
+            self.assertEqual(header["type"], "result", header)
+            names = [f["name"] for f in header["result"]["files"]]
+            self.assertIn("config.json", names)
+            progress, header, _ = c.call("hub_download", {"repo": TINY_REPO, "file": "config.json"})
+            self.assertEqual(header["type"], "result", header)
+            path = header["result"]["path"]
+            self.assertTrue(os.path.isfile(path))
+            self.assertTrue(path.startswith(self.tmp.name), path)
+            self.assertEqual(header["result"]["bytes"], os.path.getsize(path))
+            self.assertTrue(progress, "download should stream progress frames")
+            self.assertEqual(models.cached_path(TINY_REPO, "config.json"), path)
+            # second download is served from the cache
+            progress, header, _ = c.call("hub_download", {"repo": TINY_REPO, "file": "config.json"})
+            self.assertEqual(header["result"]["path"], path)
+        finally:
+            c.close()
+
+    @unittest.skipUnless(ONLINE, "huggingface_hub missing or the Hub is unreachable")
+    def test_spec_without_filename_picks_the_single_model_file(self):
+        # the tiny BERT repo carries exactly one .onnx next to its safetensors / .bin weights
+        self.assertEqual(models.pick_model_file(TINY_REPO), "onnx/model.onnx")
+
+    def test_ambiguous_or_empty_repos_are_reported(self):
+        original = models.hub_files
+        try:
+            models.hub_files = lambda repo: [{"name": "a.pt", "size": 1, "model": True},
+                                             {"name": "b.onnx", "size": 1, "model": True}]
+            with self.assertRaises(models.ModelError) as cm:
+                models.pick_model_file("owner/two")
+            self.assertIn("a.pt", str(cm.exception))
+            self.assertIn("b.onnx", str(cm.exception))
+            models.hub_files = lambda repo: [{"name": "README.md", "size": 1, "model": False}]
+            with self.assertRaises(models.ModelError) as cm:
+                models.pick_model_file("owner/none")
+            self.assertIn("owner/none", str(cm.exception))
+        finally:
+            models.hub_files = original
+
+
+if __name__ == "__main__":
+    unittest.main()
