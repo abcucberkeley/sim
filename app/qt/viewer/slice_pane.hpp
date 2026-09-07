@@ -56,8 +56,18 @@ namespace sirius::app {
         void setScaleBar(double umPerVoxel);              // 0 hides it
         void setCrosshair(const QPointF& voxel, bool visible, bool locked);
         void setBrushCursor(bool on, double radiusVoxels);
-        void setMeasure(const QVector<QPointF>& voxels, const QString& text);
-        void setRoi(const QRectF& voxels);                // null rect hides it
+        // Annotations in voxel coordinates of this pane's plane: measurements
+        // (1..3 points: mark, distance, angle) and ROI boxes. Pending ones
+        // (still being drawn) are painted lighter.
+        struct Annotation {
+            enum class Kind { Measure, Roi };
+            Kind kind = Kind::Measure;
+            QVector<QPointF> points;
+            QRectF rect;
+            QString text;
+            bool pending = false;
+        };
+        void setAnnotations(const QVector<Annotation>& annotations);
         void setMessage(const QString& text);             // centred notice ("volume too large")
         void setSmooth(bool smooth) { smooth_ = smooth; update(); }
         QPointF lastMouse() const noexcept { return mouse_; }
@@ -71,6 +81,7 @@ namespace sirius::app {
         void doubleClicked(QPointF voxel, Qt::KeyboardModifiers mods);
         void wheeled(QPointF screen, double steps);
         void resized();
+        void contextMenuRequested(QPoint screen, QPointF voxel);   // right click
 
     protected:
         void paintEvent(QPaintEvent*) override;
@@ -94,9 +105,7 @@ namespace sirius::app {
         bool crossVisible_ = false, crossLocked_ = false;
         bool brush_ = false;
         double brushRadius_ = 0.0;
-        QVector<QPointF> measure_;
-        QString measureText_;
-        QRectF roi_;
+        QVector<Annotation> annotations_;
         bool smooth_ = false;
         QPointF mouse_{-1, -1};
         bool mouseIn_ = false;

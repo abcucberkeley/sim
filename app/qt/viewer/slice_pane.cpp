@@ -83,13 +83,11 @@ namespace sirius::app {
         update();
     }
 
-    void SlicePane::setMeasure(const QVector<QPointF>& voxels, const QString& text) {
-        measure_ = voxels;
-        measureText_ = text;
+    void SlicePane::setAnnotations(const QVector<Annotation>& annotations) {
+        annotations_ = annotations;
         update();
     }
 
-    void SlicePane::setRoi(const QRectF& voxels) { roi_ = voxels; update(); }
     void SlicePane::setMessage(const QString& text) { message_ = text; update(); }
 
     // --- painting ----------------------------------------------------------------
@@ -113,23 +111,30 @@ namespace sirius::app {
 
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // ROI (dashed) and measure marks sit under the crosshair
-        if (!roi_.isNull() && hasContent()) {
-            const QRectF r(toScreen(roi_.topLeft()), toScreen(roi_.bottomRight()));
-            QPen pen(theme::kViewerText, 1.0, Qt::DashLine);
-            p.setPen(pen);
-            p.setBrush(Qt::NoBrush);
-            p.drawRect(r);
-        }
-        if (!measure_.isEmpty() && hasContent()) {
-            p.setPen(QPen(theme::kAccent, 1.5));
-            for (int i = 0; i + 1 < measure_.size(); ++i) p.drawLine(toScreen(measure_[i]), toScreen(measure_[i + 1]));
-            for (const QPointF& v : measure_) {
-                const QPointF s = toScreen(v);
-                p.drawLine(s + QPointF(-4, 0), s + QPointF(4, 0));
-                p.drawLine(s + QPointF(0, -4), s + QPointF(0, 4));
+        // annotations (ROI boxes dashed, measurements in accent) sit under the crosshair
+        if (hasContent()) {
+            for (const Annotation& a : annotations_) {
+                p.setOpacity(a.pending ? 0.6 : 1.0);
+                if (a.kind == Annotation::Kind::Roi) {
+                    if (a.rect.isNull()) continue;
+                    const QRectF r(toScreen(a.rect.topLeft()), toScreen(a.rect.bottomRight()));
+                    p.setPen(QPen(theme::kViewerText, 1.0, Qt::DashLine));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawRect(r);
+                    if (!a.text.isEmpty()) drawOverlayText(p, r.topLeft() + QPointF(4, -16), a.text, true);
+                } else {
+                    if (a.points.isEmpty()) continue;
+                    p.setPen(QPen(theme::kAccent, 1.5));
+                    for (int i = 0; i + 1 < a.points.size(); ++i) p.drawLine(toScreen(a.points[i]), toScreen(a.points[i + 1]));
+                    for (const QPointF& v : a.points) {
+                        const QPointF sp = toScreen(v);
+                        p.drawLine(sp + QPointF(-4, 0), sp + QPointF(4, 0));
+                        p.drawLine(sp + QPointF(0, -4), sp + QPointF(0, 4));
+                    }
+                    if (!a.text.isEmpty()) drawOverlayText(p, toScreen(a.points.last()) + QPointF(8, -16), a.text, true);
+                }
             }
-            if (!measureText_.isEmpty()) drawOverlayText(p, toScreen(measure_.last()) + QPointF(8, -16), measureText_, true);
+            p.setOpacity(1.0);
         }
 
         if (crossVisible_ && hasContent()) {
@@ -205,6 +210,10 @@ namespace sirius::app {
 
     void SlicePane::mousePressEvent(QMouseEvent* e) {
         mouse_ = e->position();
+        if (e->button() == Qt::RightButton) {
+            emit contextMenuRequested(e->position().toPoint(), toVoxel(mouse_));
+            return;
+        }
         button_ = e->button();
         pressPos_ = lastDrag_ = mouse_;
         moved_ = false;

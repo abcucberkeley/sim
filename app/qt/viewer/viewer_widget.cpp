@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QPainter>
 #include <QShortcut>
@@ -125,10 +126,24 @@ namespace sirius::app {
         bool havePrev = false;
         bool rebuildQueued = false;
 
-        // interaction
-        QVector<QPointF> measure;
-        QRectF roi;
+        // interaction: annotations live on the plane (t, z) they were drawn
+        // on; a measurement or ROI in progress is shown lighter until committed.
+        struct Annotation {
+            SlicePane::Annotation::Kind kind = SlicePane::Annotation::Kind::Measure;
+            QVector<QPointF> points;
+            QRectF rect;
+            Index t = 0, z = 0;
+        };
+        std::vector<Annotation> annotations;
+        QVector<QPointF> measure;   // pending measurement
+        QRectF roi;                 // pending box
         QPointF roiStart;
+        QString measureText(const QVector<QPointF>& points) const;
+        QString roiText(const QRectF& r) const;
+        void pushAnnotations();     // to the XY pane, filtered by the current plane
+        void commitMeasure();
+        void clearAnnotations();
+        void showXYContextMenu(const QPoint& screen);
         std::array<Index, 3> splitA{};
         bool splitPending = false;
         std::uint32_t mergeFirst = 0;
@@ -191,7 +206,6 @@ namespace sirius::app {
         void onXYReleased(const QPointF& v, Qt::MouseButton b, Qt::KeyboardModifiers m, bool moved);
         void paintAt(const QPointF& v, bool erase);
         std::uint32_t labelAt(Index z, Index y, Index x) const;
-        void updateMeasureText();
         void hover(SlicePane::Kind kind, const QPointF& v);
     };
 
@@ -401,6 +415,11 @@ namespace sirius::app {
         key(QKeySequence(Qt::Key_P), [this] { wb.setTool(ViewerTool::Probe); });
         key(QKeySequence(Qt::Key_M), [this] { wb.setTool(ViewerTool::Measure); });
         key(QKeySequence(Qt::Key_R), [this] { wb.setTool(ViewerTool::Roi); });
+        key(QKeySequence(Qt::Key_Escape), [this] {
+            measure.clear();
+            roi = QRectF();
+            pushAnnotations();
+        });
         key(QKeySequence(Qt::Key_BracketLeft), [this] {
             ViewState s = vs();
             s.brushPx = std::max(2, s.brushPx - 2);
@@ -428,6 +447,7 @@ namespace sirius::app {
     void ViewerWidget::Impl::connectSignals() {
         // pane events
         QObject::connect(xy, &SlicePane::pressed, q, [this](QPointF v, Qt::MouseButton b, Qt::KeyboardModifiers m) { onXYPressed(v, b, m); });
+        QObject::connect(xy, &SlicePane::contextMenuRequested, q, [this](QPoint sp, QPointF) { showXYContextMenu(sp); });
         QObject::connect(xy, &SlicePane::dragged, q, [this](QPointF v, QPointF d, Qt::MouseButton b, Qt::KeyboardModifiers m) { onXYDragged(v, d, b, m); });
         QObject::connect(xy, &SlicePane::released, q, [this](QPointF v, Qt::MouseButton b, Qt::KeyboardModifiers m, bool moved) { onXYReleased(v, b, m, moved); });
         QObject::connect(xy, &SlicePane::doubleClicked, q, [this](QPointF, Qt::KeyboardModifiers) {
@@ -566,6 +586,7 @@ namespace sirius::app {
                 dirty = Dirty{};
                 measure.clear();
                 roi = QRectF();
+                annotations.clear();
                 splitPending = false;
                 mergeFirst = 0;
             }
@@ -704,12 +725,20 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::refreshHints() {
         const ViewState& s = vs();
+        if (s.tool != ViewerTool::Measure && !measure.isEmpty()) {
+            measure.clear();
+            pushAnnotations();
+        }
+        if (s.tool != ViewerTool::Roi && !roi.isNull()) {
+            roi = QRectF();
+            pushAnnotations();
+        }
         QString hint;
         switch (s.tool) {
             case ViewerTool::Navigate: hint = QStringLiteral("drag · pan   wheel · zoom   double-click · fit"); break;
             case ViewerTool::Probe: hint = QStringLiteral("click · move crosshair   drag · follow   wheel · zoom"); break;
-            case ViewerTool::Measure: hint = QStringLiteral("click twice · distance   third click · angle   fourth · restart"); break;
-            case ViewerTool::Roi: hint = QStringLiteral("drag · box   wheel · zoom"); break;
+            case ViewerTool::Measure: hint = QStringLiteral("click twice · distance   ⇧click · angle   right-click · clear"); break;
+            case ViewerTool::Roi: hint = QStringLiteral("drag · box   right-click · clear"); break;
             case ViewerTool::Paint: {
                 QString what;
                 switch (s.paintTool) {
@@ -899,9 +928,7 @@ namespace sirius::app {
                                  ? num2(viewed) + QLatin1Char(' ') + QString::fromStdString(wb.pipeline().at(viewed).name)
                                  : QString();
         cmpRight->setTitle(name);
-        xy->setMeasure(measure, QString());
-        updateMeasureText();
-        xy->setRoi(roi);
+        pushAnnotations();
     }
 
     void ViewerWidget::Impl::applyDirty() {
@@ -1049,15 +1076,23 @@ namespace sirius::app {
             case ViewerTool::Probe:
                 if (xy->inside(v)) wb.setCrosshair(x, y, z);
                 break;
-            case ViewerTool::Measure:
-                if (measure.size() >= 3) measure.clear();
-                measure.push_back(v);
-                layoutPanes();
+            case ViewerTool::Measure: {
+                // shift-click extends the last distance on this plane to an angle
+                Annotation* last = annotations.empty() ? nullptr : &annotations.back();
+                if (m.testFlag(Qt::ShiftModifier) && measure.isEmpty() && last &&
+                    last->kind == SlicePane::Annotation::Kind::Measure && last->points.size() == 2 && last->t == curT() && last->z == z) {
+                    last->points.push_back(v);
+                } else {
+                    measure.push_back(v);
+                    if (measure.size() >= 2) commitMeasure();
+                }
+                pushAnnotations();
                 break;
+            }
             case ViewerTool::Roi:
                 roiStart = v;
                 roi = QRectF();
-                layoutPanes();
+                pushAnnotations();
                 break;
             case ViewerTool::Paint: {
                 const bool erase = s.paintTool == PaintTool::Erase || m.testFlag(Qt::AltModifier);
@@ -1130,7 +1165,7 @@ namespace sirius::app {
                 break;
             case ViewerTool::Roi:
                 roi = QRectF(roiStart, v).normalized();
-                xy->setRoi(roi);
+                pushAnnotations();
                 break;
             case ViewerTool::Paint:
                 if (painting) {
@@ -1151,29 +1186,104 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::onXYReleased(const QPointF&, Qt::MouseButton b, Qt::KeyboardModifiers, bool) {
         if (b == Qt::LeftButton && vs().tool == ViewerTool::Navigate) xy->setCursor(Qt::OpenHandCursor);
+        if (b == Qt::LeftButton && vs().tool == ViewerTool::Roi) {
+            // a box of at least one voxel becomes an annotation; a click does nothing
+            if (roi.width() >= 1.0 && roi.height() >= 1.0) {
+                Annotation a;
+                a.kind = SlicePane::Annotation::Kind::Roi;
+                a.rect = roi;
+                a.t = curT();
+                a.z = curZ();
+                annotations.push_back(a);
+            }
+            roi = QRectF();
+            pushAnnotations();
+        }
         painting = false;
     }
 
-    void ViewerWidget::Impl::updateMeasureText() {
-        if (measure.isEmpty()) {
-            xy->setMeasure({}, QString());
-            return;
+    void ViewerWidget::Impl::commitMeasure() {
+        Annotation a;
+        a.kind = SlicePane::Annotation::Kind::Measure;
+        a.points = measure;
+        a.t = curT();
+        a.z = curZ();
+        annotations.push_back(a);
+        measure.clear();
+    }
+
+    void ViewerWidget::Impl::clearAnnotations() {
+        annotations.clear();
+        measure.clear();
+        roi = QRectF();
+        pushAnnotations();
+    }
+
+    void ViewerWidget::Impl::pushAnnotations() {
+        QVector<SlicePane::Annotation> out;
+        for (const Annotation& a : annotations) {
+            if (a.t != curT() || a.z != curZ()) continue;   // other planes keep theirs
+            SlicePane::Annotation pa;
+            pa.kind = a.kind;
+            pa.points = a.points;
+            pa.rect = a.rect;
+            pa.text = a.kind == SlicePane::Annotation::Kind::Measure ? measureText(a.points) : roiText(a.rect);
+            out.push_back(pa);
         }
+        if (!measure.isEmpty()) {
+            SlicePane::Annotation pa;
+            pa.points = measure;
+            pa.text = measureText(measure);
+            pa.pending = true;
+            out.push_back(pa);
+        }
+        if (!roi.isNull()) {
+            SlicePane::Annotation pa;
+            pa.kind = SlicePane::Annotation::Kind::Roi;
+            pa.rect = roi;
+            pa.text = roiText(roi);
+            pa.pending = true;
+            out.push_back(pa);
+        }
+        xy->setAnnotations(out);
+    }
+
+    void ViewerWidget::Impl::showXYContextMenu(const QPoint& screen) {
+        QMenu menu(q);
+        const bool any = !annotations.empty() || !measure.isEmpty() || !roi.isNull();
+        QAction* clear = menu.addAction(QStringLiteral("Clear annotations"));
+        clear->setEnabled(any);
+        QAction* last = menu.addAction(QStringLiteral("Remove last annotation"));
+        last->setEnabled(!annotations.empty());
+        menu.addSeparator();
+        QAction* fit = menu.addAction(QStringLiteral("Fit to window"));
+        QAction* chosen = menu.exec(xy->mapToGlobal(screen));
+        if (chosen == clear) clearAnnotations();
+        else if (chosen == last) {
+            annotations.pop_back();
+            pushAnnotations();
+        } else if (chosen == fit) q->fitToWindow();
+    }
+
+    QString ViewerWidget::Impl::roiText(const QRectF& r) const {
         const double dx = model.meta().dx(), dy = model.meta().dy();
-        QString text;
-        if (measure.size() >= 2) {
-            const QPointF a = measure[0], b = measure[1];
-            const double um = std::hypot((b.x() - a.x()) * dx, (b.y() - a.y()) * dy);
-            text = QStringLiteral("%1 µm").arg(um, 0, 'f', 2);
-        }
-        if (measure.size() >= 3) {
-            const QPointF a = measure[0], b = measure[1], c = measure[2];
+        return QStringLiteral("%1 × %2 µm").arg(r.width() * dx, 0, 'f', 2).arg(r.height() * dy, 0, 'f', 2);
+    }
+
+    QString ViewerWidget::Impl::measureText(const QVector<QPointF>& points) const {
+        if (points.size() < 2) return QString();
+        const double dx = model.meta().dx(), dy = model.meta().dy();
+        const QPointF a = points[0], b = points[1];
+        const double um = std::hypot((b.x() - a.x()) * dx, (b.y() - a.y()) * dy);
+        QString text = QStringLiteral("%1 µm").arg(um, 0, 'f', 2);
+        if (points.size() >= 3) {
+            const QPointF c = points[2];
             const double ux = (a.x() - b.x()) * dx, uy = (a.y() - b.y()) * dy;
             const double vx = (c.x() - b.x()) * dx, vy = (c.y() - b.y()) * dy;
             const double ang = std::acos(std::clamp((ux * vx + uy * vy) / std::max(1e-12, std::hypot(ux, uy) * std::hypot(vx, vy)), -1.0, 1.0));
             text += QStringLiteral("  ∠ %1°").arg(ang * 180.0 / M_PI, 0, 'f', 1);
         }
-        xy->setMeasure(measure, text);
+        return text;
     }
 
     void ViewerWidget::Impl::hover(SlicePane::Kind kind, const QPointF& v) {
