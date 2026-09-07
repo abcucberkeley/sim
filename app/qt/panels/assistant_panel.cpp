@@ -161,6 +161,10 @@ namespace sirius::app {
         QPushButton* send = nullptr;
         QLabel* askToggle = nullptr;
         QLabel* streamingLabel = nullptr;      // the assistant text being streamed
+        QString streamingSource;               // its Markdown so far (the label holds HTML)
+        static QString renderMarkdown(const QString& markdown) {
+            return QString::fromStdString(helpMarkdownToHtml(markdown.toStdString(), std::string()));
+        }
         QWidget* streamingBlock = nullptr;
 
         QJsonArray history;                    // API messages after the system prompt
@@ -204,10 +208,12 @@ namespace sirius::app {
             auto* label = new QLabel(block);
             label->setWordWrap(true);
             label->setFont(theme::font(theme::kBodyPx));
-            label->setTextFormat(Qt::MarkdownText);
+            // Markdown with $..$ / \(..\) math through the help renderer:
+            // Qt's own Markdown has no math, and this keeps chat and help pages alike.
+            label->setTextFormat(Qt::RichText);
             label->setOpenExternalLinks(true);
             label->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
-            label->setText(text);
+            label->setText(renderMarkdown(text));
             label->setVisible(!text.isEmpty());
             label->setMaximumWidth(static_cast<int>(scroll->viewport()->width() * 0.94));
             label->setProperty("assistantText", true);
@@ -317,12 +323,17 @@ namespace sirius::app {
             r.tools = toQJson(api.schemas()).toArray();
             streamingBlock = nullptr;
             streamingLabel = nullptr;
+            streamingSource.clear();
             client.send(r);
         }
 
         void onDelta(const QString& text) {
-            if (!streamingLabel) addAssistantBlock({});
-            streamingLabel->setText(streamingLabel->text() + text);
+            if (!streamingLabel) {
+                addAssistantBlock({});
+                streamingSource.clear();
+            }
+            streamingSource += text;
+            streamingLabel->setText(renderMarkdown(streamingSource));
             streamingLabel->setVisible(true);
             scrollToBottom();
         }
@@ -331,7 +342,7 @@ namespace sirius::app {
             history.append(message);
             const QString content = message[QStringLiteral("content")].toString();
             if (streamingLabel) {
-                streamingLabel->setText(content);
+                streamingLabel->setText(renderMarkdown(content));
                 streamingLabel->setVisible(!content.isEmpty());
             } else if (!content.isEmpty()) {
                 addAssistantBlock(content);

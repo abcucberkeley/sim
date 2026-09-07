@@ -47,8 +47,13 @@ namespace sirius::app {
         const LabelVolume* labels() const noexcept;
 
         // --- windows ---------------------------------------------------------
+        // Auto: robust percentiles (0.1 / 99.9) of a few sampled planes;
+        // Full: the (c, t) volume's minimum and maximum, nothing clipped.
+        enum class WindowMode { Auto, Full };
         DisplayWindow window(Index c, Index t);
         void setWindow(Index c, DisplayWindow w);
+        void setWindowMode(WindowMode m);
+        WindowMode windowMode() const noexcept { return windowMode_; }
         void resetWindows();
 
         // --- data (cached) ---------------------------------------------------
@@ -103,6 +108,7 @@ namespace sirius::app {
         std::shared_ptr<const StepOutput> out_;
         DatasetMeta meta_;
         std::map<Index, DisplayWindow> windows_;          // per channel
+        WindowMode windowMode_ = WindowMode::Auto;
         std::map<Key, Buffer<float>> volumes_;            // lazy sources only
         std::map<Key, Buffer<float>> mips_;
         bool tooLarge_ = false;

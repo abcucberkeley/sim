@@ -27,7 +27,8 @@ namespace sirius::app {
         void setPlaying(bool on);
         bool playing() const;
         // Recompute the per-channel display windows (View ▸ Auto contrast).
-        void autoContrast();
+        void autoContrast();      // display windows back to the percentile auto window
+        void resetContrast();     // display windows to the full data range
         // Grab the current view as an image (Export figure).
         QImage grabView() const;
         // Cursor readout for the status bar: "cursor x, y, z · value"

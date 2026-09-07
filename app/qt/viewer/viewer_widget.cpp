@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QPushButton>
 #include <QPainter>
 #include <QShortcut>
 #include <QStackedWidget>
@@ -16,6 +17,7 @@
 
 #include "core/array_source.hpp"
 #include "qt/theme.hpp"
+#include "qt/widgets/controls.hpp"
 #include "qt/viewer/dims_strip.hpp"
 #include "qt/viewer/display_model.hpp"
 #include "qt/viewer/slice_pane.hpp"
@@ -220,6 +222,20 @@ namespace sirius::app {
         swatchLayout->setContentsMargins(0, 0, 0, 0);
         swatchLayout->setSpacing(4);
         bl->addWidget(swatchHost);
+        // display contrast: the auto percentile window or the full data range
+        auto* autoBtn = new QPushButton(QStringLiteral("Auto"), bar);
+        auto* resetBtn = new QPushButton(QStringLiteral("Reset"), bar);
+        for (QPushButton* b : {autoBtn, resetBtn}) {
+            widgets::setButtonClass(b, "ghost small");
+            b->setCursor(Qt::PointingHandCursor);
+            b->setFocusPolicy(Qt::NoFocus);
+        }
+        autoBtn->setToolTip(QStringLiteral("Auto contrast (display): window on the 0.1–99.9 percentiles (⇧A)"));
+        resetBtn->setToolTip(QStringLiteral("Reset the display window to the full data range (⇧R)"));
+        QObject::connect(autoBtn, &QPushButton::clicked, q, [this] { q->autoContrast(); });
+        QObject::connect(resetBtn, &QPushButton::clicked, q, [this] { q->resetContrast(); });
+        bl->addWidget(autoBtn);
+        bl->addWidget(resetBtn);
         root->addWidget(bar);
         auto* rule1 = new QFrame(q);
         rule1->setFixedHeight(theme::kRule);
@@ -1218,8 +1234,15 @@ namespace sirius::app {
     bool ViewerWidget::playing() const { return impl_->playTimer.isActive(); }
 
     void ViewerWidget::autoContrast() {
-        impl_->model.resetWindows();
-        impl_->rawModel.resetWindows();
+        impl_->model.setWindowMode(DisplayModel::WindowMode::Auto);
+        impl_->rawModel.setWindowMode(DisplayModel::WindowMode::Auto);
+        impl_->dirty = Impl::Dirty{};
+        impl_->scheduleUpdate();
+    }
+
+    void ViewerWidget::resetContrast() {
+        impl_->model.setWindowMode(DisplayModel::WindowMode::Full);
+        impl_->rawModel.setWindowMode(DisplayModel::WindowMode::Full);
         impl_->dirty = Impl::Dirty{};
         impl_->scheduleUpdate();
     }

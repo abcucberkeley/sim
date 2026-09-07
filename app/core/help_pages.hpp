@@ -41,8 +41,11 @@ namespace sirius::app {
     // commands keep their name.
     std::string latexToHtml(const std::string& tex, bool display);
     // Markdown with $..$ math to HTML (headings, paragraphs, lists, bold,
-    // italic, code, tables, images), for QTextBrowser.
+    // italic, code, tables, images), for QTextBrowser. Also accepts the
+    // \(..\) and \[..\] delimiters language models favour.
     std::string helpMarkdownToHtml(const std::string& markdown, const std::string& baseDir);
+    // \(..\) -> $..$ and \[..\] -> $$..$$ outside code and existing math.
+    std::string normalizeMathDelimiters(const std::string& markdown);
 
 } // namespace sirius::app
 

@@ -286,9 +286,10 @@ namespace sirius::app {
             action(view, QStringLiteral("Zoom out"), QKeySequence(Qt::Key_Minus), [this] { viewer->zoomOut(); });
             action(view, QStringLiteral("Fit to window"), QKeySequence(Qt::Key_0), [this] { viewer->fitToWindow(); });
             view->addSeparator();
-            QAction* autoContrast = action(view, QStringLiteral("Auto contrast (display)"), QKeySequence(Qt::SHIFT | Qt::Key_A), nullptr);
-            autoContrast->setEnabled(false);
-            autoContrast->setStatusTip(QStringLiteral("Display contrast is set in the viewer toolbar"));
+            action(view, QStringLiteral("Auto contrast (display)"), QKeySequence(Qt::SHIFT | Qt::Key_A),
+                   [this] { viewer->autoContrast(); });
+            action(view, QStringLiteral("Reset contrast (display)"), QKeySequence(Qt::SHIFT | Qt::Key_R),
+                   [this] { viewer->resetContrast(); });
             syncZT = action(view, QStringLiteral("Sync Z / T across viewers"), QKeySequence(), [this] {
                 ViewState s = wb().viewState();
                 s.syncZT = !s.syncZT;

@@ -825,7 +825,52 @@ namespace sirius::app {
 
     } // namespace
 
-    std::string helpMarkdownToHtml(const std::string& markdown, const std::string& baseDir) {
+    std::string normalizeMathDelimiters(const std::string& md) {
+        std::string out;
+        out.reserve(md.size());
+        bool inCode = false, inFence = false, inMath = false;
+        for (std::size_t i = 0; i < md.size(); ++i) {
+            const char c = md[i];
+            if (!inCode && !inMath && md.compare(i, 3, "```") == 0) {
+                inFence = !inFence;
+                out += "```";
+                i += 2;
+                continue;
+            }
+            if (inFence) {
+                out += c;
+                continue;
+            }
+            if (c == '`' && !inMath) {
+                inCode = !inCode;
+                out += c;
+                continue;
+            }
+            if (c == '$' && !inCode) {
+                inMath = !inMath;
+                out += c;
+                continue;
+            }
+            if (c == '\\' && !inCode && !inMath && i + 1 < md.size()) {
+                const char d = md[i + 1];
+                if (d == '(' || d == '[') {
+                    const std::string close = d == '(' ? "\\)" : "\\]";
+                    const std::size_t end = md.find(close, i + 2);
+                    if (end != std::string::npos) {
+                        const std::string fence = d == '(' ? "$" : "$$";
+                        out += fence + md.substr(i + 2, end - i - 2) + fence;
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            out += c;
+        }
+        return out;
+    }
+
+    std::string helpMarkdownToHtml(const std::string& markdownIn, const std::string& baseDir) {
+        const std::string markdown = normalizeMathDelimiters(markdownIn);
         std::vector<std::string> lines = splitLines(markdown);
         stripFrontMatter(lines);
         std::string html;

@@ -250,3 +250,15 @@ TEST_CASE("helpDirectory honours SIRIUS_HELP_DIR and the hint", "[app][help]") {
     CHECK(fs::is_directory(helpDirectory("/definitely/not/a/dir")));
     fs::remove_all(tmp);
 }
+
+TEST_CASE("Markdown math accepts the \\( \\) and \\[ \\] delimiters", "[app][help][math]") {
+    using sirius::app::normalizeMathDelimiters;
+    CHECK(normalizeMathDelimiters("a \\(x^2\\) b") == "a $x^2$ b");
+    CHECK(normalizeMathDelimiters("\\[\\frac{a}{b}\\]") == "$$\\frac{a}{b}$$");
+    // untouched inside code and inside existing math
+    CHECK(normalizeMathDelimiters("`\\(x\\)`") == "`\\(x\\)`");
+    CHECK(normalizeMathDelimiters("$a \\\\[2pt] b$") == "$a \\\\[2pt] b$");
+    const std::string html = sirius::app::helpMarkdownToHtml("The window is \\(w = \\frac{1}{\\gamma}\\).", "");
+    CHECK(html.find("γ") != std::string::npos);
+    CHECK(html.find("\\(") == std::string::npos);
+}

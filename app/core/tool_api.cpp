@@ -444,7 +444,8 @@ namespace sirius::app {
                "an action card, so state what you did briefly rather than repeating parameters. Runs can take from "
                "seconds to minutes; run only when asked or when a change needs a result to be judged. Be concise and "
                "specific: quote numbers from diagnostics (modulation depths, k0, percentiles, label counts). If a "
-               "request is ambiguous about which step, ask. Current workbench state follows as JSON.";
+               "request is ambiguous about which step, ask. Answer in Markdown; write formulas as LaTeX between $...$ "
+               "(inline) or $$...$$ (on its own line). Current workbench state follows as JSON.";
     }
 
     std::vector<ActionRecord> ToolApi::takeActions() {

@@ -47,9 +47,11 @@ namespace sirius::app {
         mips_.clear();
         planes_.clear();
         tooLarge_ = false;
-        // A re-run of the same step keeps the user's windows; a different
-        // shape (another step) starts over.
-        if (!sameShape) windows_.clear();
+        // Every new output gets fresh windows: a step's output can share its
+        // input's shape while living in a different intensity range (Contrast
+        // rescales to 0..1), and a stale window then clips it to white.
+        (void)sameShape;
+        windows_.clear();
     }
 
     bool DisplayModel::valid() const noexcept {
@@ -74,9 +76,26 @@ namespace sirius::app {
 
     void DisplayModel::resetWindows() { windows_.clear(); }
 
+    void DisplayModel::setWindowMode(WindowMode m) {
+        windowMode_ = m;
+        windows_.clear();
+    }
+
     DisplayWindow DisplayModel::computeWindow(Index c, Index t) {
         if (!valid()) return {0.0f, 1.0f};
         const Dims5& d = meta_.dims;
+        if (windowMode_ == WindowMode::Full && out_->array) {
+            // exact range of the in-memory volume (lazy sources use the samples below)
+            const BufferView<const float> v = out_->array->volume(c, t);
+            float lo = std::numeric_limits<float>::infinity(), hi = -lo;
+            for (Index i = 0; i < v.size(); ++i) {
+                const float x = v.data()[i];
+                if (std::isnan(x)) continue;
+                lo = std::min(lo, x);
+                hi = std::max(hi, x);
+            }
+            if (lo <= hi && hi > lo) return {lo, hi};
+        }
         std::vector<float> samples;
         constexpr Index kTarget = 1 << 18;
         // a handful of planes spread over z, each sub-sampled at a fixed stride
@@ -88,6 +107,15 @@ namespace sirius::app {
             const float* p = plane(c, t, z);
             if (!p) continue;
             for (Index i = 0; i < d.planeSize(); i += stride) samples.push_back(p[i]);
+        }
+        if (windowMode_ == WindowMode::Full) {
+            float lo = std::numeric_limits<float>::infinity(), hi = -lo;
+            for (float x : samples)
+                if (!std::isnan(x)) {
+                    lo = std::min(lo, x);
+                    hi = std::max(hi, x);
+                }
+            if (lo <= hi && hi > lo) return {lo, hi};
         }
         return robustWindow(samples);
     }
