@@ -421,7 +421,11 @@ namespace sirius::app {
                     doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
                     doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced(),
                     intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced(),
-                    intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px").withHelp("White top-hat: removes background structures larger than this radius (0 = off)"),
+                    choiceParam("background", "Background", {"Top-hat (box)", "Rolling ball"}, "Top-hat (box)")
+                        .withHelp("How the background is estimated before it is subtracted. The box top-hat follows a flat "
+                                  "background; the rolling ball follows a curved one, which is what uneven illumination or a "
+                                  "thick specimen actually gives"),
+                    intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px").withHelp("Structures larger than this radius are background and are removed (0 = off)"),
                     doubleParam("sigma", "Smoothing σ", 1.0).range(0.0, 50.0, 0.5, 1).withUnit("px").withHelp("Gaussian blur before the threshold (0 = none)"),
                     choiceParam("method", "Threshold",
                                 {"Otsu", "Triangle", "Li", "Yen", "Isodata", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu")
@@ -472,6 +476,9 @@ namespace sirius::app {
                     doubleParam("max_elongation", "Max. elongation", 0.0).range(0.0, 100.0, 0.5, 1).withHelp("Drop objects whose bounding box is longer than this many times its width (0 = off)").asAdvanced(),
                     doubleParam("expand", "Expand labels", 0.0).range(0.0, 200.0, 0.5, 1).withUnit("px").withHelp("Grow every object outwards into the background by this much, nearest object first. Closes the "
                                                                                                                   "gap an opening or a watershed line left, without letting two objects meet (0 = off)"),
+                    boolParam("skeleton", "Centrelines", false)
+                        .withHelp("Replace every object with the line down its middle: one voxel thick, the same length and "
+                                  "the same topology. The centreline of a filament, and what its length is measured on"),
                     boolParam("drop_border", "Drop border objects", false).withHelp("Objects touching the x / y edge are cut off, so their shape and size are not measurable"),
                     stringParam("class_name", "Class", "object").asAdvanced(),
                 };
@@ -503,10 +510,13 @@ namespace sirius::app {
                                     denoise == "Median 3x3" ? "median" : denoise == "Anisotropic diffusion" ? "diffusion"
                                                                                                             : "",
                                     enhanceText,
-                                    tophat > 0 ? "top-hat " + std::to_string(tophat) : "",
+                                    tophat > 0 ? (p.getString("background", "Top-hat (box)") == "Rolling ball" ? "ball " : "top-hat ") +
+                                                     std::to_string(tophat)
+                                               : "",
                                     sigma > 0 ? "σ " + formatNumber(sigma, 1) : "",
                                     cut,
                                     p.getString("refine", "None") != "None" ? "snake" : "",
+                                    p.getBool("skeleton", false) ? "centrelines" : "",
                                     p.getString("post", "Watershed (distance)").rfind("Watershed", 0) != 0  ? "components"
                                     : p.getString("post", "Watershed (distance)") == "Watershed (gradient)" ? "watershed edges"
                                     : p.getString("seeds", "H-maxima") == "Blob centres (LoG)"
@@ -542,6 +552,8 @@ namespace sirius::app {
                 const bool fillHolesVolume = p.getBool("fill_holes_3d", false);
                 const Index holeMaxVoxels = p.getInt("hole_max_voxels", 0);
                 const double expand = p.getDouble("expand", 0.0);
+                const bool rollingBall = p.getString("background", "Top-hat (box)") == "Rolling ball";
+                const bool skeleton = p.getBool("skeleton", false);
                 const std::string denoise = p.getString("denoise", "None");
                 const int diffusionIterations = static_cast<int>(p.getInt("diffusion_iterations", 5));
                 const double diffusionK = p.getDouble("diffusion_k", 0.1);
@@ -621,7 +633,8 @@ namespace sirius::app {
                             dogPlane(pl, enhA.data(), d.y, d.x, enhanceSigma, 1.6, scratch, enhB, tmp);
                             std::copy_n(enhA.data(), plane, pl);
                         }
-                        topHatPlane(pl, d.y, d.x, tophat, scratch, tmp);
+                        if (rollingBall) rollingBallPlane(pl, d.y, d.x, static_cast<double>(tophat), scratch);
+                        else topHatPlane(pl, d.y, d.x, tophat, scratch, tmp);
                         gaussianPlane(pl, d.y, d.x, sigma, tmp);
                         if (z % 8 == 0) ctx.report(base + span * 0.3 * z / std::max<Index>(1, d.z), "filtering");
                     }
@@ -748,6 +761,20 @@ namespace sirius::app {
                     // were segmented and not as they were grown
                     if (expand > 0.0) {
                         expandLabels(labels->volume(t), d.z, d.y, d.x, expand, zAspect);
+                        labels->recomputeStats(t, fg.data());
+                        for (LabelStats& st : labels->stats()) st.cls = post.className;
+                        labels->applyFlags(post.flags);
+                    }
+                    // centrelines last of all: they are what is left of the
+                    // objects, so everything measured on the objects is measured
+                    // before they are thinned away
+                    if (skeleton) {
+                        std::uint32_t* volume = labels->volume(t);
+                        std::vector<std::uint8_t> solid(static_cast<std::size_t>(n));
+                        for (Index i = 0; i < n; ++i) solid[static_cast<std::size_t>(i)] = volume[i] ? 1 : 0;
+                        skeletonize3D(solid.data(), d.z, d.y, d.x);
+                        for (Index i = 0; i < n; ++i)
+                            if (!solid[static_cast<std::size_t>(i)]) volume[i] = 0;
                         labels->recomputeStats(t, fg.data());
                         for (LabelStats& st : labels->stats()) st.cls = post.className;
                         labels->applyFlags(post.flags);

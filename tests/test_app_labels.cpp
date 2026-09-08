@@ -873,3 +873,96 @@ TEST_CASE("Expanding labels closes the gap without joining two objects", "[app][
         CHECK(far[static_cast<std::size_t>((1 * y + 3) * x + 5)] == 1u);
     }
 }
+
+TEST_CASE("Thinning leaves a one voxel centreline with the same topology", "[app][labels][classic]") {
+    auto count = [](const std::vector<std::uint8_t>& v) {
+        return static_cast<Index>(std::count_if(v.begin(), v.end(), [](std::uint8_t m) { return m != 0; }));
+    };
+
+    SECTION("a thick bar becomes a line down its middle") {
+        const Index z = 5, y = 7, x = 15;
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(z * y * x), 0);
+        auto at = [&](Index k, Index r, Index c) { return static_cast<std::size_t>((k * y + r) * x + c); };
+        for (Index k = 1; k <= 3; ++k)
+            for (Index r = 2; r <= 4; ++r)
+                for (Index c = 2; c <= 12; ++c) mask[at(k, r, c)] = 1;
+        const Index before = count(mask);
+        const Index after = skeletonize3D(mask.data(), z, y, x);
+        CHECK(after < before / 4);
+        CHECK(after >= 9);   // the bar is 11 long: the line keeps its length
+        // what is left runs along the middle of the bar, not along its face
+        Index onAxis = 0;
+        for (Index c = 0; c < x; ++c)
+            if (mask[at(2, 3, c)]) ++onAxis;
+        CHECK(onAxis >= after - 2);
+    }
+
+    SECTION("a loop stays a loop") {
+        // a square annulus three voxels thick, in one plane. Its hole is a
+        // tunnel, not a cavity -- the background reaches it from above -- so
+        // what has to survive the thinning is the cycle itself.
+        const Index z = 3, y = 15, x = 15;
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(z * y * x), 0);
+        auto at = [&](Index k, Index r, Index c) { return static_cast<std::size_t>((k * y + r) * x + c); };
+        for (Index r = 2; r <= 12; ++r)
+            for (Index c = 2; c <= 12; ++c)
+                if (!(r >= 5 && r <= 9 && c >= 5 && c <= 9)) mask[at(1, r, c)] = 1;
+        const Index before = count(mask);
+        const Index after = skeletonize3D(mask.data(), z, y, x);
+        CHECK(after < before / 2);
+
+        // one 26-connected piece: a skeleton steps diagonally, which the
+        // 6-connected connectedComponents() would count as several
+        auto neighbours = [&](Index i) {
+            const Index k = i / (y * x), rest = i % (y * x), r = rest / x, c = rest % x;
+            std::vector<Index> out;
+            for (Index dz = -1; dz <= 1; ++dz)
+                for (Index dy = -1; dy <= 1; ++dy)
+                    for (Index dx = -1; dx <= 1; ++dx) {
+                        if (dz == 0 && dy == 0 && dx == 0) continue;
+                        const Index jz = k + dz, jy = r + dy, jx = c + dx;
+                        if (jz < 0 || jz >= z || jy < 0 || jy >= y || jx < 0 || jx >= x) continue;
+                        const Index j = (jz * y + jy) * x + jx;
+                        if (mask[static_cast<std::size_t>(j)]) out.push_back(j);
+                    }
+            return out;
+        };
+        Index first = -1;
+        for (Index i = 0; i < z * y * x && first < 0; ++i)
+            if (mask[static_cast<std::size_t>(i)]) first = i;
+        REQUIRE(first >= 0);
+        std::vector<std::uint8_t> seen(static_cast<std::size_t>(z * y * x), 0);
+        std::vector<Index> stack{first};
+        seen[static_cast<std::size_t>(first)] = 1;
+        Index reached = 1;
+        while (!stack.empty()) {
+            const Index cur = stack.back();
+            stack.pop_back();
+            for (Index j : neighbours(cur))
+                if (!seen[static_cast<std::size_t>(j)]) {
+                    seen[static_cast<std::size_t>(j)] = 1;
+                    ++reached;
+                    stack.push_back(j);
+                }
+        }
+        CHECK(reached == after);   // one piece
+
+        // and it is still a cycle rather than a cut line. Thinning can leave a
+        // single spur where a corner forces a voxel to become an end point
+        // before its turn comes -- scikit-image's ordering avoids it on this
+        // shape and ours does not -- so one loose end is allowed, two are not.
+        Index ends = 0;
+        for (Index i = 0; i < z * y * x; ++i)
+            if (mask[static_cast<std::size_t>(i)] && neighbours(i).size() < 2) ++ends;
+        CHECK(ends <= 1);
+    }
+
+    SECTION("an isolated voxel and an empty volume are left alone") {
+        const Index z = 3, y = 3, x = 3;
+        std::vector<std::uint8_t> one(static_cast<std::size_t>(z * y * x), 0);
+        one[static_cast<std::size_t>((1 * y + 1) * x + 1)] = 1;
+        CHECK(skeletonize3D(one.data(), z, y, x) == 1);
+        std::vector<std::uint8_t> none(static_cast<std::size_t>(z * y * x), 0);
+        CHECK(skeletonize3D(none.data(), z, y, x) == 0);
+    }
+}

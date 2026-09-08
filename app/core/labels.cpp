@@ -1206,6 +1206,110 @@ namespace sirius::app {
         return h.valueOf(static_cast<std::size_t>(std::clamp(t, 0.0, 255.0)));
     }
 
+    namespace {
+        // The half-widths and heights of the ball, and how far the image is
+        // shrunk before it is rolled: shared by the plane below and by nothing
+        // else, but kept together so the two agree.
+        struct Ball {
+            int shrink = 1;
+            int halfWidth = 1;
+            std::vector<double> height;   // (2 hw + 1)^2, negative where the ball does not reach
+
+            double at(int dy, int dx) const {
+                return height[static_cast<std::size_t>((dy + halfWidth) * (2 * halfWidth + 1) + (dx + halfWidth))];
+            }
+        };
+
+        Ball ballFor(double radius) {
+            Ball b;
+            b.shrink = std::clamp(static_cast<int>(std::lround(radius / 10.0)), 1, 8);
+            const double scaled = std::max(1.0, radius / b.shrink);
+            b.halfWidth = std::max(1, static_cast<int>(std::floor(scaled)));
+            const int side = 2 * b.halfWidth + 1;
+            b.height.assign(static_cast<std::size_t>(side) * side, -1.0);
+            for (int dy = -b.halfWidth; dy <= b.halfWidth; ++dy)
+                for (int dx = -b.halfWidth; dx <= b.halfWidth; ++dx) {
+                    const double r2 = scaled * scaled - static_cast<double>(dy) * dy - static_cast<double>(dx) * dx;
+                    if (r2 >= 0.0) b.height[static_cast<std::size_t>((dy + b.halfWidth) * side + (dx + b.halfWidth))] = std::sqrt(r2);
+                }
+            return b;
+        }
+    } // namespace
+
+    void rollingBallPlane(float* plane, Index y, Index x, double radius, std::vector<float>& scratch) {
+        if (radius <= 0.0 || y <= 0 || x <= 0) return;
+        const Ball ball = ballFor(radius);
+        const Index s = ball.shrink;
+        const Index sy = (y + s - 1) / s, sx = (x + s - 1) / s;
+
+        // shrink by taking the darkest pixel of each block: the ball rolls
+        // under the surface, so it is the low side that decides where it fits
+        std::vector<double> small(static_cast<std::size_t>(sy * sx), 0.0);
+        for (Index r = 0; r < sy; ++r)
+            for (Index c = 0; c < sx; ++c) {
+                double lowest = std::numeric_limits<double>::max();
+                for (Index dr = 0; dr < s; ++dr)
+                    for (Index dc = 0; dc < s; ++dc) {
+                        const Index yy = std::min(r * s + dr, y - 1), xx = std::min(c * s + dc, x - 1);
+                        lowest = std::min(lowest, static_cast<double>(plane[yy * x + xx]));
+                    }
+                small[static_cast<std::size_t>(r * sx + c)] = lowest;
+            }
+
+        // where the ball's centre can sit (an erosion by the ball), then the
+        // surface its top traces from there (a dilation): a grey opening
+        std::vector<double> centre(static_cast<std::size_t>(sy * sx), 0.0);
+        for (Index r = 0; r < sy; ++r)
+            for (Index c = 0; c < sx; ++c) {
+                double highest = std::numeric_limits<double>::max();
+                for (int dy = -ball.halfWidth; dy <= ball.halfWidth; ++dy)
+                    for (int dx = -ball.halfWidth; dx <= ball.halfWidth; ++dx) {
+                        const double h = ball.at(dy, dx);
+                        if (h < 0.0) continue;
+                        const Index yy = std::clamp<Index>(r + dy, 0, sy - 1), xx = std::clamp<Index>(c + dx, 0, sx - 1);
+                        highest = std::min(highest, small[static_cast<std::size_t>(yy * sx + xx)] - h);
+                    }
+                centre[static_cast<std::size_t>(r * sx + c)] = highest;
+            }
+        std::vector<double> background(static_cast<std::size_t>(sy * sx), 0.0);
+        for (Index r = 0; r < sy; ++r)
+            for (Index c = 0; c < sx; ++c) {
+                double top = std::numeric_limits<double>::lowest();
+                for (int dy = -ball.halfWidth; dy <= ball.halfWidth; ++dy)
+                    for (int dx = -ball.halfWidth; dx <= ball.halfWidth; ++dx) {
+                        const double h = ball.at(dy, dx);
+                        if (h < 0.0) continue;
+                        const Index yy = std::clamp<Index>(r - dy, 0, sy - 1), xx = std::clamp<Index>(c - dx, 0, sx - 1);
+                        top = std::max(top, centre[static_cast<std::size_t>(yy * sx + xx)] + h);
+                    }
+                background[static_cast<std::size_t>(r * sx + c)] = top;
+            }
+
+        // back to full size: the shrunk sample at (r, c) stands for the centre
+        // of its block, and the background between them is bilinear
+        scratch.assign(static_cast<std::size_t>(y * x), 0.0f);
+        const double half = 0.5 * (static_cast<double>(s) - 1.0);
+        for (Index r = 0; r < y; ++r) {
+            const double fy = s == 1 ? static_cast<double>(r) : (static_cast<double>(r) - half) / static_cast<double>(s);
+            const Index r0 = std::clamp<Index>(static_cast<Index>(std::floor(fy)), 0, sy - 1);
+            const Index r1 = std::clamp<Index>(r0 + 1, 0, sy - 1);
+            const double wy = std::clamp(fy - static_cast<double>(r0), 0.0, 1.0);
+            for (Index c = 0; c < x; ++c) {
+                const double fx = s == 1 ? static_cast<double>(c) : (static_cast<double>(c) - half) / static_cast<double>(s);
+                const Index c0 = std::clamp<Index>(static_cast<Index>(std::floor(fx)), 0, sx - 1);
+                const Index c1 = std::clamp<Index>(c0 + 1, 0, sx - 1);
+                const double wx = std::clamp(fx - static_cast<double>(c0), 0.0, 1.0);
+                const double a = background[static_cast<std::size_t>(r0 * sx + c0)];
+                const double b = background[static_cast<std::size_t>(r0 * sx + c1)];
+                const double cc = background[static_cast<std::size_t>(r1 * sx + c0)];
+                const double d = background[static_cast<std::size_t>(r1 * sx + c1)];
+                const double value = (a * (1.0 - wx) + b * wx) * (1.0 - wy) + (cc * (1.0 - wx) + d * wx) * wy;
+                scratch[static_cast<std::size_t>(r * x + c)] = static_cast<float>(value);
+            }
+        }
+        for (Index i = 0; i < y * x; ++i) plane[i] = std::max(0.0f, plane[i] - scratch[static_cast<std::size_t>(i)]);
+    }
+
     Index fillHoles3D(std::uint8_t* mask, Index z, Index y, Index x, Index maxVoxels) {
         const Index n = z * y * x;
         if (n <= 0) return 0;
@@ -1267,6 +1371,149 @@ namespace sirius::app {
             filled += static_cast<Index>(cavity.size());
         }
         return filled;
+    }
+
+    namespace {
+        // The 26 neighbourhood of a voxel, packed into a 3x3x3 block with the
+        // centre at (1, 1, 1), and the connectivity tests the thinning needs.
+        using Block = std::array<std::uint8_t, 27>;
+        constexpr int blockIndex(int dz, int dy, int dx) { return ((dz + 1) * 3 + (dy + 1)) * 3 + (dx + 1); }
+
+        // One 26-connected component of the object in the neighbourhood?
+        bool objectStaysConnected(const Block& b) {
+            Block seen{};
+            int start = -1;
+            int total = 0;
+            for (int i = 0; i < 27; ++i)
+                if (i != blockIndex(0, 0, 0) && b[static_cast<std::size_t>(i)]) {
+                    ++total;
+                    if (start < 0) start = i;
+                }
+            if (total == 0) return false;   // an isolated voxel is not simple: deleting it removes a component
+            std::vector<int> stack{start};
+            seen[static_cast<std::size_t>(start)] = 1;
+            int reached = 1;
+            while (!stack.empty()) {
+                const int cur = stack.back();
+                stack.pop_back();
+                const int cz = cur / 9, cy = (cur / 3) % 3, cx = cur % 3;
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int nz = cz + dz, ny = cy + dy, nx = cx + dx;
+                            if (nz < 0 || nz > 2 || ny < 0 || ny > 2 || nx < 0 || nx > 2) continue;
+                            const int j = (nz * 3 + ny) * 3 + nx;
+                            if (j == blockIndex(0, 0, 0) || !b[static_cast<std::size_t>(j)] || seen[static_cast<std::size_t>(j)]) continue;
+                            seen[static_cast<std::size_t>(j)] = 1;
+                            ++reached;
+                            stack.push_back(j);
+                        }
+            }
+            return reached == total;
+        }
+
+        // One 6-connected background component in the 18 neighbourhood that
+        // touches the centre? (The eight corners are left out: they cannot
+        // reach the centre 6-connectedly.)
+        bool backgroundStaysConnected(const Block& b) {
+            auto inEighteen = [](int i) {
+                const int dz = i / 9 - 1, dy = (i / 3) % 3 - 1, dx = i % 3 - 1;
+                return std::abs(dz) + std::abs(dy) + std::abs(dx) <= 2;
+            };
+            // the six face neighbours are the only way out of the centre
+            std::vector<int> starts;
+            for (const int face : {blockIndex(-1, 0, 0), blockIndex(1, 0, 0), blockIndex(0, -1, 0), blockIndex(0, 1, 0),
+                                   blockIndex(0, 0, -1), blockIndex(0, 0, 1)})
+                if (!b[static_cast<std::size_t>(face)]) starts.push_back(face);
+            if (starts.empty()) return false;   // the centre is buried: deleting it opens a cavity
+            Block seen{};
+            std::vector<int> stack{starts.front()};
+            seen[static_cast<std::size_t>(starts.front())] = 1;
+            while (!stack.empty()) {
+                const int cur = stack.back();
+                stack.pop_back();
+                const int cz = cur / 9, cy = (cur / 3) % 3, cx = cur % 3;
+                const int nz[6] = {cz - 1, cz + 1, cz, cz, cz, cz};
+                const int ny[6] = {cy, cy, cy - 1, cy + 1, cy, cy};
+                const int nx[6] = {cx, cx, cx, cx, cx - 1, cx + 1};
+                for (int q = 0; q < 6; ++q) {
+                    if (nz[q] < 0 || nz[q] > 2 || ny[q] < 0 || ny[q] > 2 || nx[q] < 0 || nx[q] > 2) continue;
+                    const int j = (nz[q] * 3 + ny[q]) * 3 + nx[q];
+                    if (j == blockIndex(0, 0, 0) || !inEighteen(j) || b[static_cast<std::size_t>(j)] || seen[static_cast<std::size_t>(j)]) continue;
+                    seen[static_cast<std::size_t>(j)] = 1;
+                    stack.push_back(j);
+                }
+            }
+            for (const int face : starts)
+                if (!seen[static_cast<std::size_t>(face)]) return false;   // two ways out that do not meet
+            return true;
+        }
+    } // namespace
+
+    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x) {
+        const Index n = z * y * x;
+        if (n <= 0) return 0;
+        // the six directions, taken in turn: deleting a whole border at once
+        // would eat a thin structure from both sides
+        const int dirZ[6] = {-1, 1, 0, 0, 0, 0};
+        const int dirY[6] = {0, 0, -1, 1, 0, 0};
+        const int dirX[6] = {0, 0, 0, 0, -1, 1};
+        std::vector<Index> candidates;
+        bool changed = true;
+        for (int pass = 0; pass < 1000 && changed; ++pass) {
+            changed = false;
+            for (int dir = 0; dir < 6; ++dir) {
+                candidates.clear();
+                for (Index k = 0; k < z; ++k)
+                    for (Index r = 0; r < y; ++r)
+                        for (Index c = 0; c < x; ++c) {
+                            const Index i = (k * y + r) * x + c;
+                            if (!mask[i]) continue;
+                            // on this border: the neighbour in the direction is background
+                            const Index nz = k + dirZ[dir], ny = r + dirY[dir], nx = c + dirX[dir];
+                            const bool open = nz < 0 || nz >= z || ny < 0 || ny >= y || nx < 0 || nx >= x ||
+                                              !mask[(nz * y + ny) * x + nx];
+                            if (!open) continue;
+                            Block b{};
+                            int neighbours = 0;
+                            for (int dz = -1; dz <= 1; ++dz)
+                                for (int dy = -1; dy <= 1; ++dy)
+                                    for (int dx = -1; dx <= 1; ++dx) {
+                                        const Index jz = k + dz, jy = r + dy, jx = c + dx;
+                                        const bool on = jz >= 0 && jz < z && jy >= 0 && jy < y && jx >= 0 && jx < x &&
+                                                        mask[(jz * y + jy) * x + jx] != 0;
+                                        b[static_cast<std::size_t>(blockIndex(dz, dy, dx))] = on ? 1 : 0;
+                                        if (on && !(dz == 0 && dy == 0 && dx == 0)) ++neighbours;
+                                    }
+                            if (neighbours <= 1) continue;   // an end point: the line stops here
+                            if (!objectStaysConnected(b) || !backgroundStaysConnected(b)) continue;
+                            candidates.push_back(i);
+                        }
+                // deleted one at a time, rechecking: two voxels that are each
+                // simple on their own need not both be
+                for (Index i : candidates) {
+                    const Index k = i / (y * x), rest = i % (y * x), r = rest / x, c = rest % x;
+                    Block b{};
+                    int neighbours = 0;
+                    for (int dz = -1; dz <= 1; ++dz)
+                        for (int dy = -1; dy <= 1; ++dy)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                const Index jz = k + dz, jy = r + dy, jx = c + dx;
+                                const bool on = jz >= 0 && jz < z && jy >= 0 && jy < y && jx >= 0 && jx < x &&
+                                                mask[(jz * y + jy) * x + jx] != 0;
+                                b[static_cast<std::size_t>(blockIndex(dz, dy, dx))] = on ? 1 : 0;
+                                if (on && !(dz == 0 && dy == 0 && dx == 0)) ++neighbours;
+                            }
+                    if (neighbours <= 1) continue;
+                    if (!objectStaysConnected(b) || !backgroundStaysConnected(b)) continue;
+                    mask[i] = 0;
+                    changed = true;
+                }
+            }
+        }
+        Index remaining = 0;
+        for (Index i = 0; i < n; ++i) remaining += mask[i] ? 1 : 0;
+        return remaining;
     }
 
     Index expandLabels(std::uint32_t* labels, Index z, Index y, Index x, double distance, double zAspect) {

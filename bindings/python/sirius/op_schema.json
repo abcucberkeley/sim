@@ -1687,8 +1687,21 @@
         },
         {
           "advanced": false,
+          "choices": [
+            "Top-hat (box)",
+            "Rolling ball"
+          ],
+          "default": "Top-hat (box)",
+          "help": "How the background is estimated before it is subtracted. The box top-hat follows a flat background; the rolling ball follows a curved one, which is what uneven illumination or a thick specimen actually gives",
+          "key": "background",
+          "label": "Background",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
           "default": 0,
-          "help": "White top-hat: removes background structures larger than this radius (0 = off)",
+          "help": "Structures larger than this radius are background and are removed (0 = off)",
           "key": "tophat",
           "label": "Background radius",
           "max": 2000.0,
@@ -2032,6 +2045,15 @@
           "read_only": false,
           "type": "double",
           "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": false,
+          "help": "Replace every object with the line down its middle: one voxel thick, the same length and the same topology. The centreline of a filament, and what its length is measured on",
+          "key": "skeleton",
+          "label": "Centrelines",
+          "read_only": false,
+          "type": "bool"
         },
         {
           "advanced": false,

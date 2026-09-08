@@ -1809,6 +1809,155 @@ def _fill_holes_3d(mask: np.ndarray, max_voxels: int) -> np.ndarray:
     return out
 
 
+def _rolling_ball_plane(pl: np.ndarray, radius: float) -> np.ndarray:
+    """``rollingBallPlane``: a grey opening with a hemispherical structuring
+    element, run on a decimated copy and interpolated back up, subtracted."""
+    out = np.asarray(pl, dtype=np.float32)
+    y, x = out.shape
+    if radius <= 0.0 or y <= 0 or x <= 0:
+        return out
+    shrink = int(min(8, max(1, round(radius / 10.0))))
+    scaled = max(1.0, radius / shrink)
+    half = max(1, int(math.floor(scaled)))
+    side = 2 * half + 1
+    dy, dx = np.mgrid[-half:half + 1, -half:half + 1]
+    r2 = scaled * scaled - dy.astype(np.float64) ** 2 - dx.astype(np.float64) ** 2
+    ball = np.where(r2 >= 0.0, np.sqrt(np.maximum(r2, 0.0)), -1.0)
+
+    sy, sx = (y + shrink - 1) // shrink, (x + shrink - 1) // shrink
+    small = np.empty((sy, sx), dtype=np.float64)
+    big = out.astype(np.float64)
+    for r in range(sy):
+        for c in range(sx):
+            rows = np.minimum(np.arange(r * shrink, r * shrink + shrink), y - 1)
+            cols = np.minimum(np.arange(c * shrink, c * shrink + shrink), x - 1)
+            small[r, c] = big[np.ix_(rows, cols)].min()
+
+    def sweep(source: np.ndarray, sign: int) -> np.ndarray:
+        best = np.full(source.shape, np.inf if sign < 0 else -np.inf)
+        rows = np.arange(sy)
+        cols = np.arange(sx)
+        for i in range(side):
+            for j in range(side):
+                h = ball[i, j]
+                if h < 0.0:
+                    continue
+                off_y, off_x = i - half, j - half
+                rr = np.clip(rows + sign * off_y, 0, sy - 1)
+                cc = np.clip(cols + sign * off_x, 0, sx - 1)
+                shifted = source[np.ix_(rr, cc)]
+                best = np.minimum(best, shifted - h) if sign < 0 else np.maximum(best, shifted + h)
+        return best
+
+    centre = sweep(small, -1)
+    background = sweep(centre, 1)
+
+    offset = 0.5 * (shrink - 1.0)
+    fy = np.arange(y, dtype=np.float64) if shrink == 1 else (np.arange(y, dtype=np.float64) - offset) / shrink
+    fx = np.arange(x, dtype=np.float64) if shrink == 1 else (np.arange(x, dtype=np.float64) - offset) / shrink
+    r0 = np.clip(np.floor(fy).astype(np.int64), 0, sy - 1)
+    c0 = np.clip(np.floor(fx).astype(np.int64), 0, sx - 1)
+    r1, c1 = np.clip(r0 + 1, 0, sy - 1), np.clip(c0 + 1, 0, sx - 1)
+    wy = np.clip(fy - r0, 0.0, 1.0)[:, None]
+    wx = np.clip(fx - c0, 0.0, 1.0)[None, :]
+    a = background[np.ix_(r0, c0)]
+    b = background[np.ix_(r0, c1)]
+    cc2 = background[np.ix_(r1, c0)]
+    d = background[np.ix_(r1, c1)]
+    full = (a * (1.0 - wx) + b * wx) * (1.0 - wy) + (cc2 * (1.0 - wx) + d * wx) * wy
+    return np.maximum(0.0, out - full.astype(np.float32)).astype(np.float32)
+
+
+def _skeletonize_3d(mask: np.ndarray) -> np.ndarray:
+    """``skeletonize3D``: topological thinning by deleting simple points, one
+    of the six border directions at a time, keeping end points so a curve
+    thins to a line instead of eroding away."""
+    m = (np.asarray(mask) != 0).astype(np.uint8).copy()
+    z, y, x = m.shape
+    if m.size == 0:
+        return m
+
+    def block(k, r, c):
+        b = np.zeros((3, 3, 3), dtype=np.uint8)
+        for dz in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    jz, jy, jx = k + dz, r + dy, c + dx
+                    if 0 <= jz < z and 0 <= jy < y and 0 <= jx < x:
+                        b[dz + 1, dy + 1, dx + 1] = m[jz, jy, jx]
+        return b
+
+    def object_connected(b):
+        on = [(i, j, k2) for i in range(3) for j in range(3) for k2 in range(3)
+              if b[i, j, k2] and not (i == 1 and j == 1 and k2 == 1)]
+        if not on:
+            return False
+        seen = {on[0]}
+        stack = [on[0]]
+        while stack:
+            cz, cy, cx = stack.pop()
+            for dz in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        n = (cz + dz, cy + dy, cx + dx)
+                        if not all(0 <= v < 3 for v in n) or n == (1, 1, 1) or n in seen:
+                            continue
+                        if b[n]:
+                            seen.add(n)
+                            stack.append(n)
+        return len(seen) == len(on)
+
+    def background_connected(b):
+        faces = [(0, 1, 1), (2, 1, 1), (1, 0, 1), (1, 2, 1), (1, 1, 0), (1, 1, 2)]
+        starts = [f for f in faces if not b[f]]
+        if not starts:
+            return False
+        seen = {starts[0]}
+        stack = [starts[0]]
+        while stack:
+            cz, cy, cx = stack.pop()
+            for dz, dy, dx in ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)):
+                n = (cz + dz, cy + dy, cx + dx)
+                if not all(0 <= v < 3 for v in n) or n == (1, 1, 1) or n in seen:
+                    continue
+                if abs(n[0] - 1) + abs(n[1] - 1) + abs(n[2] - 1) > 2 or b[n]:
+                    continue
+                seen.add(n)
+                stack.append(n)
+        return all(f in seen for f in starts)
+
+    def removable(k, r, c):
+        b = block(k, r, c)
+        if int(b.sum()) - 1 <= 1:
+            return False   # an end point: the line stops here
+        return object_connected(b) and background_connected(b)
+
+    directions = ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
+    changed = True
+    passes = 0
+    while changed and passes < 1000:
+        changed = False
+        passes += 1
+        for dz, dy, dx in directions:
+            candidates = []
+            for k in range(z):
+                for r in range(y):
+                    for c in range(x):
+                        if not m[k, r, c]:
+                            continue
+                        jz, jy, jx = k + dz, r + dy, c + dx
+                        outside = not (0 <= jz < z and 0 <= jy < y and 0 <= jx < x)
+                        if not (outside or not m[jz, jy, jx]):
+                            continue
+                        if removable(k, r, c):
+                            candidates.append((k, r, c))
+            for k, r, c in candidates:
+                if removable(k, r, c):
+                    m[k, r, c] = 0
+                    changed = True
+    return m
+
+
 def _expand_labels(labels: np.ndarray, distance: float, z_aspect: float) -> np.ndarray:
     """``expandLabels``: a Dijkstra from every labelled voxel at once over the
     6-neighbourhood (a z step costs z_aspect, the planes being that much
@@ -1985,20 +2134,21 @@ _CLASSIC = StepSpec(
     "classic",
     {"channel": 0, "denoise": "None", "diffusion_iterations": 5, "diffusion_k": 0.1,
      "enhance": "None", "enhance_sigma": 2.0, "enhance_sigma_max": 6.0, "enhance_scales": 4,
-     "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
+     "background": "Top-hat (box)", "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
      "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5,
      "hysteresis": False, "hysteresis_ratio": 0.5,
      "refine": "None", "refine_iterations": 20, "refine_smoothing": 1,
      "opening": 1, "fill_holes": True, "fill_holes_3d": False, "hole_max_voxels": 0,
      "post": "Watershed (distance)", "seeds": "H-maxima", "seed_distance": 8.0, "seed_depth": 2.0,
      "blob_radius": 4.0, "blob_radius_max": 12.0, "blob_scales": 5, "min_voxels": 20,
-     "max_voxels": 0, "min_fill": 0.0, "max_elongation": 0.0, "expand": 0.0, "drop_border": False,
+     "max_voxels": 0, "min_fill": 0.0, "max_elongation": 0.0, "expand": 0.0, "skeleton": False, "drop_border": False,
      "class_name": "object"},
     choices={"method": ("Otsu", "Triangle", "Li", "Yen", "Isodata", "Multi-Otsu", "Manual", "Percentile",
                         "Local mean", "Local contrast"),
              "denoise": ("None", "Median 3x3", "Anisotropic diffusion"),
              "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)", "Neurites (Meijering)"),
              "refine": ("None", "Active contour (Chan-Vese)"),
+             "background": ("Top-hat (box)", "Rolling ball"),
              "seeds": ("Distance maxima", "H-maxima", "Blob centres (LoG)"),
              "post": ("Watershed (distance)", "Watershed (gradient)", "Connected components")},
     aliases={"input_channel": "channel", "minVoxels": "min_voxels"})
@@ -2018,7 +2168,8 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     refine_iterations, refine_smoothing), the gradient watershed, the shape
     filters max_voxels, min_fill, max_elongation and drop_border, the Yen and
     Isodata thresholds, the Meijering neurite enhancement, a 3D hole fill
-    (fill_holes_3d, hole_max_voxels) and label expansion (expand)."""
+    (fill_holes_3d, hole_max_voxels), label expansion (expand), the rolling
+    ball background (background) and centrelines (skeleton)."""
     c = _channel_index(params, "channel", meta, a.shape[0])
     denoise = _choice(params.get("denoise"), _CLASSIC.choices["denoise"], "None")
     diffusion_iterations = _int(params, "diffusion_iterations", 5)
@@ -2027,6 +2178,7 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     enhance_sigma = _float(params, "enhance_sigma", 2.0)
     enhance_sigma_max = _float(params, "enhance_sigma_max", 6.0)
     enhance_scales = _int(params, "enhance_scales", 4)
+    background = _choice(params.get("background"), _CLASSIC.choices["background"], "Top-hat (box)")
     tophat = _int(params, "tophat", 0)
     sigma = _float(params, "sigma", 1.0)
     method = _choice(params.get("method"), _CLASSIC.choices["method"], "Otsu")
@@ -2049,6 +2201,7 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     min_fill = _float(params, "min_fill", 0.0)
     max_elongation = _float(params, "max_elongation", 0.0)
     drop_border = _bool(params, "drop_border", False)
+    skeleton = _bool(params, "skeleton", False)
     shape_filters = max_voxels > 0 or min_fill > 0.0 or max_elongation > 0.0 or drop_border
     seeds = _choice(params.get("seeds"), _CLASSIC.choices["seeds"], "H-maxima")
     seed_distance = _float(params, "seed_distance", 8.0)
@@ -2079,7 +2232,11 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
             pl = volume[z]
             if enhance == "Blobs (DoG)":
                 pl = _dog_plane(pl, enhance_sigma)
-            planes.append(_filter_plane(pl, tophat, sigma))
+            if background == "Rolling ball" and tophat > 0:
+                pl = _rolling_ball_plane(pl, float(tophat))
+                planes.append(_filter_plane(pl, 0, sigma))
+            else:
+                planes.append(_filter_plane(pl, tophat, sigma))
         work = np.stack(planes)
         low = None
         if method in ("Local mean", "Local contrast"):
@@ -2126,6 +2283,8 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
             labels[t] = _filter_labels_by_shape(labels[t], max_voxels, min_fill, max_elongation, drop_border)
         if expand > 0.0:
             labels[t] = _expand_labels(labels[t], expand, z_aspect)
+        if skeleton:
+            labels[t] = np.where(_skeletonize_3d(labels[t] > 0) > 0, labels[t], 0)
         total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,

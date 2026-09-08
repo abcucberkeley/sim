@@ -236,12 +236,41 @@ namespace sirius::app {
     // clearly above. Returns the number of voxels kept.
     Index hysteresisMask(const std::uint8_t* high, const std::uint8_t* low, Index z, Index y, Index x, std::uint8_t* out);
 
+    // Rolling-ball background, subtracted in place from one plane.
+    //
+    // A ball of `radius` is rolled along the underside of the intensity
+    // surface and the surface its top traces is the background: a grey opening
+    // with a hemispherical structuring element, which follows a curved,
+    // uneven background where the box top-hat can only follow a flat one.
+    // Everything narrower than the ball survives.
+    //
+    // The ball is run on a decimated copy and the background interpolated back
+    // up, as ImageJ does, because a full-resolution ball of radius r costs
+    // (2r+1)^2 per pixel: the shrink factor is radius / 10, capped at 8, and a
+    // radius under 15 runs at full resolution.
+    void rollingBallPlane(float* plane, Index y, Index x, double radius, std::vector<float>& scratch);
+
     // Fill background enclosed by foreground in 3D: every 0-component that
     // does not reach the volume border becomes 1, unless it is larger than
     // `maxVoxels` (0 = no limit). The per-plane fill cannot close a cavity
     // that no single plane encloses, which is most of them in a stack.
     // Returns the number of voxels filled.
     Index fillHoles3D(std::uint8_t* mask, Index z, Index y, Index x, Index maxVoxels);
+
+    // Thin a binary volume to its centrelines, in place.
+    //
+    // Topological thinning: border voxels are deleted, one of the six
+    // directions at a time, but only where deleting one changes neither the
+    // object's connectivity nor the background's -- a "simple" point, which
+    // here is tested directly (one 26-connected component of the object in the
+    // 26-neighbourhood, one 6-connected component of the background in the
+    // 18-neighbourhood touching the centre) rather than through a lookup
+    // table. Voxels with a single neighbour are kept, so a curve is thinned to
+    // a line instead of eroded away. What is left is one voxel thick, runs
+    // down the middle of the structure, and has the same topology as it had:
+    // the centreline of a filament, and the length of one measured on it.
+    // Returns the number of voxels that remain.
+    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x);
 
     // Grow every label outwards into the background, up to `distance` voxels
     // measured in x / y pixels -- a step in z costs `zAspect` of them, the
