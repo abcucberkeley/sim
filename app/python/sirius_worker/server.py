@@ -78,7 +78,7 @@ from .steps import workbench
 log = logging.getLogger("sirius_worker")
 
 # kinds served through run_step plus the two with their own tensor contracts
-_SPECIAL_KINDS = ("torch_segment", "sim", "btrack")
+_SPECIAL_KINDS = ("torch_segment", "sim", "btrack", "skimage_seg")
 
 
 class _Cancelled(Exception):
@@ -542,6 +542,16 @@ class WorkerServer:
                                       progress=progress, cancelled=cancelled)
             check()
             return {"channels": int(prob.shape[0]), "device": device}, {"prob": prob}
+
+        if kind == "skimage_seg":
+            # the scikit-image methods the application does not implement
+            # natively: they take a volume and hand back instance labels
+            from . import skimage_seg
+
+            volume = _tensor(tensors, "input", 3)
+            labels, info = skimage_seg.run(volume, p, progress=progress, cancelled=cancelled)
+            check()
+            return {**_jsonable(info), "device": "cpu"}, {"labels": np.ascontiguousarray(labels, dtype=np.uint32)}
 
         if kind == "btrack":
             # Bayesian tracking: the labels go over as they are and come back

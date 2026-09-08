@@ -29,6 +29,7 @@ namespace sirius::app {
             &makeTorchSegmentationOperation,
             &makeThresholdOperation,
             &makeClassicalSegmentationOperation,
+            &makeSkimageSegmentationOperation,
             &makeLabelCleanupOperation,
             &makeTrackOperation,
         };

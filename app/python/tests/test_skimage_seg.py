@@ -1,0 +1,106 @@
+"""The worker's scikit-image segmentation methods: every method returns dense
+instance labels of the right shape, the seeded ones say so when nothing seeded,
+and a bad method name is refused rather than guessed at."""
+
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from sirius_worker import skimage_seg  # noqa: E402
+
+AVAILABLE, WHY = skimage_seg.available()
+
+
+def two_balls(z=8, y=32, x=32):
+    """Two well separated bright balls on a dark ground, with a little noise."""
+    volume = np.zeros((z, y, x), dtype=np.float32)
+    zz, yy, xx = np.ogrid[:z, :y, :x]
+    for cz, cy, cx in ((4, 10, 10), (4, 22, 22)):
+        r2 = (zz - cz) ** 2 * 4.0 + (yy - cy) ** 2 + (xx - cx) ** 2
+        volume[r2 <= 36] = 1.0
+    volume += np.random.default_rng(0).normal(0.0, 0.02, volume.shape).astype(np.float32)
+    return volume
+
+
+@unittest.skipUnless(AVAILABLE, WHY)
+class TestMethods(unittest.TestCase):
+    def setUp(self):
+        self.volume = two_balls()
+
+    def test_every_method_returns_labels_of_the_right_shape(self):
+        for method in skimage_seg.METHODS:
+            params = {"method": method, "seed_depth": 1.0, "n_segments": 20, "iterations": 5,
+                      "min_voxels": 5, "scale": 50.0, "min_size": 5}
+            labels, info = skimage_seg.run(self.volume, params)
+            self.assertEqual(labels.shape, self.volume.shape, method)
+            self.assertEqual(labels.dtype, np.uint32, method)
+            self.assertEqual(info["method"], method)
+            self.assertEqual(int(info["labels"]), int(labels.max()), method)
+            # dense: 1..n with nothing skipped
+            present = np.unique(labels)
+            present = present[present > 0]
+            self.assertEqual(list(present), list(range(1, int(labels.max()) + 1)), method)
+
+    def test_the_random_walker_separates_two_objects(self):
+        labels, info = skimage_seg.run(self.volume, {"method": "Random walker", "seed_depth": 1.0, "min_voxels": 20})
+        self.assertGreaterEqual(int(info["seeds"]), 2)
+        self.assertGreaterEqual(int(labels.max()), 2)
+        # the two centres belong to different objects
+        self.assertNotEqual(int(labels[4, 10, 10]), int(labels[4, 22, 22]))
+        self.assertNotEqual(int(labels[4, 10, 10]), 0)
+
+    def test_a_seeded_method_says_when_nothing_seeded_it(self):
+        flat = np.zeros((4, 8, 8), dtype=np.float32)
+        labels, info = skimage_seg.run(flat, {"method": "Random walker"})
+        self.assertEqual(int(labels.max()), 0)
+        self.assertIn("note", info)
+        self.assertEqual(int(info["seeds"]), 0)
+
+    def test_felzenszwalb_says_it_works_a_plane_at_a_time(self):
+        labels, info = skimage_seg.run(self.volume, {"method": "Superpixels (Felzenszwalb)", "scale": 50.0,
+                                                     "min_size": 5, "min_voxels": 1})
+        self.assertIn("2D method", info["note"])
+        # no piece spans two planes
+        for value in np.unique(labels):
+            if value == 0:
+                continue
+            planes = np.unique(np.nonzero(labels == value)[0])
+            self.assertEqual(planes.size, 1, f"label {value} spans {planes}")
+
+    def test_small_objects_are_dropped(self):
+        loose = {"method": "Superpixels (SLIC)", "n_segments": 30, "min_voxels": 1}
+        strict = {**loose, "min_voxels": 400}
+        many, _ = skimage_seg.run(self.volume, loose)
+        few, _ = skimage_seg.run(self.volume, strict)
+        self.assertGreater(int(many.max()), int(few.max()))
+
+    def test_a_manual_threshold_is_used_instead_of_otsu(self):
+        # nothing is above 5.0, so the mask is empty and nothing can seed
+        labels, info = skimage_seg.run(self.volume, {"method": "Random walker", "threshold": 5.0})
+        self.assertEqual(int(labels.max()), 0)
+        self.assertEqual(int(info["seeds"]), 0)
+
+
+class TestGuards(unittest.TestCase):
+    def test_an_unknown_method_is_refused(self):
+        with self.assertRaises(skimage_seg.SkimageError) as caught:
+            skimage_seg.run(np.zeros((2, 4, 4), np.float32), {"method": "Magic"})
+        self.assertIn("unknown method", str(caught.exception))
+
+    @unittest.skipUnless(AVAILABLE, WHY)
+    def test_a_volume_has_to_be_three_dimensional(self):
+        with self.assertRaises(skimage_seg.SkimageError) as caught:
+            skimage_seg.run(np.zeros((4, 4), np.float32), {"method": "Superpixels (SLIC)"})
+        self.assertIn("(z, y, x)", str(caught.exception))
+
+    def test_availability_reports_a_reason_when_it_is_missing(self):
+        ok, why = skimage_seg.available()
+        self.assertEqual(ok, why == "")
+        if not ok:
+            self.assertIn("scikit-image", why)

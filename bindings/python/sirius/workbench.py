@@ -3103,6 +3103,7 @@ _UNSUPPORTED = {
     "decon": "Richardson-Lucy deconvolution", "deskew": "deskew + rotate",
     "volrec": "volume reconstruction (a display-level rendering; it also resamples the grid)",
     "stitch": "tile stitching", "register": "registration",
+    "skimage_seg": "the scikit-image methods (they run in the worker, not here)",
 }
 # Steps run_pipeline skips: Load is the dataset loader itself.
 _PASSTHROUGH = {"load"}

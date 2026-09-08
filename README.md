@@ -380,6 +380,17 @@ at the root, so many runs accumulate into one training set instead of overwritin
 other. The assistant tool `export_training_data` does the same, for generating labels
 in bulk from the classical steps.
 
+**scikit-image segmentation**: a second segmentation step for the methods that
+library has and this one does not implement natively — a seeded random walker, a
+geodesic (edge-driven) active contour, SLIC and Felzenszwalb superpixels, and a
+compactness-constrained watershed. It runs in the Python worker against
+`scikit-image` and hands back instance labels, so everything downstream treats it
+like any other segmentation. Classical segmentation is still the first thing to
+reach for: it needs nothing installed, runs in-process and is mirrored voxel for
+voxel in `sirius.workbench`. This step is for when the classical recipe has
+actually failed — the random walker in particular holds a boundary too weak or
+too broken for a threshold.
+
 **Session recording**: File ▸ Record session… writes what you do to a JSON-lines
 file, one event per line, flushed as it goes so a recording survives a crash. The
 header carries the dataset and the pipeline; then come `dataset`, `step_added`,
