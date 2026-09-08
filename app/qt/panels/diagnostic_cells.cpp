@@ -235,7 +235,10 @@ namespace sirius::app {
             ymin = std::min(ymin, v);
             ymax = std::max(ymax, v);
         }
-        if (!std::isfinite(ymin)) { ymin = 0.0; ymax = 1.0; }
+        if (!std::isfinite(ymin)) {
+            ymin = 0.0;
+            ymax = 1.0;
+        }
         if (!c.logY) ymin = std::min(ymin, 0.0);
         if (ymax <= ymin) ymax = ymin + 1.0;
         auto toX = [&](double x) { return plot.left() + (x - xmin) / (xmax - xmin) * plot.width(); };
@@ -491,8 +494,8 @@ namespace sirius::app {
         if (!names.isEmpty()) return names;
         switch (kind) {
             case DiagnosticsKind::Sim:
-                return {QStringLiteral("Raw spectrum"), QStringLiteral("Separated bands"), QStringLiteral("Shifted & stitched"),
-                        QStringLiteral("Result spectrum")};
+                return {QStringLiteral("Raw spectrum"), QStringLiteral("Separated bands"),
+                        QStringLiteral("Wiener-filtered bands"), QStringLiteral("Result spectrum")};
             case DiagnosticsKind::Deconvolve: return {QStringLiteral("Convergence")};
             case DiagnosticsKind::Contrast: return {QStringLiteral("Histograms")};
             case DiagnosticsKind::Segment: return {QStringLiteral("Cleanup")};
@@ -531,8 +534,8 @@ namespace sirius::app {
             case DiagnosticsKind::Sim: {
                 static const char* kPlaceholders[4][3] = {
                     {"Raw FFT · phase 1", "Raw FFT · phase 2", "Raw FFT · phase 3"},
-                    {"Band · angle 1", "Band · angle 2", "Band · angle 3"},
-                    {"Stitched · angle 1", "Stitched · angle 2", "Stitched · angle 3"},
+                    {"Order 1 · angle 1", "Order 1 · angle 2", "Order 1 · angle 3"},
+                    {"Filtered order 1 · angle 1", "Filtered order 1 · angle 2", "Filtered order 1 · angle 3"},
                     {"Widefield", "SIM result", "Difference"},
                 };
                 const int t = std::clamp(tab, 0, 3);

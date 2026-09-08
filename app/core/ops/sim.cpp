@@ -327,8 +327,9 @@ namespace sirius::app {
                 // Capturing the band spectra keeps two complex volumes covering
                 // every direction and band -- gigabytes on a full-size stack --
                 // so it is only done for small ones. When it is skipped the
-                // reason is reported, rather than the two tabs quietly going
-                // missing with nothing said.
+                // reason goes in the warnings, which is what the SIM parameter
+                // panel renders; a fact would be built and never shown, the
+                // panel drawing only images, the fit table and the footer.
                 const bool capture = input.meta.dims.y * input.meta.dims.x <= 512 * 512 && sections <= 64 * perPlane;
                 std::string captureNote;
                 if (!capture) {
@@ -337,8 +338,9 @@ namespace sirius::app {
                                          static_cast<double>(input.meta.dims.y) * static_cast<double>(input.meta.dims.x) * 16.0;
                     char buf[256];
                     std::snprintf(buf, sizeof buf,
-                                  "not captured: the band spectra are kept only for stacks up to 512 × 512 and 64 z-cycles "
-                                  "(this one would hold about %.1f GB). Crop or bin to see them.",
+                                  "The separated and Wiener-filtered band spectra are kept only for stacks up to 512 × 512 "
+                                  "and 64 z-cycles, so those two tabs are missing here: capturing them would hold about "
+                                  "%.1f GB. Crop or bin the stack to see them.",
                                   bytes / (1024.0 * 1024.0 * 1024.0));
                     captureNote = buf;
                 }
@@ -417,7 +419,7 @@ namespace sirius::app {
                 }
                 d.tabs.push_back(std::move(rawTab));
 
-                // --- Separated bands / Shifted & stitched (captured spectra)
+                // --- Separated bands / Wiener-filtered bands (captured spectra)
                 if (r.diagnostics.captured) {
                     DiagnosticTab sepTab{"Separated bands", {}};
                     // Named for what is drawn: one band per direction after the
@@ -444,7 +446,7 @@ namespace sirius::app {
                     if (!sepTab.images.empty()) d.tabs.push_back(std::move(sepTab));
                     if (!filtTab.images.empty()) d.tabs.push_back(std::move(filtTab));
                 }
-                if (!captureNote.empty()) d.facts.push_back({"Band spectra", captureNote});
+                if (!captureNote.empty()) d.warnings.push_back(captureNote);
 
                 // --- Result spectrum: widefield vs SIM vs difference
                 {
@@ -523,6 +525,10 @@ namespace sirius::app {
                                                                                   : "none",
                                   gain);
                     d.footer = footer;
+                    // the empty tabs are in this dock, so the reason belongs
+                    // here too: the warning goes to the parameter panel, which
+                    // is a scroll away from where the gap is noticed
+                    if (!captureNote.empty()) d.footer += " · band spectra not captured (see the step's warning)";
                     d.summary = summary(params, input.meta);
                 }
                 return d;

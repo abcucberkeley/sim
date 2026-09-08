@@ -256,19 +256,31 @@ TEST_CASE("SIM reconstructs the bundled stack from a parameter file and reports 
         bad.dims.z = 134;
         CHECK_FALSE(sim.validate(sp, bad).ok());
     }
-    SECTION("Manual mode needs one angle per direction") {
+    SECTION("Manual mode needs one angle per direction, in the degrees the table reports") {
         ParamSet m = sim.defaults();
         m.set("mode", std::string("Manual"));
         CHECK_FALSE(sim.validate(m, loaded.meta).ok());
-        m.set("k0_angles", std::vector<double>{0.8043, 1.8555, -0.2388});
-        CHECK(sim.validate(m, loaded.meta).ok());
+        m.set("k0_angles", std::vector<double>{46.08, 106.31, -13.68});
+        m.set("otf", (kData / "otf.tif").string());
+        REQUIRE(sim.validate(m, loaded.meta).ok());
+        // Manual mode takes the angles as given, so the fit table reports them
+        // straight back: the one place the degrees the form asks for and the
+        // radians the library wants have to meet. Feeding radians here (0.8043
+        // and the rest) reports 18°, 6°, -14° instead.
+        const StepOutput manual = sim.run(loaded.asInput(), m, prog.ctx);
+        REQUIRE(manual.diagnostics.table.has_value());
+        const std::vector<std::vector<std::string>>& rows = manual.diagnostics.table->rows;
+        REQUIRE(rows.size() >= 3);
+        CHECK(rows[0][0] == "46°");
+        CHECK(rows[1][0] == "106°");
+        CHECK(rows[2][0] == "-14°");
     }
     SECTION("the theoretical OTF works without a file") {
         ParamSet e = sim.defaults();
         e.set("linespacing_um", 0.2035);
         e.set("na", 1.42);
         e.set("nimm", 1.515);
-        e.set("k0_start_angle", 0.8043);
+        e.set("k0_start_angle", 46.08);   // degrees
         REQUIRE(sim.validate(e, loaded.meta).ok());
         const StepOutput ideal = sim.run(loaded.asInput(), e, prog.ctx);
         CHECK(ideal.array->dims() == predicted.dims);
