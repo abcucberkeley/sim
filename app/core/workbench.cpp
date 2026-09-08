@@ -421,6 +421,29 @@ namespace sirius::app {
         return o;
     }
 
+    void Workbench::startRecording(const std::string& path) {
+        nlohmann::json header{{"application", "sirius"}};
+        if (hasDataset()) {
+            header["dataset"] = datasetMeta_.sourcePath;
+            header["dims"] = datasetMeta_.dims.toString();
+        }
+        header["pipeline"] = pipeline_.toJson();
+        session_.start(path, header);
+        logLine("Recording this session to " + path);
+        notify(&Observer::historyChanged);
+    }
+
+    void Workbench::stopRecording() {
+        if (!session_.recording()) return;
+        const std::string where = session_.path().string();
+        const std::uint64_t lines = session_.lines();
+        session_.stop();   // writes the "stopped" line
+        logLine("Stopped recording: " + std::to_string(lines) + " events in " + where);
+        notify(&Observer::historyChanged);
+    }
+
+    void Workbench::recordEvent(const std::string& event, const nlohmann::json& fields) { session_.record(event, fields); }
+
     void Workbench::openDataset(const std::string& path, const OpenOptions& options) {
         if (refuseIfRunning("open a dataset")) throw std::runtime_error("A run is in progress: cancel it or wait before opening a dataset.");
         OpenResult opened = sirius::app::openDataset(path, options);   // throws with a message
@@ -434,6 +457,10 @@ namespace sirius::app {
         installDataset(opened.source, opened.meta, "opened " + opened.meta.format);
         pushEdit("Open " + datasetMeta_.name, before);
         logLine("Opened " + path + " · " + datasetMeta_.shapeString() + " · " + opened.metadataSummary);
+        session_.record("dataset", {{"path", path},
+                                    {"dims", datasetMeta_.dims.toString()},
+                                    {"voxel_um", {datasetMeta_.voxelUm[0], datasetMeta_.voxelUm[1], datasetMeta_.voxelUm[2]}},
+                                    {"format", datasetMeta_.format}});
         notify(&Observer::datasetChanged);
         notify(&Observer::pipelineChanged);
         notifyStep(0);
@@ -513,6 +540,7 @@ namespace sirius::app {
             }
         }
         selected_ = viewed_ = index;
+        session_.record("step_added", {{"index", index}, {"kind", kind}, {"params", pipeline_.at(index).params.toJson()}});
         onStepSelected(index);
         pushEdit("Add " + pipeline_.at(index).name, before);
         logLine("Added step " + Step::number(index) + " " + pipeline_.at(index).name);
@@ -537,6 +565,7 @@ namespace sirius::app {
         clampSelection();
         pushEdit("Remove " + name, before);
         logLine("Removed step " + name);
+        session_.record("step_removed", {{"index", index}, {"name", name}});
         notify(&Observer::pipelineChanged);
         notify(&Observer::selectionChanged);
         notify(&Observer::viewedStepChanged);
@@ -591,6 +620,13 @@ namespace sirius::app {
         if (pipeline_.at(index).params == ParamSet::fromJson(before.pipeline["steps"][static_cast<std::size_t>(index)]["params"]))
             return;   // nothing changed after coercion
         pushEdit(label.empty() ? "Edit " + pipeline_.at(index).name : label, before, mergeKey);
+        // the values themselves, not just the label: a reader wants what was
+        // set, on which kind of step, not a sentence about it
+        session_.record("params", {{"index", index},
+                                   {"kind", pipeline_.at(index).kind},
+                                   {"label", label},
+                                   {"from", before.pipeline["steps"][static_cast<std::size_t>(index)]["params"]},
+                                   {"to", pipeline_.at(index).params.toJson()}});
         notifyStep(index);
         notify(&Observer::outputsChanged);
     }
@@ -1150,6 +1186,18 @@ namespace sirius::app {
                     char buf[32];
                     std::snprintf(buf, sizeof buf, "%.1f s", r.seconds);
                     logLine("Step " + name + " · " + buf + (r.note.empty() ? "" : " · " + r.note));
+                    if (session_.recording()) {
+                        nlohmann::json entry{{"index", index}, {"seconds", r.seconds}, {"note", r.note}};
+                        if (index >= 0) {
+                            entry["kind"] = pipeline_.at(index).kind;
+                            entry["params"] = pipeline_.at(index).params.toJson();
+                            if (auto out = output(index)) {
+                                entry["dims"] = out->meta.dims.toString();
+                                if (out->labels && !out->labels->empty()) entry["labels"] = out->labels->stats().size();
+                            }
+                        }
+                        session_.record("step_ran", entry);
+                    }
                     break;
                 }
                 case StepReport::State::Skipped: logLine("Step " + name + " skipped"); break;
@@ -1236,6 +1284,7 @@ namespace sirius::app {
     void Workbench::recordLabelDiff(const std::string& label, StepId id, const std::shared_ptr<LabelVolume>& labels,
                                     LabelDiff diff) {
         if (diff.empty() || !labels) return;
+        session_.record("label_edit", {{"what", label}, {"voxels", diff.indices.size()}, {"t", diff.t}});
         labels->updateStats(diff);
         pushLabelCommand(label, {}, id, labels, std::make_shared<LabelDiff>(std::move(diff)));
         notifyLabels(id);
@@ -1277,6 +1326,7 @@ namespace sirius::app {
         const std::uint32_t label = erase ? 0u : view_.selectedLabel;
         LabelDiff diff = labels->paint(view_.t, z, y, x, radius, zRadius, label, erase ? view_.selectedLabel : 0u);
         if (diff.empty()) return;
+        session_.record("paint", {{"z", z}, {"y", y}, {"x", x}, {"t", view_.t}, {"erase", erase}, {"label", label}, {"brush_px", view_.brushPx}, {"paint_3d", view_.paint3d}, {"voxels", diff.indices.size()}});
         // One stroke = one undo entry: the accumulated diff replaces the entry
         // pushed by the previous mouse move (History merges by key). The
         // statistics wait for endPaintStroke() so every move stays cheap.

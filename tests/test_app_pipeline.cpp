@@ -1077,6 +1077,76 @@ TEST_CASE("A run job publishes its results only once it has finished", "[app][wo
     }
 }
 
+TEST_CASE("A recorded session holds what the user did, in order", "[app][workbench][session]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 8, 8));
+    wb.setBackend(Backend::Cpu);
+    while (wb.pipeline().size() > 1) wb.removeStep(1);
+    const std::filesystem::path log = scratch.dir / "session.jsonl";
+
+    CHECK_FALSE(wb.recording());
+    wb.startRecording(log.string());
+    CHECK(wb.recording());
+    wb.addStep("test_scale");
+    wb.setStepParam(1, "factor", 3.0);
+    wb.setStepParam(1, "factor", 5.0);
+    auto job = runSync(wb);
+    REQUIRE(job->succeeded());
+    wb.removeStep(1);
+    wb.stopRecording();
+    CHECK_FALSE(wb.recording());
+
+    std::ifstream in(log);
+    REQUIRE(in.good());
+    std::vector<nlohmann::json> events;
+    for (std::string line; std::getline(in, line);)
+        if (!line.empty()) events.push_back(nlohmann::json::parse(line));
+    REQUIRE(events.size() >= 6);
+
+    auto kinds = [&] {
+        std::vector<std::string> out;
+        for (const nlohmann::json& e : events) out.push_back(e.value("event", std::string()));
+        return out;
+    }();
+    auto has = [&](const std::string& what) { return std::find(kinds.begin(), kinds.end(), what) != kinds.end(); };
+    CHECK(kinds.front() == "session");
+    CHECK(kinds.back() == "stopped");
+    CHECK(has("step_added"));
+    CHECK(has("params"));
+    CHECK(has("step_ran"));
+    CHECK(has("step_removed"));
+
+    // the record carries the values, not a sentence about them: the second
+    // parameter change has to say 3 -> 5 so a reader can learn from it
+    const nlohmann::json* second = nullptr;
+    for (const nlohmann::json& e : events)
+        if (e.value("event", std::string()) == "params") second = &e;   // the last one
+    REQUIRE(second != nullptr);
+    CHECK(second->at("kind") == "test_scale");
+    CHECK(second->at("from").at("factor").get<double>() == 3.0);
+    CHECK(second->at("to").at("factor").get<double>() == 5.0);
+
+    // every line is timestamped and ordered
+    double previous = -1.0;
+    for (const nlohmann::json& e : events) {
+        const double t = e.value("t", -1.0);
+        CHECK(t >= previous);
+        previous = t;
+    }
+
+    SECTION("nothing is written once recording stops") {
+        const std::uintmax_t before = std::filesystem::file_size(log);
+        wb.addStep("test_scale");
+        wb.setStepParam(1, "factor", 9.0);
+        CHECK(std::filesystem::file_size(log) == before);
+    }
+    SECTION("an unwritable path is reported, not swallowed") {
+        CHECK_THROWS(wb.startRecording((scratch.dir / "no" / "such" / "\0bad").string()));
+    }
+}
+
 TEST_CASE("Workbench loads pipelines and the example without losing the dataset", "[app][workbench]") {
     registerTestOps();
     Scratch scratch;

@@ -33,15 +33,29 @@
 #include "core/executor.hpp"
 #include "core/history.hpp"
 #include "core/labels.hpp"
+#include "core/session_log.hpp"
 #include "core/operation.hpp"
 #include "core/pipeline.hpp"
 #include "core/rpc.hpp"
 
 namespace sirius::app {
 
-    enum class ViewMode { Ortho, Volume, Compare };
-    enum class ViewerTool { Navigate, Probe, Measure, Roi, Paint };
-    enum class PaintTool { Brush, Erase, Fill, Pick, Merge, Split, Delete, Lasso };
+    enum class ViewMode { Ortho,
+                          Volume,
+                          Compare };
+    enum class ViewerTool { Navigate,
+                            Probe,
+                            Measure,
+                            Roi,
+                            Paint };
+    enum class PaintTool { Brush,
+                           Erase,
+                           Fill,
+                           Pick,
+                           Merge,
+                           Split,
+                           Delete,
+                           Lasso };
 
     const char* toString(ViewMode m) noexcept;       // "ortho" "3d" "compare"
     const char* toString(ViewerTool t) noexcept;     // "nav" "probe" "measure" "roi" "paint"
@@ -85,7 +99,10 @@ namespace sirius::app {
         std::atomic<int> stepIndex{-1};
         std::mutex mutex;
         std::string message;                    // guarded by mutex
-        std::string messageCopy() { std::lock_guard<std::mutex> g(mutex); return message; }
+        std::string messageCopy() {
+            std::lock_guard<std::mutex> g(mutex);
+            return message;
+        }
         void set(double f, int step, const std::string& m) {
             fraction.store(f);
             stepIndex.store(step);
@@ -128,11 +145,26 @@ namespace sirius::app {
         void execute();
         bool finished() const noexcept { return finished_.load(std::memory_order_acquire); }
         bool succeeded() const { return finished() && error_.empty(); }
-        bool wasCancelled() const { requireFinished("wasCancelled"); return cancelledResult_; }
-        const std::string& error() const { requireFinished("error"); return error_; }
-        const std::vector<StepReport>& reports() const { requireFinished("reports"); return reports_; }
-        std::shared_ptr<const StepOutput> output() const { requireFinished("output"); return output_; }
-        double seconds() const { requireFinished("seconds"); return seconds_; }
+        bool wasCancelled() const {
+            requireFinished("wasCancelled");
+            return cancelledResult_;
+        }
+        const std::string& error() const {
+            requireFinished("error");
+            return error_;
+        }
+        const std::vector<StepReport>& reports() const {
+            requireFinished("reports");
+            return reports_;
+        }
+        std::shared_ptr<const StepOutput> output() const {
+            requireFinished("output");
+            return output_;
+        }
+        double seconds() const {
+            requireFinished("seconds");
+            return seconds_;
+        }
 
     private:
         friend class Workbench;
@@ -192,6 +224,20 @@ namespace sirius::app {
 
         // --- dataset ---------------------------------------------------------
         void openDataset(const std::string& path, const OpenOptions& options = {});
+
+        // --- session recording ------------------------------------------------
+        // Writes what the user does to a JSON-lines file: the dataset, every
+        // step and parameter change with its old and new value, what each run
+        // produced, and every label correction. Meant to be replayed, or used
+        // as training data for a model that learns which settings a person
+        // reaches for on which data.
+        void startRecording(const std::string& path);
+        void stopRecording();
+        bool recording() const { return session_.recording(); }
+        std::string recordingPath() const { return session_.path().string(); }
+        std::uint64_t recordedLines() const { return session_.lines(); }
+        // Anything the caller wants in the record (a UI action, an export).
+        void recordEvent(const std::string& event, const nlohmann::json& fields = nlohmann::json::object());
         void setDataset(std::shared_ptr<ArraySource> source);   // tests, scripted data
         void closeDataset();
         bool hasDataset() const noexcept { return static_cast<bool>(source_); }
@@ -378,6 +424,7 @@ namespace sirius::app {
         std::string pipelinePath_;
         Executor executor_;
         History history_;
+        SessionLog session_;
         ViewState view_;
         int selected_ = 1;
         int viewed_ = 1;

@@ -109,7 +109,10 @@ def parse_spec(spec: str) -> ModelSpec:
             raise ModelError(f"hf spec '{s}': expected hf:<owner>/<repo>[:<filename>]")
         return ModelSpec("hf", repo, filename.strip(), s)
     if low.startswith("cellpose:"):
-        name = s.split(":", 1)[1].strip() or "default"
+        name = s.split(":", 1)[1].strip()
+        if not name:
+            raise ModelError("cellpose spec needs a model name, e.g. cellpose:cpsam; "
+                             "the installed version's names are in the hub dialog")
         return ModelSpec("cellpose", name, "", s)
     if low.startswith("microsam:") or low.startswith("micro-sam:") or low.startswith("micro_sam:"):
         name = s.split(":", 1)[1].strip()
@@ -519,13 +522,6 @@ def _cellpose_is_v4(models) -> bool:
     return any(str(n).startswith("cpsam") for n in getattr(models, "MODEL_NAMES", []) or [])
 
 
-def _cellpose_default(models) -> str:
-    names = list(getattr(models, "MODEL_NAMES", []) or [])
-    if _cellpose_is_v4(models):
-        return names[0]
-    return "cyto3" if "cyto3" in names else (names[0] if names else "cyto")
-
-
 def microsam_model_names() -> List[str]:
     try:
         from micro_sam import util  # type: ignore
@@ -551,7 +547,7 @@ def weights_cached(spec: str) -> Optional[bool]:
     try:
         if ms.family == "cellpose":
             models = _cellpose_models_module()
-            name = _cellpose_default(models) if ms.name in ("", "default") else ms.name
+            name = ms.name
             if os.path.exists(name):
                 return True
             root = Path(str(getattr(models, "MODEL_DIR", Path.home() / ".cellpose" / "models")))
@@ -624,13 +620,10 @@ def family_info(spec: str) -> Dict[str, Any]:
         names = cellpose_model_names() if available else list(CELLPOSE_MODELS)
         info["known_models"] = names
         if available:
-            models = _cellpose_models_module()
-            info["default_model"] = _cellpose_default(models)
             info["version"] = _module_version("cellpose")
-            if ms.name not in ("", "default") and ms.name not in names and not os.path.exists(ms.name) \
+            if ms.name and ms.name not in names and not os.path.exists(ms.name) \
                     and not ms.name.lower().startswith("hf:"):
-                info["warning"] = (f"cellpose {info['version']} has no model '{ms.name}'; it offers " + ", ".join(names) +
-                                   " (cellpose:default picks the built-in one)")
+                info["warning"] = f"cellpose {info['version']} has no model '{ms.name}'; it offers " + ", ".join(names)
     elif ms.family == "microsam":
         info["known_models"] = (microsam_model_names() if available else []) or list(MICROSAM_MODELS)
         if available:
@@ -658,16 +651,16 @@ def _check(cancelled: CancelFn) -> None:
 def _cellpose_model(models, model_name: str, gpu: bool, progress: ProgressFn = None):
     """A CellposeModel for a name, path or hf: spec across Cellpose 3 and 4
     (4 keeps only its own built-in models and would silently fall back)."""
-    name = model_name or "default"
+    name = model_name
+    if not name:
+        raise ModelError("cellpose spec needs a model name, e.g. cellpose:cpsam")
     if name.lower().startswith("hf:") or os.path.exists(name):
         _, path = resolve(name, progress)
         return models.CellposeModel(gpu=gpu, pretrained_model=path)
     names = list(getattr(models, "MODEL_NAMES", []) or [])
-    if name == "default":
-        name = _cellpose_default(models)
     if names and name not in names:
         raise ModelError(f"cellpose {_module_version('cellpose')} has no model '{name}'; it offers " + ", ".join(names) +
-                         " (cellpose:default picks the built-in one)")
+                         "")
     if _cellpose_is_v4(models):
         return models.CellposeModel(gpu=gpu, pretrained_model=name)
     return models.CellposeModel(gpu=gpu, model_type=name)

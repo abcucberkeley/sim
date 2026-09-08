@@ -321,6 +321,7 @@ namespace sirius::app {
         QAction* crosshair = nullptr;
         QAction* labels = nullptr;
         QAction* soloLabel = nullptr;
+        QAction* recordSession = nullptr;
         QAction* scaleBar = nullptr;
         QAction* syncZT = nullptr;
         QAction* backendCuda = nullptr;
@@ -434,6 +435,10 @@ namespace sirius::app {
                                   [this] { exportResultDialog(); });
             exportPython = action(file, QStringLiteral("Export pipeline as Python script…"), QKeySequence(),
                                   [this] { exportPythonScript(); });
+            file->addSeparator();
+            recordSession = action(file, QStringLiteral("Record session…"), QKeySequence(), [this] { toggleRecording(); });
+            recordSession->setStatusTip(QStringLiteral("Write what you do to a JSON-lines file: steps, parameter changes, "
+                                                       "run results and label corrections"));
             exportFigure = action(file, QStringLiteral("Export figure (current view)…"), QKeySequence(Qt::ALT | Qt::CTRL | Qt::Key_E),
                                   [this] { exportFigureImage(); });
             file->addSeparator();
@@ -793,6 +798,10 @@ namespace sirius::app {
             crosshair->setChecked(v.crosshair);
             labels->setChecked(v.labels);
             soloLabel->setChecked(v.soloLabel);
+            if (recordSession)
+                recordSession->setText(w.recording()
+                                           ? QStringLiteral("Stop recording (%1 events)").arg(w.recordedLines())
+                                           : QStringLiteral("Record session…"));
             scaleBar->setChecked(v.scaleBar);
             syncZT->setChecked(v.syncZT);
             backendCuda->setChecked(w.backend() == Backend::Cuda);
@@ -883,6 +892,27 @@ namespace sirius::app {
                 wb().logLine(std::string("Open failed: ") + e.what());
                 QMessageBox::warning(self, QStringLiteral("Open dataset"), QString::fromUtf8(e.what()));
             }
+        }
+
+        // Start or stop the session recording. The file is JSON lines, so it
+        // is appended to and stays readable if the application is killed.
+        void toggleRecording() {
+            if (wb().recording()) {
+                wb().stopRecording();
+                refreshActions();
+                return;
+            }
+            QString path = QFileDialog::getSaveFileName(self, QStringLiteral("Record this session to"),
+                                                        lastDir.isEmpty() ? QString() : lastDir + QStringLiteral("/session.jsonl"),
+                                                        QStringLiteral("Session recording (*.jsonl);;All files (*)"));
+            if (path.isEmpty()) return;
+            if (!path.contains(QLatin1Char('.'))) path += QStringLiteral(".jsonl");
+            try {
+                wb().startRecording(toStd(path));
+            } catch (const std::exception& e) {
+                QMessageBox::warning(self, QStringLiteral("Record session"), QString::fromUtf8(e.what()));
+            }
+            refreshActions();
         }
 
         void savePipelineTo(QString path) {

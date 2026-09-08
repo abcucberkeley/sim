@@ -61,6 +61,8 @@ int main(int argc, char** argv) {
     // their text ("Assistant"), applied once the run (if any) has finished.
     const QCommandLineOption toolOpt(QStringLiteral("tool"), QStringLiteral("Call a tool of the assistant API (JSON, repeatable)"),
                                      QStringLiteral("json"));
+    const QCommandLineOption recordOpt(QStringLiteral("record"), QStringLiteral("Record this session to a JSON-lines file"),
+                                       QStringLiteral("path"));
     const QCommandLineOption dropOpt(QStringLiteral("drop"), QStringLiteral("Act as though this path were dropped on the window (repeatable)"),
                                      QStringLiteral("path"));
     const QCommandLineOption strokeOpt(QStringLiteral("stroke"), QStringLiteral("Drag on the XY pane: x0,y0,x1,y1,moves in voxels (repeatable, after the tools)"),
@@ -72,7 +74,7 @@ int main(int argc, char** argv) {
     const QCommandLineOption askOpt(QStringLiteral("ask"), QStringLiteral("Send a message to the assistant"), QStringLiteral("text"));
     const QCommandLineOption settleOpt(QStringLiteral("settle"), QStringLiteral("Milliseconds to wait before the screenshot (default 600)"),
                                        QStringLiteral("ms"));
-    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt, strokeOpt, wheelOpt, dropOpt});
+    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt, strokeOpt, wheelOpt, dropOpt, recordOpt});
     parser.process(app);
 
     sirius::app::registerBuiltinOperations();
@@ -97,6 +99,14 @@ int main(int argc, char** argv) {
     if (parser.isSet(pipelineOpt)) workbench.loadPlugins(false);
     else QTimer::singleShot(400, &window, [&workbench] { workbench.loadPlugins(false); });
     if (parser.isSet(pipelineOpt)) window.openPipelinePath(parser.value(pipelineOpt));
+    // recording starts before anything scripted happens, so the run is in it
+    if (parser.isSet(recordOpt)) {
+        try {
+            workbench.startRecording(sirius::app::toStd(parser.value(recordOpt)));
+        } catch (const std::exception& e) {
+            qWarning("--record: %s", e.what());
+        }
+    }
     window.show();
     // Opened from inside the event loop so that a dialog it raises (an error
     // box, the folder pattern dialog) does not block the scripting timers.

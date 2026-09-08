@@ -107,7 +107,8 @@ class TestSpecs(unittest.TestCase):
         self.assertEqual((s.family, s.name), ("microsam", "vit_b_lm"))
         self.assertEqual(models.parse_spec("micro-sam:vit_l_lm").family, "microsam")
         self.assertTrue(models.is_family_spec("cellpose:nuclei"))
-        self.assertEqual(models.parse_spec("cellpose:").name, "default")   # the installed version's built-in model
+        with self.assertRaises(models.ModelError):
+            models.parse_spec("cellpose:")   # no default: name the model
         with self.assertRaises(models.ModelError):
             models.parse_spec("microsam:")
         with self.assertRaises(models.ModelError):
@@ -175,7 +176,7 @@ class TestFamilies(unittest.TestCase):
         self.assertIn("vit_b_lm", models.family_info("microsam:vit_b_lm")["known_models"])
 
     def test_family_info_carries_the_install_plan(self):
-        for spec, family in (("cellpose:default", "cellpose"), ("microsam:vit_b_lm", "microsam")):
+        for spec, family in (("cellpose:cpsam", "cellpose"), ("microsam:vit_b_lm", "microsam")):
             info = models.family_info(spec)
             self.assertEqual(info["install"]["installer"], models.install_plan(family)["installer"])
             self.assertIn(info["install"]["installer"], ("pip", "conda"))
@@ -188,23 +189,21 @@ class TestFamilies(unittest.TestCase):
         with self.assertRaises(models.ModelError):
             models.install_plan("file")
 
-    def test_cellpose_default_spec(self):
-        self.assertEqual(models.parse_spec("cellpose:").name, "default")
-        self.assertEqual(models.parse_spec("cellpose:default").text(), "cellpose:default")
-        info = models.family_info("cellpose:default")
-        self.assertEqual(info["model"], "default")
+    def test_a_cellpose_spec_must_name_a_model(self):
+        # there is no default: the caller says which model, so a result can be
+        # traced back to one
+        with self.assertRaises(models.ModelError):
+            models.parse_spec("cellpose:")
+        self.assertEqual(models.parse_spec("cellpose:cpsam").name, "cpsam")
+        info = models.family_info("cellpose:cpsam")
+        self.assertEqual(info["model"], "cpsam")
         if info["available"]:
-            self.assertTrue(info["default_model"])
-            self.assertIn(info["default_model"], info["known_models"])
             self.assertIn("weights_cached", info)
-        else:
-            self.assertIsNone(models.weights_cached("cellpose:default"))
-        # a name the installed version does not have is flagged, not silently remapped
-        if info["available"] and "cyto3" not in info["known_models"]:
-            self.assertIn("cyto3", models.family_info("cellpose:cyto3")["warning"])
-            with self.assertRaises(models.ModelError) as cm:
-                models.run_family("cellpose:cyto3", np.zeros((2, 8, 8), np.float32), {}, "cpu")
-            self.assertIn("cellpose:default", str(cm.exception))
+            names = info["known_models"]
+            if "cyto3" not in names:
+                self.assertIn("cyto3", models.family_info("cellpose:cyto3")["warning"])
+                with self.assertRaises(models.ModelError):
+                    models.run_family("cellpose:cyto3", np.zeros((2, 8, 8), np.float32), {}, "cpu")
 
     def test_prepare_rejects_local_files_and_missing_packages(self):
         with self.assertRaises(models.ModelError):

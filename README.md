@@ -371,6 +371,16 @@ dataset, a folder through the manifest dialog, several image files at once as th
 containing folder, a `*.sirius.toml` as a pipeline, a `.py` in the user-operations
 editor. `--drop <path>` does the same from the command line, for smoke tests.
 
+**Session recording**: File ▸ Record session… writes what you do to a JSON-lines
+file, one event per line, flushed as it goes so a recording survives a crash. The
+header carries the dataset and the pipeline; then come `dataset`, `step_added`,
+`step_removed`, `params` (the whole parameter set before and after, so a reader sees
+`3 → 5`, not "changed"), `step_ran` (index, kind, parameters, output dimensions, label
+count, seconds), `paint` (voxel, brush, label, erase, 3D, voxels touched) and
+`label_edit` (merge, split, delete, fill). The menu entry counts events while it runs;
+`--record out.jsonl` does the same from the command line. This is the record of how a
+person actually reached a mask, which is what a label-generating model has to imitate.
+
 **Folder datasets**: an acquisition saved as one file per channel, tile or time
 point opens as one dataset (File ▸ Open folder as dataset…, or the Folder… button in
 Open). A regular expression with named groups (`channel`, `t`, `tile`, `x`, `y`, `z`)
@@ -398,7 +408,7 @@ The Hugging Face tab searches the Hub, marks gated repositories (an accepted lic
 plus an access token — Token… or Preferences — as for SAM 3), downloads a TorchScript /
 ONNX file with progress into `$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points
 the step at it. The model field also takes `hf:<repo>[:<file>]`, `cellpose:<model>`
-(`default` = the installed version's built-in model) and `microsam:<model_type>` specs
+and `microsam:<model_type>` specs
 directly, which the HPC worker resolves on its own host.
 
 **Backends**: CUDA (when the build has it and a device is present), CPU, or HPC — a
@@ -445,7 +455,7 @@ Command line: `--dataset`, `--pipeline`, `--run`, and for scripting and smoke te
 `--screenshot out.png` (grab the window, and any dialog, after the run and quit),
 `--wheel x,y,steps` and `--stroke x0,y0,x1,y1,moves` (real mouse events on the XY pane,
 in voxels, for zoom / paint timing), `--drop <path>` (as though the path were dropped on
-the window) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
+the window), `--record out.jsonl` (record the session, below) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
 what every pane render, label overlay, paint and stroke costs. `QT_QPA_PLATFORM=offscreen`
 runs without a display (the 3D view then shows a notice: Qt's offscreen platform has no
 OpenGL widgets).

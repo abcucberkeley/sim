@@ -396,11 +396,7 @@ namespace sirius::app {
             const QString current = card.model->currentData().toString();
             QSignalBlocker block(card.model);
             card.model->clear();
-            const std::string defaultModel = info.value("default_model", std::string());
-            if (card.family == QLatin1String("cellpose"))
-                card.model->addItem(defaultModel.empty() ? QStringLiteral("default (built-in model)")
-                                                         : QStringLiteral("default · %1").arg(fromStd(defaultModel)),
-                                    QStringLiteral("default"));
+
             for (const nlohmann::json& m : info.value("known_models", nlohmann::json::array()))
                 if (m.is_string()) card.model->addItem(fromStd(m.get<std::string>()), fromStd(m.get<std::string>()));
             const int keep = card.model->findData(current);
@@ -589,10 +585,10 @@ namespace sirius::app {
             const char* models[6];
         };
         const CardSpec specs[] = {
-            {"cellpose", "Cellpose", "cellpose", "cellpose:default", "Whole cells and nuclei: compact, roughly convex objects, 2D and 3D, any modality. Cellpose 4 ships one "
-                                                                     "built-in model (cellpose:default); Cellpose 3 offers cyto3, nuclei and more. Trained on cells, so on a "
-                                                                     "filament network it returns cell-shaped pieces instead of filaments.",
-             {"default", nullptr}},
+            {"cellpose", "Cellpose", "cellpose", "cellpose:cpsam", "Whole cells and nuclei: compact, roughly convex objects, 2D and 3D, any modality. Name the model: cpsam "
+                                                                   "on Cellpose 4, cyto3 or nuclei on Cellpose 3. Trained on cells, so on a filament network it returns "
+                                                                   "cell-shaped pieces instead of filaments.",
+             {"cpsam", "cpsam_v2", "cyto3", "nuclei", nullptr}},
             {"microsam", "micro-SAM", "micro_sam", "microsam:vit_b_lm", "Segment Anything fine-tuned for microscopy: vit_b_lm / vit_l_lm for light microscopy, "
                                                                         "vit_b_em_organelles for electron microscopy. A generalist for objects an ordinary cell model misses, "
                                                                         "but still an object segmenter: it does not trace filaments either.",
@@ -621,7 +617,7 @@ namespace sirius::app {
             fc.model->setSizeAdjustPolicy(QComboBox::AdjustToContents);
             for (const char* const* m = c.models; *m; ++m) {
                 const QString name = QString::fromUtf8(*m);
-                fc.model->addItem(name == QLatin1String("default") ? QStringLiteral("default (built-in model)") : name, name);
+                fc.model->addItem(name, name);
             }
             fc.model->setToolTip(QStringLiteral("The package's models; the list is read from the installed version"));
             modelRow->addWidget(fc.model, 1);
