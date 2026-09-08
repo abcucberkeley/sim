@@ -1640,10 +1640,11 @@
           "choices": [
             "None",
             "Blobs (DoG)",
-            "Tubes (Frangi)"
+            "Tubes (Frangi)",
+            "Neurites (Meijering)"
           ],
           "default": "None",
-          "help": "What to bring out before the threshold: round objects of one size, or filaments",
+          "help": "What to bring out before the threshold: round objects of one size, tubes of a range of widths, or the thinnest lines of all",
           "key": "enhance",
           "label": "Enhance",
           "read_only": false,
@@ -1714,6 +1715,8 @@
             "Otsu",
             "Triangle",
             "Li",
+            "Yen",
+            "Isodata",
             "Multi-Otsu",
             "Manual",
             "Percentile",
@@ -1870,6 +1873,26 @@
         },
         {
           "advanced": false,
+          "default": false,
+          "help": "Background the object encloses in three dimensions becomes object. A cavity no single plane closes is invisible to the per-plane fill, which is most of them in a stack",
+          "key": "fill_holes_3d",
+          "label": "Fill holes (3D)",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "3D fill: leave cavities larger than this open (0 = fill them all), so a real lumen survives",
+          "key": "hole_max_voxels",
+          "label": "Largest hole",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
           "choices": [
             "Watershed (distance)",
             "Watershed (gradient)",
@@ -1997,6 +2020,18 @@
           "min": 0.0,
           "read_only": false,
           "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 0.0,
+          "help": "Grow every object outwards into the background by this much, nearest object first. Closes the gap an opening or a watershed line left, without letting two objects meet (0 = off)",
+          "key": "expand",
+          "label": "Expand labels",
+          "max": 200.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
         },
         {
           "advanced": false,

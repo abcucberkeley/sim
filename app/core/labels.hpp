@@ -219,11 +219,38 @@ namespace sirius::app {
     // of the original paper. Keeps dim objects Otsu discards.
     float liThreshold(const float* values, Index n);
 
+    // Yen's threshold: the cut that maximises Yen's entropic correlation
+    // criterion on the histogram. Between Otsu and the triangle in practice --
+    // it tolerates a background that outweighs the signal without giving the
+    // whole tail away.
+    float yenThreshold(const float* values, Index n);
+
+    // Isodata (Ridler-Calvard): iterate t = (mean below t + mean above t) / 2
+    // from the image mean until it settles. The oldest of the automatic
+    // thresholds and still a reasonable default on a clean bimodal image.
+    float isodataThreshold(const float* values, Index n);
+
     // Hysteresis: keep every 6-connected component of `low` that contains at
     // least one voxel of `high`, write it to `out` (may alias `low`). A
     // filament that fades below the cut stays whole as long as part of it is
     // clearly above. Returns the number of voxels kept.
     Index hysteresisMask(const std::uint8_t* high, const std::uint8_t* low, Index z, Index y, Index x, std::uint8_t* out);
+
+    // Fill background enclosed by foreground in 3D: every 0-component that
+    // does not reach the volume border becomes 1, unless it is larger than
+    // `maxVoxels` (0 = no limit). The per-plane fill cannot close a cavity
+    // that no single plane encloses, which is most of them in a stack.
+    // Returns the number of voxels filled.
+    Index fillHoles3D(std::uint8_t* mask, Index z, Index y, Index x, Index maxVoxels);
+
+    // Grow every label outwards into the background, up to `distance` voxels
+    // measured in x / y pixels -- a step in z costs `zAspect` of them, the
+    // planes being that much further apart -- nearest label first;
+    // a voxel equidistant from two labels is left as background so the two do
+    // not fuse. What closes the gap an opening or a watershed line left
+    // behind without changing which object a voxel belongs to. Returns the
+    // number of voxels claimed.
+    Index expandLabels(std::uint32_t* labels, Index z, Index y, Index x, double distance, double zAspect);
 
     // Central-difference gradient magnitude of a (z, y, x) volume, with z
     // scaled by `zAspect` so the gradient is physical. The landscape a

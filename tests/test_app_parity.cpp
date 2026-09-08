@@ -166,6 +166,15 @@ namespace {
         // filter that did nothing if both survived it
         {"classic_shape_filter", "classic", {{"channel", 0}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 1}, {"max_voxels", 30}, {"max_elongation", 8.0}}},
         {"classic_shape_fill", "classic", {{"channel", 0}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 1}, {"min_fill", 0.5}}},
+        {"classic_yen", "classic", {{"channel", 0}, {"method", "Yen"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_isodata", "classic", {{"channel", 0}, {"method", "Isodata"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_neurites", "classic", {{"channel", 0}, {"enhance", "Neurites (Meijering)"}, {"enhance_sigma", 1.0}, {"enhance_sigma_max", 3.0}, {"enhance_scales", 3}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        // This fixture's 4 x 9 x 11 volume encloses no cavity, so what the
+        // case is worth is that both sides agree the 3D fill changes nothing.
+        // The fill itself is asserted on volumes built for it in
+        // tests/test_app_labels.cpp.
+        {"classic_holes_3d", "classic", {{"channel", 0}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"fill_holes_3d", true}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_expand", "classic", {{"channel", 0}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}, {"expand", 2.0}}},
         // No "Anisotropic diffusion" case: every step of it evaluates exp(),
         // and the C++ standard library and NumPy do not agree in the last bit.
         // Five iterations later a voxel can land on the other side of the

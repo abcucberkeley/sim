@@ -328,6 +328,74 @@ namespace sirius::app {
             }
         }
 
+        // Meijering neuriteness: the Hessian eigenvalues are mixed
+        // (l_i = (1-a) e_i + a tr H, a = 1/4 in 3D) before the largest by
+        // magnitude is taken, which is what makes it answer to a thin line
+        // rather than to a tube of some width. On neurites and other very thin
+        // filaments it holds together where Frangi, which needs two small
+        // eigenvalues and one large, starts to break up.
+        void meijeringVolume(const float* src, float* dst, Index z, Index y, Index x, double zAspect, double sigmaMin,
+                             double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp) {
+            const Index plane = y * x, n = z * plane;
+            std::fill(dst, dst + n, 0.0f);
+            scales = std::max(1, scales);
+            sigmaMin = std::max(0.3, sigmaMin);
+            sigmaMax = std::max(sigmaMin, sigmaMax);
+            zAspect = std::max(1e-6, zAspect);
+            const double alpha = z > 1 ? 0.25 : 1.0 / 3.0;   // 1 / (ndim + 1)
+            std::vector<float> response(static_cast<std::size_t>(n));
+            for (int k = 0; k < scales; ++k) {
+                const double sigma = scales == 1 ? sigmaMin
+                                                 : sigmaMin * std::pow(sigmaMax / sigmaMin, static_cast<double>(k) / (scales - 1));
+                // negated: the filter is written for dark ridges, and a
+                // fluorescence filament is bright
+                work.resize(static_cast<std::size_t>(n));
+                for (Index i = 0; i < n; ++i) work[static_cast<std::size_t>(i)] = -src[i];
+                gaussianVolume(work, z, y, x, sigma, sigma, sigma / zAspect, tmp);
+                const double norm = sigma * sigma;
+                double maxResponse = 0.0;
+                for (Index iz = 0; iz < z; ++iz)
+                    for (Index iy = 0; iy < y; ++iy)
+                        for (Index ix = 0; ix < x; ++ix) {
+                            const Index i = (iz * y + iy) * x + ix;
+                            auto at = [&](Index jz, Index jy, Index jx) {
+                                jz = std::clamp<Index>(jz, 0, z - 1);
+                                jy = std::clamp<Index>(jy, 0, y - 1);
+                                jx = std::clamp<Index>(jx, 0, x - 1);
+                                return static_cast<double>(work[static_cast<std::size_t>((jz * y + jy) * x + jx)]);
+                            };
+                            const double c = at(iz, iy, ix);
+                            const double dxx = norm * (at(iz, iy, ix + 1) + at(iz, iy, ix - 1) - 2.0 * c);
+                            const double dyy = norm * (at(iz, iy + 1, ix) + at(iz, iy - 1, ix) - 2.0 * c);
+                            const double dzz = z > 1 ? norm * (at(iz + 1, iy, ix) + at(iz - 1, iy, ix) - 2.0 * c) : 0.0;
+                            const double dxy = norm * 0.25 * (at(iz, iy + 1, ix + 1) + at(iz, iy - 1, ix - 1) - at(iz, iy + 1, ix - 1) - at(iz, iy - 1, ix + 1));
+                            const double dxz = z > 1 ? norm * 0.25 * (at(iz + 1, iy, ix + 1) + at(iz - 1, iy, ix - 1) - at(iz + 1, iy, ix - 1) - at(iz - 1, iy, ix + 1))
+                                                     : 0.0;
+                            const double dyz = z > 1 ? norm * 0.25 * (at(iz + 1, iy + 1, ix) + at(iz - 1, iy - 1, ix) - at(iz + 1, iy - 1, ix) - at(iz - 1, iy + 1, ix))
+                                                     : 0.0;
+                            const std::array<double, 3> e = symmetricEigenvalues(dxx, dxy, dxz, dyy, dyz, dzz);
+                            const double trace = e[0] + e[1] + e[2];
+                            double picked = 0.0, magnitude = -1.0;
+                            for (int q = 0; q < 3; ++q) {
+                                if (z == 1 && q == 0) continue;   // the third eigenvalue of a plane is not a measurement
+                                const double mixed = (1.0 - alpha) * e[static_cast<std::size_t>(q)] + alpha * trace;
+                                if (std::abs(mixed) > magnitude) {
+                                    magnitude = std::abs(mixed);
+                                    picked = mixed;
+                                }
+                            }
+                            const double v = std::max(0.0, picked);
+                            response[static_cast<std::size_t>(i)] = static_cast<float>(v);
+                            maxResponse = std::max(maxResponse, v);
+                        }
+                // each scale is normalised to its own maximum, as the method
+                // has it, so one scale cannot drown the others
+                if (maxResponse <= 0.0) continue;
+                for (Index i = 0; i < n; ++i)
+                    dst[i] = std::max(dst[i], static_cast<float>(response[static_cast<std::size_t>(i)] / maxResponse));
+            }
+        }
+
         class ClassicalSegmentationOperation final : public Operation {
         public:
             ClassicalSegmentationOperation() {
@@ -347,14 +415,16 @@ namespace sirius::app {
                                   "diffusion smooths the inside of a region and leaves its boundary alone"),
                     intParam("diffusion_iterations", "Diffusion steps", 5).range(1, 200).withHelp("Anisotropic diffusion: more steps, smoother interiors").asAdvanced(),
                     doubleParam("diffusion_k", "Diffusion edge", 0.1).range(0.001, 1.0, 0.01, 3).withHelp("Anisotropic diffusion: a gradient this large, as a fraction of the intensity range, counts as an edge and is kept").asAdvanced(),
-                    choiceParam("enhance", "Enhance", {"None", "Blobs (DoG)", "Tubes (Frangi)"}, "None")
-                        .withHelp("What to bring out before the threshold: round objects of one size, or filaments"),
+                    choiceParam("enhance", "Enhance", {"None", "Blobs (DoG)", "Tubes (Frangi)", "Neurites (Meijering)"}, "None")
+                        .withHelp("What to bring out before the threshold: round objects of one size, tubes of a range of "
+                                  "widths, or the thinnest lines of all"),
                     doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
                     doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced(),
                     intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced(),
                     intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px").withHelp("White top-hat: removes background structures larger than this radius (0 = off)"),
                     doubleParam("sigma", "Smoothing σ", 1.0).range(0.0, 50.0, 0.5, 1).withUnit("px").withHelp("Gaussian blur before the threshold (0 = none)"),
-                    choiceParam("method", "Threshold", {"Otsu", "Triangle", "Li", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu")
+                    choiceParam("method", "Threshold",
+                                {"Otsu", "Triangle", "Li", "Yen", "Isodata", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu")
                         .withHelp("Otsu splits the histogram in two; Triangle suits the skewed histogram of a mostly empty "
                                   "field, where Otsu cuts too high; Li keeps dim objects; the local rules follow an uneven "
                                   "background"),
@@ -377,6 +447,10 @@ namespace sirius::app {
                     intParam("refine_smoothing", "Refine smoothing", 1).range(0, 5).withHelp("Curvature rounds per step; more gives a smoother contour").asAdvanced(),
                     intParam("opening", "Opening radius", 1).range(0, 100).withUnit("px").withHelp("Binary opening drops specks and necks thinner than this (0 = off)"),
                     boolParam("fill_holes", "Fill holes", true).withHelp("Enclosed background inside an object becomes object, per plane"),
+                    boolParam("fill_holes_3d", "Fill holes (3D)", false)
+                        .withHelp("Background the object encloses in three dimensions becomes object. A cavity no single plane "
+                                  "closes is invisible to the per-plane fill, which is most of them in a stack"),
+                    intParam("hole_max_voxels", "Largest hole", 0).range(0, 1000000000).withHelp("3D fill: leave cavities larger than this open (0 = fill them all), so a real lumen survives").asAdvanced(),
                     choiceParam("post", "Instances", {"Watershed (distance)", "Watershed (gradient)", "Connected components"}, "Watershed (distance)")
                         .withHelp("How the mask becomes objects. The distance watershed splits at the waist between two "
                                   "objects; the gradient watershed splits where the image itself has an edge, which is what "
@@ -396,6 +470,8 @@ namespace sirius::app {
                     intParam("max_voxels", "Max. voxels", 0).range(0, 1000000000).withHelp("Drop objects larger than this (0 = off): the usual way to remove a merged clump").asAdvanced(),
                     doubleParam("min_fill", "Min. fill", 0.0).range(0.0, 1.0, 0.05, 2).withHelp("Drop objects that fill less than this fraction of their bounding box (0 = off): removes scattered debris").asAdvanced(),
                     doubleParam("max_elongation", "Max. elongation", 0.0).range(0.0, 100.0, 0.5, 1).withHelp("Drop objects whose bounding box is longer than this many times its width (0 = off)").asAdvanced(),
+                    doubleParam("expand", "Expand labels", 0.0).range(0.0, 200.0, 0.5, 1).withUnit("px").withHelp("Grow every object outwards into the background by this much, nearest object first. Closes the "
+                                                                                                                  "gap an opening or a watershed line left, without letting two objects meet (0 = off)"),
                     boolParam("drop_border", "Drop border objects", false).withHelp("Objects touching the x / y edge are cut off, so their shape and size are not measurable"),
                     stringParam("class_name", "Class", "object").asAdvanced(),
                 };
@@ -415,7 +491,10 @@ namespace sirius::app {
                     enhance == "Blobs (DoG)"      ? "blobs σ " + formatNumber(p.getDouble("enhance_sigma", 2.0), 1)
                     : enhance == "Tubes (Frangi)" ? "tubes σ " + formatNumber(p.getDouble("enhance_sigma", 2.0), 1) + "-" +
                                                         formatNumber(p.getDouble("enhance_sigma_max", 6.0), 1)
-                                                  : std::string();
+                    : enhance == "Neurites (Meijering)"
+                        ? "neurites σ " + formatNumber(p.getDouble("enhance_sigma", 2.0), 1) + "-" +
+                              formatNumber(p.getDouble("enhance_sigma_max", 6.0), 1)
+                        : std::string();
                 const double sigma = p.getDouble("sigma", 1.0);
                 const Index tophat = p.getInt("tophat", 0);
                 const std::string denoise = p.getString("denoise", "None");
@@ -460,6 +539,9 @@ namespace sirius::app {
                 const double ratio = p.getDouble("local_ratio", 1.1), offset = p.getDouble("local_offset", 0.0);
                 const Index opening = p.getInt("opening", 1);
                 const bool fillHoles = p.getBool("fill_holes", true);
+                const bool fillHolesVolume = p.getBool("fill_holes_3d", false);
+                const Index holeMaxVoxels = p.getInt("hole_max_voxels", 0);
+                const double expand = p.getDouble("expand", 0.0);
                 const std::string denoise = p.getString("denoise", "None");
                 const int diffusionIterations = static_cast<int>(p.getInt("diffusion_iterations", 5));
                 const double diffusionK = p.getDouble("diffusion_k", 0.1);
@@ -519,11 +601,16 @@ namespace sirius::app {
                             else anisotropicDiffusionPlane(pl, d.y, d.x, diffusionIterations, diffusionK, tmp);
                         }
                     }
-                    if (enhance == "Tubes (Frangi)") {
-                        ctx.report(base + span * 0.1, "vesselness");
+                    if (enhance == "Tubes (Frangi)" || enhance == "Neurites (Meijering)") {
+                        const bool tubes = enhance == "Tubes (Frangi)";
+                        ctx.report(base + span * 0.1, tubes ? "vesselness" : "neuriteness");
                         enhA.resize(static_cast<std::size_t>(n));
-                        frangiVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
-                                     std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
+                        if (tubes)
+                            frangiVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
+                                         std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
+                        else
+                            meijeringVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
+                                            std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
                         std::copy_n(enhA.data(), n, work.data());
                     }
                     for (Index z = 0; z < d.z; ++z) {
@@ -544,6 +631,8 @@ namespace sirius::app {
                     if (method == "Otsu") cut = otsuThreshold(work.data(), n);
                     else if (method == "Triangle") cut = triangleThreshold(work.data(), n);
                     else if (method == "Li") cut = liThreshold(work.data(), n);
+                    else if (method == "Yen") cut = yenThreshold(work.data(), n);
+                    else if (method == "Isodata") cut = isodataThreshold(work.data(), n);
                     else if (method == "Multi-Otsu") cut = multiOtsuThresholds(work.data(), n).second;
                     else if (method == "Percentile") cut = percentiles(work.data(), n, 0.0, p.getDouble("percentile", 90.0)).second;
                     if (method == "Local mean" || method == "Local contrast") {
@@ -618,6 +707,9 @@ namespace sirius::app {
                         }
                         if (fillHoles) fillHolesPlane(m, d.y, d.x, seen, stack);
                     }
+                    // the 3D fill sees the whole volume, so it runs once every
+                    // plane has been cleaned
+                    if (fillHolesVolume) fillHoles3D(mask.data(), d.z, d.y, d.x, holeMaxVoxels);
                     ctx.throwIfCancelled();
                     Index on = 0;
                     for (Index i = 0; i < n; ++i) {
@@ -648,6 +740,14 @@ namespace sirius::app {
                     std::uint32_t made = labelsFromProbabilities(fg.data(), landscape, d.z, d.y, d.x, post, *labels, t);
                     if (shapeFilters) {
                         made = filterLabelsByShape(labels->volume(t), d.z, d.y, d.x, shape);
+                        labels->recomputeStats(t, fg.data());
+                        for (LabelStats& st : labels->stats()) st.cls = post.className;
+                        labels->applyFlags(post.flags);
+                    }
+                    // last, so the shape filters measure the objects as they
+                    // were segmented and not as they were grown
+                    if (expand > 0.0) {
+                        expandLabels(labels->volume(t), d.z, d.y, d.x, expand, zAspect);
                         labels->recomputeStats(t, fg.data());
                         for (LabelStats& st : labels->stats()) st.cls = post.className;
                         labels->applyFlags(post.flags);

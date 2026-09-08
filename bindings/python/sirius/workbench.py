@@ -1296,6 +1296,10 @@ def _global_cut(v: np.ndarray, method: str, params: Dict[str, Any]) -> float:
         return _triangle_threshold(v)
     if method == "Li":
         return _li_threshold(v)
+    if method == "Yen":
+        return _yen_threshold(v)
+    if method == "Isodata":
+        return _isodata_threshold(v)
     if method == "Multi-Otsu":
         return _multi_otsu_upper(v)
     if method == "Percentile":
@@ -1437,6 +1441,51 @@ def _frangi_volume(vol: np.ndarray, z_aspect: float, sigma_min: float, sigma_max
         v = np.where(bright, (1.0 - np.exp(-ra ** 2 / 0.5)) * np.exp(-rb ** 2 / 0.5), 0.0).astype(np.float32)
         v = np.where(v > 0.0, (v * (1.0 - np.exp(-s_mag ** 2 / c2))).astype(np.float32), 0.0).astype(np.float32)
         out = np.maximum(out, v)
+    return out
+
+
+def _meijering_volume(vol: np.ndarray, z_aspect: float, sigma_min: float, sigma_max: float, scales: int) -> np.ndarray:
+    """``meijeringVolume``: Meijering neuriteness. The Hessian eigenvalues are
+    mixed (l_i = (1 - a) e_i + a tr H, a = 1 / (ndim + 1)) before the largest by
+    magnitude is taken, and each scale is normalised to its own maximum. The
+    image is negated first: the filter is written for dark ridges."""
+    z, y, x = vol.shape
+    out = np.zeros(vol.shape, dtype=np.float32)
+    scales = max(1, int(scales))
+    sigma_min = max(0.3, sigma_min)
+    sigma_max = max(sigma_min, sigma_max)
+    z_aspect = max(1e-6, z_aspect)
+    alpha = 0.25 if z > 1 else 1.0 / 3.0
+    zp, zm = np.clip(np.arange(z) + 1, 0, z - 1), np.clip(np.arange(z) - 1, 0, z - 1)
+    yp, ym = np.clip(np.arange(y) + 1, 0, y - 1), np.clip(np.arange(y) - 1, 0, y - 1)
+    xp, xm = np.clip(np.arange(x) + 1, 0, x - 1), np.clip(np.arange(x) - 1, 0, x - 1)
+    negated = (-vol).astype(np.float32)
+    for k in range(scales):
+        sigma = sigma_min if scales == 1 else sigma_min * (sigma_max / sigma_min) ** (k / (scales - 1))
+        w = _gaussian_volume(negated, sigma, sigma, sigma / z_aspect).astype(np.float64)
+        norm = sigma * sigma
+        c = w
+        dxx = norm * (w[:, :, xp] + w[:, :, xm] - 2.0 * c)
+        dyy = norm * (w[:, yp, :] + w[:, ym, :] - 2.0 * c)
+        dzz = norm * (w[zp, :, :] + w[zm, :, :] - 2.0 * c) if z > 1 else np.zeros_like(w)
+        dxy = norm * 0.25 * (w[:, yp][:, :, xp] + w[:, ym][:, :, xm] - w[:, yp][:, :, xm] - w[:, ym][:, :, xp])
+        if z > 1:
+            dxz = norm * 0.25 * (w[zp][:, :, xp] + w[zm][:, :, xm] - w[zp][:, :, xm] - w[zm][:, :, xp])
+            dyz = norm * 0.25 * (w[zp][:, yp, :] + w[zm][:, ym, :] - w[zp][:, ym, :] - w[zm][:, yp, :])
+        else:
+            dxz = np.zeros_like(w)
+            dyz = np.zeros_like(w)
+        e = _symmetric_eigenvalues(dxx, dxy, dxz, dyy, dyz, dzz)
+        trace = e[0] + e[1] + e[2]
+        # a single plane has no third eigenvalue worth the name: the C++ skips it
+        candidates = [(1.0 - alpha) * ev + alpha * trace for ev in (e if z > 1 else e[1:])]
+        stacked = np.stack(candidates)
+        picked = np.take_along_axis(stacked, np.abs(stacked).argmax(0)[None], 0).squeeze(0)
+        response = np.maximum(picked, 0.0)
+        peak = float(response.max())
+        if peak <= 0.0:
+            continue
+        out = np.maximum(out, (response / peak).astype(np.float32))
     return out
 
 
@@ -1688,6 +1737,125 @@ def _li_threshold(v: np.ndarray) -> float:
     return _bin_value(int(min(max(t, 0.0), 255.0)), lo, hi)
 
 
+def _yen_threshold(v: np.ndarray) -> float:
+    """``yenThreshold``: Yen's entropic correlation criterion on the histogram."""
+    bins, lo, hi = _histogram_256(v)
+    total = float(bins.sum())
+    if not hi > lo or total <= 0.0:
+        return lo
+    pmf = bins.astype(np.float64) / total
+    p1 = np.cumsum(pmf)
+    p1_sq = np.cumsum(pmf**2)
+    p2_sq = np.cumsum(pmf[::-1] ** 2)[::-1]
+    best, best_bin = -math.inf, 0
+    for b in range(255):
+        denominator = p1_sq[b] * p2_sq[b + 1]
+        mass = p1[b] * (1.0 - p1[b])
+        if denominator <= 0.0 or mass <= 0.0:
+            continue
+        crit = math.log(mass * mass / denominator)
+        if crit > best:
+            best, best_bin = crit, b
+    return _bin_value(best_bin, lo, hi)
+
+
+def _isodata_threshold(v: np.ndarray) -> float:
+    """``isodataThreshold``: the Ridler-Calvard iteration from the image mean."""
+    bins, lo, hi = _histogram_256(v)
+    if not hi > lo:
+        return lo
+    levels = np.arange(256, dtype=np.float64)
+    total = float(bins.sum())
+    if total <= 0.0:
+        return lo
+    t = float((levels * bins).sum() / total)
+    for _ in range(100):
+        below = levels <= t
+        count_lo, count_hi = float(bins[below].sum()), float(bins[~below].sum())
+        if count_lo <= 0.0 or count_hi <= 0.0:
+            break
+        mean_lo = float((levels[below] * bins[below]).sum() / count_lo)
+        mean_hi = float((levels[~below] * bins[~below]).sum() / count_hi)
+        nxt = 0.5 * (mean_lo + mean_hi)
+        if abs(nxt - t) < 0.5:
+            t = nxt
+            break
+        t = nxt
+    return _bin_value(int(min(max(t, 0.0), 255.0)), lo, hi)
+
+
+def _fill_holes_3d(mask: np.ndarray, max_voxels: int) -> np.ndarray:
+    """``fillHoles3D``: background the foreground encloses in 3D, cavity by
+    cavity so a size limit can leave a real lumen open."""
+    ndimage = _ndimage()
+    structure = ndimage.generate_binary_structure(3, 1)
+    background = mask == 0
+    labelled, count = ndimage.label(background, structure=structure)
+    if count == 0:
+        return mask
+    border = np.unique(np.concatenate([
+        labelled[0].ravel(), labelled[-1].ravel(),
+        labelled[:, 0].ravel(), labelled[:, -1].ravel(),
+        labelled[:, :, 0].ravel(), labelled[:, :, -1].ravel()]))
+    outside = np.zeros(count + 1, dtype=bool)
+    outside[border[border > 0]] = True
+    sizes = np.bincount(labelled.ravel(), minlength=count + 1)
+    fill = ~outside
+    fill[0] = False
+    if max_voxels > 0:
+        fill &= sizes <= max_voxels
+    out = mask.copy()
+    out[fill[labelled]] = 1
+    return out
+
+
+def _expand_labels(labels: np.ndarray, distance: float, z_aspect: float) -> np.ndarray:
+    """``expandLabels``: a Dijkstra from every labelled voxel at once over the
+    6-neighbourhood (a z step costs z_aspect, the planes being that much
+    further apart than the pixels). A voxel the same distance
+    from two labels stays background so the two cannot fuse."""
+    import heapq
+    if distance <= 0.0 or labels.size == 0:
+        return labels
+    z_aspect = max(1e-6, z_aspect)
+    step_z = z_aspect
+    shape = labels.shape
+    best = np.full(shape, np.inf)
+    came_from = np.zeros(shape, dtype=np.uint32)
+    tied = np.zeros(shape, dtype=bool)
+    queue = []
+    for idx in zip(*np.nonzero(labels)):
+        best[idx] = 0.0
+        came_from[idx] = labels[idx]
+        heapq.heappush(queue, (0.0, idx))
+    offsets = (((-1, 0, 0), step_z), ((1, 0, 0), step_z), ((0, -1, 0), 1.0),
+               ((0, 1, 0), 1.0), ((0, 0, -1), 1.0), ((0, 0, 1), 1.0))
+    while queue:
+        d, idx = heapq.heappop(queue)
+        if d > best[idx] or d >= distance:
+            continue
+        for (dz, dy, dx), step in offsets:
+            j = (idx[0] + dz, idx[1] + dy, idx[2] + dx)
+            if not (0 <= j[0] < shape[0] and 0 <= j[1] < shape[1] and 0 <= j[2] < shape[2]):
+                continue
+            if labels[j] != 0:
+                continue
+            nd = d + step
+            if nd > distance:
+                continue
+            if nd < best[j] - 1e-9:
+                best[j] = nd
+                came_from[j] = came_from[idx]
+                tied[j] = False
+                heapq.heappush(queue, (nd, j))
+            elif abs(nd - best[j]) <= 1e-9 and came_from[idx] != came_from[j]:
+                tied[j] = True
+    grown = labels.copy()
+    claim = (labels == 0) & (came_from != 0) & ~tied
+    grown[claim] = came_from[claim]
+    return grown
+
+
 def _hysteresis_mask(high: np.ndarray, low: np.ndarray) -> np.ndarray:
     """``hysteresisMask``: every 6-connected component of ``low`` that holds at
     least one voxel of ``high``."""
@@ -1821,13 +1989,15 @@ _CLASSIC = StepSpec(
      "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5,
      "hysteresis": False, "hysteresis_ratio": 0.5,
      "refine": "None", "refine_iterations": 20, "refine_smoothing": 1,
-     "opening": 1, "fill_holes": True,
+     "opening": 1, "fill_holes": True, "fill_holes_3d": False, "hole_max_voxels": 0,
      "post": "Watershed (distance)", "seeds": "H-maxima", "seed_distance": 8.0, "seed_depth": 2.0,
      "blob_radius": 4.0, "blob_radius_max": 12.0, "blob_scales": 5, "min_voxels": 20,
-     "max_voxels": 0, "min_fill": 0.0, "max_elongation": 0.0, "drop_border": False, "class_name": "object"},
-    choices={"method": ("Otsu", "Triangle", "Li", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"),
+     "max_voxels": 0, "min_fill": 0.0, "max_elongation": 0.0, "expand": 0.0, "drop_border": False,
+     "class_name": "object"},
+    choices={"method": ("Otsu", "Triangle", "Li", "Yen", "Isodata", "Multi-Otsu", "Manual", "Percentile",
+                        "Local mean", "Local contrast"),
              "denoise": ("None", "Median 3x3", "Anisotropic diffusion"),
-             "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)"),
+             "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)", "Neurites (Meijering)"),
              "refine": ("None", "Active contour (Chan-Vese)"),
              "seeds": ("Distance maxima", "H-maxima", "Blob centres (LoG)"),
              "post": ("Watershed (distance)", "Watershed (gradient)", "Connected components")},
@@ -1845,8 +2015,10 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     Also denoise (Median 3x3 | Anisotropic diffusion: diffusion_iterations,
     diffusion_k) before the enhancement, the Triangle and Li thresholds,
     hysteresis (hysteresis_ratio), an active contour refinement (refine,
-    refine_iterations, refine_smoothing), the gradient watershed, and the shape
-    filters max_voxels, min_fill, max_elongation and drop_border."""
+    refine_iterations, refine_smoothing), the gradient watershed, the shape
+    filters max_voxels, min_fill, max_elongation and drop_border, the Yen and
+    Isodata thresholds, the Meijering neurite enhancement, a 3D hole fill
+    (fill_holes_3d, hole_max_voxels) and label expansion (expand)."""
     c = _channel_index(params, "channel", meta, a.shape[0])
     denoise = _choice(params.get("denoise"), _CLASSIC.choices["denoise"], "None")
     diffusion_iterations = _int(params, "diffusion_iterations", 5)
@@ -1868,6 +2040,9 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     refine_smoothing = _int(params, "refine_smoothing", 1)
     opening = _int(params, "opening", 1)
     fill_holes = _bool(params, "fill_holes", True)
+    fill_holes_3d = _bool(params, "fill_holes_3d", False)
+    hole_max_voxels = _int(params, "hole_max_voxels", 0)
+    expand = _float(params, "expand", 0.0)
     post = _choice(params.get("post"), _CLASSIC.choices["post"], "Watershed (distance)")
     min_voxels = _int(params, "min_voxels", 20)
     max_voxels = _int(params, "max_voxels", 0)
@@ -1897,6 +2072,8 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
             # tubes are a 3D filter: a filament running through z is invisible
             # to a plane-by-plane one
             volume = _frangi_volume(volume, z_aspect, enhance_sigma, max(enhance_sigma, enhance_sigma_max), enhance_scales)
+        elif enhance == "Neurites (Meijering)":
+            volume = _meijering_volume(volume, z_aspect, enhance_sigma, max(enhance_sigma, enhance_sigma_max), enhance_scales)
         planes = []
         for z in range(a.shape[2]):
             pl = volume[z]
@@ -1936,6 +2113,8 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
             mask = np.stack([_morphological_chan_vese_plane(work[z], mask[z], refine_iterations, refine_smoothing)
                              for z in range(mask.shape[0])])
         mask = np.stack([_clean_plane(m, opening, fill_holes) for m in mask])
+        if fill_holes_3d:
+            mask = _fill_holes_3d(mask, hole_max_voxels)
         foreground += float(mask.mean()) / a.shape[1]
         external = None
         if seeds == "Blob centres (LoG)" and post.startswith("Watershed"):
@@ -1945,6 +2124,8 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
                                                seeds, seed_depth, external)
         if shape_filters:
             labels[t] = _filter_labels_by_shape(labels[t], max_voxels, min_fill, max_elongation, drop_border)
+        if expand > 0.0:
+            labels[t] = _expand_labels(labels[t], expand, z_aspect)
         total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,

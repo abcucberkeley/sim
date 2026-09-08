@@ -1132,6 +1132,202 @@ namespace sirius::app {
         return h.valueOf(static_cast<std::size_t>(std::clamp(t, 0.0, 255.0)));
     }
 
+    float yenThreshold(const float* values, Index n) {
+        const Histogram h = histogramOf(values, n);
+        if (h.degenerate) return h.lo;
+        double total = 0.0;
+        for (Index c : h.bins) total += static_cast<double>(c);
+        if (total <= 0.0) return h.lo;
+        // Yen's criterion on the probability mass function: the cut where the
+        // two classes are most uniform relative to how much of the image each
+        // holds. P1 is the cumulative mass, P1sq / P2sq the cumulative squared
+        // mass from each end.
+        std::array<double, 256> p1{}, p1sq{}, p2sq{};
+        double c1 = 0.0, c1sq = 0.0;
+        for (std::size_t b = 0; b < h.bins.size(); ++b) {
+            const double pm = static_cast<double>(h.bins[b]) / total;
+            c1 += pm;
+            c1sq += pm * pm;
+            p1[b] = c1;
+            p1sq[b] = c1sq;
+        }
+        double c2sq = 0.0;
+        for (std::size_t k = h.bins.size(); k-- > 0;) {
+            const double pm = static_cast<double>(h.bins[k]) / total;
+            c2sq += pm * pm;
+            p2sq[k] = c2sq;
+        }
+        double best = -std::numeric_limits<double>::infinity();
+        std::size_t bestBin = 0;
+        for (std::size_t b = 0; b + 1 < h.bins.size(); ++b) {
+            const double denom = p1sq[b] * p2sq[b + 1];
+            const double mass = p1[b] * (1.0 - p1[b]);
+            if (denom <= 0.0 || mass <= 0.0) continue;
+            const double crit = std::log(mass * mass / denom);
+            if (crit > best) {
+                best = crit;
+                bestBin = b;
+            }
+        }
+        return h.valueOf(bestBin);
+    }
+
+    float isodataThreshold(const float* values, Index n) {
+        const Histogram h = histogramOf(values, n);
+        if (h.degenerate) return h.lo;
+        double total = 0.0, weighted = 0.0;
+        for (std::size_t b = 0; b < h.bins.size(); ++b) {
+            total += static_cast<double>(h.bins[b]);
+            weighted += static_cast<double>(b) * static_cast<double>(h.bins[b]);
+        }
+        if (total <= 0.0) return h.lo;
+        double t = weighted / total;
+        for (int it = 0; it < 100; ++it) {
+            double sumLo = 0.0, countLo = 0.0, sumHi = 0.0, countHi = 0.0;
+            for (std::size_t b = 0; b < h.bins.size(); ++b) {
+                const double c = static_cast<double>(h.bins[b]);
+                if (static_cast<double>(b) <= t) {
+                    sumLo += static_cast<double>(b) * c;
+                    countLo += c;
+                } else {
+                    sumHi += static_cast<double>(b) * c;
+                    countHi += c;
+                }
+            }
+            // one side empty: the cut has walked off the histogram, keep the last
+            if (countLo <= 0.0 || countHi <= 0.0) break;
+            const double next = 0.5 * (sumLo / countLo + sumHi / countHi);
+            if (std::fabs(next - t) < 0.5) {
+                t = next;
+                break;
+            }
+            t = next;
+        }
+        return h.valueOf(static_cast<std::size_t>(std::clamp(t, 0.0, 255.0)));
+    }
+
+    Index fillHoles3D(std::uint8_t* mask, Index z, Index y, Index x, Index maxVoxels) {
+        const Index n = z * y * x;
+        if (n <= 0) return 0;
+        // flood the background inwards from the border; what it never reaches
+        // is enclosed
+        std::vector<std::uint8_t> outside(static_cast<std::size_t>(n), 0);
+        std::vector<Index> stack;
+        auto push = [&](Index i) {
+            if (mask[i] == 0 && !outside[static_cast<std::size_t>(i)]) {
+                outside[static_cast<std::size_t>(i)] = 1;
+                stack.push_back(i);
+            }
+        };
+        for (Index k = 0; k < z; ++k)
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c)
+                    if (k == 0 || k == z - 1 || r == 0 || r == y - 1 || c == 0 || c == x - 1) push((k * y + r) * x + c);
+        while (!stack.empty()) {
+            const Index cur = stack.back();
+            stack.pop_back();
+            const Index cz = cur / (y * x), rest = cur % (y * x), cy = rest / x, cx = rest % x;
+            const Index nz[6] = {cz - 1, cz + 1, cz, cz, cz, cz};
+            const Index ny[6] = {cy, cy, cy - 1, cy + 1, cy, cy};
+            const Index nx[6] = {cx, cx, cx, cx, cx - 1, cx + 1};
+            for (int q = 0; q < 6; ++q) {
+                if (nz[q] < 0 || nz[q] >= z || ny[q] < 0 || ny[q] >= y || nx[q] < 0 || nx[q] >= x) continue;
+                push((nz[q] * y + ny[q]) * x + nx[q]);
+            }
+        }
+        // the enclosed background, one cavity at a time, so a size limit can
+        // keep a large lumen open while small holes are closed
+        std::vector<std::uint8_t> seen(static_cast<std::size_t>(n), 0);
+        std::vector<Index> cavity;
+        Index filled = 0;
+        for (Index i = 0; i < n; ++i) {
+            if (mask[i] != 0 || outside[static_cast<std::size_t>(i)] || seen[static_cast<std::size_t>(i)]) continue;
+            cavity.clear();
+            seen[static_cast<std::size_t>(i)] = 1;
+            stack.push_back(i);
+            while (!stack.empty()) {
+                const Index cur = stack.back();
+                stack.pop_back();
+                cavity.push_back(cur);
+                const Index cz = cur / (y * x), rest = cur % (y * x), cy = rest / x, cx = rest % x;
+                const Index nz[6] = {cz - 1, cz + 1, cz, cz, cz, cz};
+                const Index ny[6] = {cy, cy, cy - 1, cy + 1, cy, cy};
+                const Index nx[6] = {cx, cx, cx, cx, cx - 1, cx + 1};
+                for (int q = 0; q < 6; ++q) {
+                    if (nz[q] < 0 || nz[q] >= z || ny[q] < 0 || ny[q] >= y || nx[q] < 0 || nx[q] >= x) continue;
+                    const Index j = (nz[q] * y + ny[q]) * x + nx[q];
+                    if (mask[j] == 0 && !outside[static_cast<std::size_t>(j)] && !seen[static_cast<std::size_t>(j)]) {
+                        seen[static_cast<std::size_t>(j)] = 1;
+                        stack.push_back(j);
+                    }
+                }
+            }
+            if (maxVoxels > 0 && static_cast<Index>(cavity.size()) > maxVoxels) continue;
+            for (Index j : cavity) mask[j] = 1;
+            filled += static_cast<Index>(cavity.size());
+        }
+        return filled;
+    }
+
+    Index expandLabels(std::uint32_t* labels, Index z, Index y, Index x, double distance, double zAspect) {
+        const Index n = z * y * x;
+        if (n <= 0 || distance <= 0.0) return 0;
+        zAspect = std::max(1e-6, zAspect);
+        // Dijkstra from every labelled voxel at once. A voxel reached from two
+        // labels at the same distance stays background: growing it either way
+        // would join two objects that the segmentation kept apart.
+        struct Node {
+            double d;
+            Index i;
+            bool operator>(const Node& o) const { return d > o.d; }
+        };
+        std::priority_queue<Node, std::vector<Node>, std::greater<Node>> queue;
+        std::vector<double> best(static_cast<std::size_t>(n), std::numeric_limits<double>::infinity());
+        std::vector<std::uint32_t> from(static_cast<std::size_t>(n), 0u);
+        std::vector<std::uint8_t> tied(static_cast<std::size_t>(n), 0);
+        for (Index i = 0; i < n; ++i)
+            if (labels[i] != 0) {
+                best[static_cast<std::size_t>(i)] = 0.0;
+                from[static_cast<std::size_t>(i)] = labels[i];
+                queue.push({0.0, i});
+            }
+        const double stepZ = zAspect;   // the planes are that much further apart than the pixels
+        while (!queue.empty()) {
+            const Node cur = queue.top();
+            queue.pop();
+            if (cur.d > best[static_cast<std::size_t>(cur.i)]) continue;
+            if (cur.d >= distance) continue;
+            const Index cz = cur.i / (y * x), rest = cur.i % (y * x), cy = rest / x, cx = rest % x;
+            const Index nz[6] = {cz - 1, cz + 1, cz, cz, cz, cz};
+            const Index ny[6] = {cy, cy, cy - 1, cy + 1, cy, cy};
+            const Index nx[6] = {cx, cx, cx, cx, cx - 1, cx + 1};
+            const double step[6] = {stepZ, stepZ, 1.0, 1.0, 1.0, 1.0};
+            for (int q = 0; q < 6; ++q) {
+                if (nz[q] < 0 || nz[q] >= z || ny[q] < 0 || ny[q] >= y || nx[q] < 0 || nx[q] >= x) continue;
+                const Index j = (nz[q] * y + ny[q]) * x + nx[q];
+                if (labels[j] != 0) continue;   // never overwrite a segmented voxel
+                const double d = cur.d + step[q];
+                if (d > distance) continue;
+                double& bj = best[static_cast<std::size_t>(j)];
+                if (d < bj - 1e-9) {
+                    bj = d;
+                    from[static_cast<std::size_t>(j)] = from[static_cast<std::size_t>(cur.i)];
+                    tied[static_cast<std::size_t>(j)] = 0;
+                    queue.push({d, j});
+                } else if (std::fabs(d - bj) <= 1e-9 && from[static_cast<std::size_t>(cur.i)] != from[static_cast<std::size_t>(j)]) {
+                    tied[static_cast<std::size_t>(j)] = 1;
+                }
+            }
+        }
+        Index claimed = 0;
+        for (Index i = 0; i < n; ++i)
+            if (labels[i] == 0 && from[static_cast<std::size_t>(i)] != 0 && !tied[static_cast<std::size_t>(i)]) {
+                labels[i] = from[static_cast<std::size_t>(i)];
+                ++claimed;
+            }
+        return claimed;
+    }
+
     Index hysteresisMask(const std::uint8_t* high, const std::uint8_t* low, Index z, Index y, Index x, std::uint8_t* out) {
         const Index n = z * y * x;
         std::vector<std::uint8_t> keep(static_cast<std::size_t>(n), 0);

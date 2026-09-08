@@ -755,3 +755,121 @@ TEST_CASE("Shape filters drop what is not the object being looked for", "[app][l
         CHECK(filterLabelsByShape(empty.data(), z, y, x, border) == 0);
     }
 }
+
+TEST_CASE("Yen and Isodata place the cut where their definitions say", "[app][labels][classic]") {
+    // two clean modes of very different weight: 4000 voxels of background
+    // around 0.1 and 800 of signal around 0.7
+    std::vector<float> values;
+    for (int i = 0; i < 4000; ++i) values.push_back(0.08f + 0.001f * static_cast<float>(i % 41));
+    for (int i = 0; i < 800; ++i) values.push_back(0.66f + 0.0002f * static_cast<float>(i % 401));
+
+    const Index n = static_cast<Index>(values.size());
+    const float yen = yenThreshold(values.data(), n);
+    const float isodata = isodataThreshold(values.data(), n);
+    // both land in the empty band between the two modes, or at its very edge:
+    // Yen settles at the top of the background, isodata halfway across
+    CHECK(yen > 0.11f);
+    CHECK(yen < 0.66f);
+    CHECK(isodata > 0.12f);
+    CHECK(isodata < 0.66f);
+    CHECK(yen < isodata);
+    // isodata is the midpoint of the two class means, so it does not care that
+    // there is five times as much background as signal
+    CHECK_THAT(isodata, WithinAbs(0.5 * (0.10 + 0.70), 0.05));
+
+    SECTION("a flat image has no threshold to find") {
+        std::vector<float> flat(64, 0.3f);
+        CHECK_THAT(yenThreshold(flat.data(), 64), WithinAbs(0.3, 1e-6));
+        CHECK_THAT(isodataThreshold(flat.data(), 64), WithinAbs(0.3, 1e-6));
+        CHECK_THAT(yenThreshold(nullptr, 0), WithinAbs(0.0, 1e-9));
+        CHECK_THAT(isodataThreshold(nullptr, 0), WithinAbs(0.0, 1e-9));
+    }
+}
+
+TEST_CASE("The 3D hole fill closes what no single plane encloses", "[app][labels][classic]") {
+    // a solid 5x5x5 block of foreground with an empty voxel at its centre. In
+    // every plane through that voxel the background around it is enclosed only
+    // by way of the planes above and below, so a per-plane fill cannot see it.
+    const Index z = 7, y = 7, x = 7;
+    std::vector<std::uint8_t> mask(static_cast<std::size_t>(z * y * x), 0);
+    auto at = [&](Index k, Index r, Index c) { return static_cast<std::size_t>((k * y + r) * x + c); };
+    for (Index k = 1; k <= 5; ++k)
+        for (Index r = 1; r <= 5; ++r)
+            for (Index c = 1; c <= 5; ++c) mask[at(k, r, c)] = 1;
+    mask[at(3, 3, 3)] = 0;   // the cavity
+
+    std::vector<std::uint8_t> copy = mask;
+    CHECK(fillHoles3D(copy.data(), z, y, x, 0) == 1);
+    CHECK(copy[at(3, 3, 3)] == 1);
+    CHECK(copy[at(0, 0, 0)] == 0);   // the outside is still outside
+
+    SECTION("a size limit leaves a real lumen open") {
+        std::vector<std::uint8_t> bigger = mask;
+        bigger[at(3, 3, 4)] = 0;   // a two voxel cavity, still inside the block
+        std::vector<std::uint8_t> limited = bigger;
+        CHECK(fillHoles3D(limited.data(), z, y, x, 1) == 0);
+        CHECK(limited[at(3, 3, 3)] == 0);
+        std::vector<std::uint8_t> unlimited = bigger;
+        CHECK(fillHoles3D(unlimited.data(), z, y, x, 0) == 2);
+        CHECK(unlimited[at(3, 3, 3)] == 1);
+        CHECK(unlimited[at(3, 3, 4)] == 1);
+    }
+
+    SECTION("a cavity open to the border is background, not a hole") {
+        std::vector<std::uint8_t> open = mask;
+        open[at(3, 3, 4)] = 0;
+        open[at(3, 3, 5)] = 0;   // a channel through the wall to the outside
+        CHECK(fillHoles3D(open.data(), z, y, x, 0) == 0);
+        CHECK(open[at(3, 3, 3)] == 0);
+    }
+
+    SECTION("a volume with nothing in it fills nothing") {
+        std::vector<std::uint8_t> empty(static_cast<std::size_t>(z * y * x), 0);
+        CHECK(fillHoles3D(empty.data(), z, y, x, 0) == 0);
+    }
+}
+
+TEST_CASE("Expanding labels closes the gap without joining two objects", "[app][labels][classic]") {
+    // two single-voxel labels five apart in x, in one plane
+    const Index z = 1, y = 7, x = 11;
+    std::vector<std::uint32_t> labels(static_cast<std::size_t>(z * y * x), 0u);
+    auto at = [&](Index r, Index c) { return static_cast<std::size_t>(r * x + c); };
+    labels[at(3, 2)] = 1;
+    labels[at(3, 8)] = 2;
+
+    std::vector<std::uint32_t> grown = labels;
+    const Index claimed = expandLabels(grown.data(), z, y, x, 2.0, 1.0);
+    CHECK(claimed > 0);
+    CHECK(grown[at(3, 2)] == 1);   // the seeds keep their own ids
+    CHECK(grown[at(3, 8)] == 2);
+    CHECK(grown[at(3, 3)] == 1);   // one step out
+    CHECK(grown[at(3, 4)] == 1);   // two steps out, the limit
+    CHECK(grown[at(3, 7)] == 2);
+    CHECK(grown[at(3, 6)] == 2);
+    // the midpoint is the same distance from both, so it stays background and
+    // the two objects do not fuse
+    CHECK(grown[at(3, 5)] == 0);
+    // and nothing grew further than it was told to: two steps in y is still
+    // the object, three is not
+    CHECK(grown[at(1, 2)] == 1);
+    CHECK(grown[at(0, 2)] == 0);
+
+    SECTION("a distance of zero changes nothing") {
+        std::vector<std::uint32_t> same = labels;
+        CHECK(expandLabels(same.data(), z, y, x, 0.0, 1.0) == 0);
+        CHECK(same == labels);
+    }
+
+    SECTION("z costs more when the planes are further apart") {
+        std::vector<std::uint32_t> tall(static_cast<std::size_t>(5 * y * x), 0u);
+        tall[static_cast<std::size_t>((2 * y + 3) * x + 5)] = 1;
+        // planes three times as far apart as pixels: one step in z is three
+        std::vector<std::uint32_t> near = tall;
+        expandLabels(near.data(), 5, y, x, 2.0, 3.0);
+        CHECK(near[static_cast<std::size_t>((1 * y + 3) * x + 5)] == 0u);   // z is out of reach
+        CHECK(near[static_cast<std::size_t>((2 * y + 3) * x + 6)] == 1u);   // x is not
+        std::vector<std::uint32_t> far = tall;
+        expandLabels(far.data(), 5, y, x, 4.0, 3.0);
+        CHECK(far[static_cast<std::size_t>((1 * y + 3) * x + 5)] == 1u);
+    }
+}
