@@ -196,6 +196,67 @@ namespace sirius::app {
     std::uint32_t logBlobSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double zAspect,
                                double sigmaMin, double sigmaMax, int scales, std::uint32_t* out);
 
+    // --- filters and thresholds -------------------------------------------
+
+    // 3x3 median of one plane, in place. Removes shot noise without moving an
+    // edge, which a Gaussian does; the usual first step on a noisy stack.
+    void medianFilterPlane(float* plane, Index y, Index x, std::vector<float>& tmp);
+
+    // Perona-Malik anisotropic diffusion of one plane, in place: `iterations`
+    // explicit steps with the exponential conductance exp(-(|grad| / k)^2), so
+    // flat regions smooth and edges do not. `k` is a fraction (0..1) of the
+    // plane's intensity range, which keeps the setting scale free. lambda is
+    // fixed at 0.25, the stability limit for four neighbours.
+    void anisotropicDiffusionPlane(float* plane, Index y, Index x, int iterations, double k, std::vector<float>& tmp);
+
+    // Triangle (Zack) threshold: the value furthest from the line joining the
+    // histogram's peak to its far end. Made for the skewed histogram of a
+    // fluorescence image, where most of the field is background and Otsu's
+    // two-class assumption puts the cut too high.
+    float triangleThreshold(const float* values, Index n);
+
+    // Li's minimum cross-entropy threshold, found by the iterative fixed point
+    // of the original paper. Keeps dim objects Otsu discards.
+    float liThreshold(const float* values, Index n);
+
+    // Hysteresis: keep every 6-connected component of `low` that contains at
+    // least one voxel of `high`, write it to `out` (may alias `low`). A
+    // filament that fades below the cut stays whole as long as part of it is
+    // clearly above. Returns the number of voxels kept.
+    Index hysteresisMask(const std::uint8_t* high, const std::uint8_t* low, Index z, Index y, Index x, std::uint8_t* out);
+
+    // Central-difference gradient magnitude of a (z, y, x) volume, with z
+    // scaled by `zAspect` so the gradient is physical. The landscape a
+    // boundary watershed floods: its ridges are the object edges, which is
+    // what separates touching objects that have a visible boundary but no
+    // waist for the distance transform to find.
+    void gradientMagnitude(const float* values, Index z, Index y, Index x, double zAspect, float* out);
+
+    // Morphological Chan-Vese (Marquez-Neila et al.), one plane, in place on
+    // `mask`. Each iteration moves the contour towards the two-region fit of
+    // the image -- inside mean against outside mean, no edge and no shape
+    // assumption -- then smooths it with `smoothing` rounds of the alternating
+    // sup-inf / inf-sup operators over the four line elements, which is the
+    // morphological stand-in for the curvature term. This is the level-set
+    // (snake) refinement without the PDE: it fixes a threshold that leaks or
+    // pinches, on filaments as readily as on round objects.
+    void morphologicalChanVesePlane(const float* image, std::uint8_t* mask, Index y, Index x, int iterations, int smoothing,
+                                    std::vector<std::uint8_t>& tmp);
+
+    // --- shape filters -----------------------------------------------------
+
+    struct ShapeFilter {
+        Index minVoxels = 0;             // 0 = off
+        Index maxVoxels = 0;             // 0 = off
+        double minFill = 0.0;            // voxels / bounding box volume, 0 = off
+        double maxElongation = 0.0;      // longest bounding box side / shortest, 0 = off
+        bool dropBorder = false;         // objects touching the x / y border
+    };
+
+    // Removes the objects a filter rejects and relabels 1..n densely.
+    // Returns the label count that remains.
+    std::uint32_t filterLabelsByShape(std::uint32_t* labels, Index z, Index y, Index x, const ShapeFilter& filter);
+
     // Drop components smaller than minVoxels, relabel 1..n densely.
     std::uint32_t removeSmall(std::uint32_t* labels, Index n, Index minVoxels);
 

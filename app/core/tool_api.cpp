@@ -375,7 +375,9 @@ namespace sirius::app {
                   {"semantic", {{"type", "boolean"}}},
                   {"boxes", {{"type", "boolean"}}},
                   {"slices", {{"type", "boolean"}, {"description", "One 8-bit plane and one YOLO file per z, for 2D detectors"}}},
-                  {"min_voxels", {{"type", "integer"}, {"description", "Objects smaller than this are left out"}}}},
+                  {"min_voxels", {{"type", "integer"}, {"description", "Objects smaller than this are left out"}}},
+                  {"image_dtype", {{"type", "string"}, {"enum", {"uint8", "uint16", "float32"}}, {"description", "Pixel type of image.tif (default uint16)"}}},
+                  {"image_scaling", {{"type", "string"}, {"enum", {"cast", "minmax", "percentile"}}, {"description", "How the image is rescaled into that type (default percentile)"}}}},
                  {"directory"}),
              [this](const json& a) {
                  const int i = a.contains("step") ? resolveStep(a) : wb_.viewedIndex();
@@ -391,6 +393,12 @@ namespace sirius::app {
                  o.boxes = a.value("boxes", true);
                  o.slices = a.value("slices", false);
                  o.minVoxels = static_cast<std::uint64_t>(std::max(1, a.value("min_voxels", 1)));
+                 const std::string dtype = a.value("image_dtype", std::string("uint16"));
+                 o.imageDtype = dtype == "uint8" ? PixelType::UInt8 : dtype == "float32" ? PixelType::Float32
+                                                                                         : PixelType::UInt16;
+                 const std::string scaling = a.value("image_scaling", std::string("percentile"));
+                 o.scaling = scaling == "cast" ? ExportScaling::Cast : scaling == "minmax" ? ExportScaling::MinMax
+                                                                                           : ExportScaling::Percentile;
                  o.provenance = {{"step", Step::number(i)},
                                  {"step_name", wb_.pipeline().at(i).name},
                                  {"kind", wb_.pipeline().at(i).kind},

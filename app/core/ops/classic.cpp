@@ -342,6 +342,11 @@ namespace sirius::app {
                 info_.helpPage = "classic";
                 info_.params = {
                     channelParam("channel", "Channel", 0),
+                    choiceParam("denoise", "Denoise", {"None", "Median 3x3", "Anisotropic diffusion"}, "None")
+                        .withHelp("Before anything else: a 3x3 median drops shot noise without moving an edge; Perona-Malik "
+                                  "diffusion smooths the inside of a region and leaves its boundary alone"),
+                    intParam("diffusion_iterations", "Diffusion steps", 5).range(1, 200).withHelp("Anisotropic diffusion: more steps, smoother interiors").asAdvanced(),
+                    doubleParam("diffusion_k", "Diffusion edge", 0.1).range(0.001, 1.0, 0.01, 3).withHelp("Anisotropic diffusion: a gradient this large, as a fraction of the intensity range, counts as an edge and is kept").asAdvanced(),
                     choiceParam("enhance", "Enhance", {"None", "Blobs (DoG)", "Tubes (Frangi)"}, "None")
                         .withHelp("What to bring out before the threshold: round objects of one size, or filaments"),
                     doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
@@ -349,7 +354,10 @@ namespace sirius::app {
                     intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced(),
                     intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px").withHelp("White top-hat: removes background structures larger than this radius (0 = off)"),
                     doubleParam("sigma", "Smoothing σ", 1.0).range(0.0, 50.0, 0.5, 1).withUnit("px").withHelp("Gaussian blur before the threshold (0 = none)"),
-                    choiceParam("method", "Threshold", {"Otsu", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu"),
+                    choiceParam("method", "Threshold", {"Otsu", "Triangle", "Li", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu")
+                        .withHelp("Otsu splits the histogram in two; Triangle suits the skewed histogram of a mostly empty "
+                                  "field, where Otsu cuts too high; Li keeps dim objects; the local rules follow an uneven "
+                                  "background"),
                     doubleParam("value", "Value", 0.5).range(-1e9, 1e9, 0.01, 4).withHelp("Manual threshold"),
                     doubleParam("percentile", "Percentile", 90.0).range(0.0, 100.0, 0.5, 1).withUnit("%"),
                     intParam("window", "Local window", 51).range(3, 4001).withUnit("px").withHelp("Local mean: side of the neighbourhood the mean is taken over"),
@@ -357,9 +365,22 @@ namespace sirius::app {
                     doubleParam("local_offset", "Local offset", 0.0).range(-1e9, 1e9, 0.01, 4).asAdvanced(),
                     doubleParam("contrast_k", "Contrast k", 1.5).range(0.0, 10.0, 0.1, 2).withHelp("Local contrast: the cut sits k local standard deviations above the local mean, so it "
                                                                                                    "follows both the background level and the local noise"),
+                    boolParam("hysteresis", "Hysteresis", false)
+                        .withHelp("Keep everything connected to what is clearly above the cut, down to a lower one. A "
+                                  "filament that fades stays whole instead of breaking into pieces"),
+                    doubleParam("hysteresis_ratio", "Hysteresis low", 0.5).range(0.0, 1.0, 0.05, 2).withHelp("Where the lower cut sits between the image floor and the threshold: 0.5 is halfway, 1 turns hysteresis off"),
+                    choiceParam("refine", "Refine", {"None", "Active contour (Chan-Vese)"}, "None")
+                        .withHelp("Morphological Chan-Vese: moves the mask boundary to the best two-region fit of the image. "
+                                  "It has no shape assumption, so it suits filaments as well as cells, and it repairs a "
+                                  "threshold that leaked or pinched"),
+                    intParam("refine_iterations", "Refine steps", 20).range(1, 500).asAdvanced(),
+                    intParam("refine_smoothing", "Refine smoothing", 1).range(0, 5).withHelp("Curvature rounds per step; more gives a smoother contour").asAdvanced(),
                     intParam("opening", "Opening radius", 1).range(0, 100).withUnit("px").withHelp("Binary opening drops specks and necks thinner than this (0 = off)"),
                     boolParam("fill_holes", "Fill holes", true).withHelp("Enclosed background inside an object becomes object, per plane"),
-                    choiceParam("post", "Instances", {"Watershed (distance)", "Connected components"}, "Watershed (distance)"),
+                    choiceParam("post", "Instances", {"Watershed (distance)", "Watershed (gradient)", "Connected components"}, "Watershed (distance)")
+                        .withHelp("How the mask becomes objects. The distance watershed splits at the waist between two "
+                                  "objects; the gradient watershed splits where the image itself has an edge, which is what "
+                                  "separates touching objects that have a visible boundary but no waist"),
                     choiceParam("seeds", "Seeds", {"Distance maxima", "H-maxima", "Blob centres (LoG)"}, "H-maxima")
                         .withHelp("What splits touching objects. The peaks of the distance map; only the peaks that stand "
                                   "clear of their surroundings (fewer false splits); or the centres of the blobs the image "
@@ -372,6 +393,10 @@ namespace sirius::app {
                     doubleParam("blob_radius_max", "Object radius max", 12.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the largest radius; the detector answers to every size in between").asAdvanced(),
                     intParam("blob_scales", "Blob scales", 5).range(1, 24).withHelp("Blob centres: how many sizes are tried between the two radii").asAdvanced(),
                     intParam("min_voxels", "Min. voxels", 20).range(0, 1000000000),
+                    intParam("max_voxels", "Max. voxels", 0).range(0, 1000000000).withHelp("Drop objects larger than this (0 = off): the usual way to remove a merged clump").asAdvanced(),
+                    doubleParam("min_fill", "Min. fill", 0.0).range(0.0, 1.0, 0.05, 2).withHelp("Drop objects that fill less than this fraction of their bounding box (0 = off): removes scattered debris").asAdvanced(),
+                    doubleParam("max_elongation", "Max. elongation", 0.0).range(0.0, 100.0, 0.5, 1).withHelp("Drop objects whose bounding box is longer than this many times its width (0 = off)").asAdvanced(),
+                    boolParam("drop_border", "Drop border objects", false).withHelp("Objects touching the x / y edge are cut off, so their shape and size are not measurable"),
                     stringParam("class_name", "Class", "object").asAdvanced(),
                 };
             }
@@ -393,11 +418,18 @@ namespace sirius::app {
                                                   : std::string();
                 const double sigma = p.getDouble("sigma", 1.0);
                 const Index tophat = p.getInt("tophat", 0);
-                return joinSummary({channelName(meta, p.getInt("channel", 0)), enhanceText,
+                const std::string denoise = p.getString("denoise", "None");
+                if (p.getBool("hysteresis", false) && p.getDouble("hysteresis_ratio", 0.5) < 1.0) cut += " + hysteresis";
+                return joinSummary({channelName(meta, p.getInt("channel", 0)),
+                                    denoise == "Median 3x3" ? "median" : denoise == "Anisotropic diffusion" ? "diffusion"
+                                                                                                            : "",
+                                    enhanceText,
                                     tophat > 0 ? "top-hat " + std::to_string(tophat) : "",
                                     sigma > 0 ? "σ " + formatNumber(sigma, 1) : "",
                                     cut,
-                                    p.getString("post", "Watershed (distance)").rfind("Watershed", 0) != 0 ? "components"
+                                    p.getString("refine", "None") != "None" ? "snake" : "",
+                                    p.getString("post", "Watershed (distance)").rfind("Watershed", 0) != 0  ? "components"
+                                    : p.getString("post", "Watershed (distance)") == "Watershed (gradient)" ? "watershed edges"
                                     : p.getString("seeds", "H-maxima") == "Blob centres (LoG)"
                                         ? "watershed blobs r " + formatNumber(p.getDouble("blob_radius", 4.0), 1)
                                     : p.getString("seeds", "H-maxima") == "H-maxima" ? "watershed h"
@@ -428,10 +460,25 @@ namespace sirius::app {
                 const double ratio = p.getDouble("local_ratio", 1.1), offset = p.getDouble("local_offset", 0.0);
                 const Index opening = p.getInt("opening", 1);
                 const bool fillHoles = p.getBool("fill_holes", true);
+                const std::string denoise = p.getString("denoise", "None");
+                const int diffusionIterations = static_cast<int>(p.getInt("diffusion_iterations", 5));
+                const double diffusionK = p.getDouble("diffusion_k", 0.1);
+                const bool hysteresis = p.getBool("hysteresis", false) && p.getDouble("hysteresis_ratio", 0.5) < 1.0;
+                const double hysteresisRatio = p.getDouble("hysteresis_ratio", 0.5);
+                const std::string refine = p.getString("refine", "None");
+                const int refineIterations = static_cast<int>(p.getInt("refine_iterations", 20));
+                const int refineSmoothing = static_cast<int>(p.getInt("refine_smoothing", 1));
+                ShapeFilter shape;
+                shape.maxVoxels = p.getInt("max_voxels", 0);
+                shape.minFill = p.getDouble("min_fill", 0.0);
+                shape.maxElongation = p.getDouble("max_elongation", 0.0);
+                shape.dropBorder = p.getBool("drop_border", false);
+                const bool shapeFilters = shape.maxVoxels > 0 || shape.minFill > 0.0 || shape.maxElongation > 0.0 || shape.dropBorder;
 
                 LabelPostOptions post;
-                post.post = p.getString("post", "Watershed (distance)").rfind("Watershed", 0) == 0 ? "Watershed (distance)"
-                                                                                                   : "Connected components";
+                const std::string postChoice = p.getString("post", "Watershed (distance)");
+                const bool gradientWatershed = postChoice == "Watershed (gradient)";
+                post.post = postChoice.rfind("Watershed", 0) == 0 ? "Watershed (distance)" : "Connected components";
                 post.threshold = 0.5;
                 post.minVoxels = p.getInt("min_voxels", 20);
                 post.seedMinDistance = p.getDouble("seed_distance", 8.0);
@@ -447,7 +494,8 @@ namespace sirius::app {
                 std::vector<std::uint32_t> seedVolume;
                 post.className = p.getString("class_name", "object");
 
-                std::vector<float> work(static_cast<std::size_t>(n)), tmp, scratch, localMean, localStd, enhA, enhB;
+                std::vector<float> work(static_cast<std::size_t>(n)), tmp, scratch, localMean, localStd, enhA, enhB, edges;
+                std::vector<std::uint8_t> maskLow, morph;
                 std::vector<double> integral, integralSq;
                 std::vector<std::uint8_t> mask(static_cast<std::size_t>(n)), maskTmp, seen;
                 std::vector<Index> stack;
@@ -460,8 +508,17 @@ namespace sirius::app {
                     const double base = 0.1 + 0.9 * static_cast<double>(t) / d.t, span = 0.9 / d.t;
                     const BufferView<const float> vol = out.array->volume(channel, t);
                     std::copy_n(vol.data(), n, work.data());
-                    // 1. enhance the feature, flatten and smooth. Tubes are a 3D
-                    // filter over the whole volume; blobs and the rest per plane.
+                    // 1. denoise, then enhance the feature, flatten and smooth.
+                    // Tubes are a 3D filter over the whole volume; the rest per plane.
+                    if (denoise != "None") {
+                        ctx.report(base + span * 0.05, "denoising");
+                        for (Index z = 0; z < d.z; ++z) {
+                            ctx.throwIfCancelled();
+                            float* pl = work.data() + z * plane;
+                            if (denoise == "Median 3x3") medianFilterPlane(pl, d.y, d.x, tmp);
+                            else anisotropicDiffusionPlane(pl, d.y, d.x, diffusionIterations, diffusionK, tmp);
+                        }
+                    }
                     if (enhance == "Tubes (Frangi)") {
                         ctx.report(base + span * 0.1, "vesselness");
                         enhA.resize(static_cast<std::size_t>(n));
@@ -485,16 +542,20 @@ namespace sirius::app {
                     // 2. threshold
                     float cut = static_cast<float>(p.getDouble("value", 0.5));
                     if (method == "Otsu") cut = otsuThreshold(work.data(), n);
+                    else if (method == "Triangle") cut = triangleThreshold(work.data(), n);
+                    else if (method == "Li") cut = liThreshold(work.data(), n);
                     else if (method == "Multi-Otsu") cut = multiOtsuThresholds(work.data(), n).second;
                     else if (method == "Percentile") cut = percentiles(work.data(), n, 0.0, p.getDouble("percentile", 90.0)).second;
                     if (method == "Local mean" || method == "Local contrast") {
                         const bool byContrast = method == "Local contrast";
                         localMean.resize(static_cast<std::size_t>(plane));
                         if (byContrast) localStd.resize(static_cast<std::size_t>(plane));
+                        if (hysteresis) maskLow.assign(static_cast<std::size_t>(n), 0);
                         for (Index z = 0; z < d.z; ++z) {
                             ctx.throwIfCancelled();
                             const float* pl = work.data() + z * plane;
                             std::uint8_t* m = mask.data() + z * plane;
+                            std::uint8_t* lowM = hysteresis ? maskLow.data() + z * plane : nullptr;
                             if (byContrast) {
                                 // k standard deviations above the local mean: the cut
                                 // rises with the background and with the local noise,
@@ -503,12 +564,18 @@ namespace sirius::app {
                                 for (Index i = 0; i < plane; ++i) {
                                     const double mu = localMean[static_cast<std::size_t>(i)];
                                     const double sd = localStd[static_cast<std::size_t>(i)];
-                                    m[i] = pl[i] > mu + contrastK * sd + offset ? 1 : 0;
+                                    const double T = mu + contrastK * sd + offset;
+                                    m[i] = pl[i] > T ? 1 : 0;
+                                    if (lowM) lowM[i] = pl[i] > mu + hysteresisRatio * (T - mu) ? 1 : 0;
                                 }
                             } else {
                                 localMeanPlane(pl, d.y, d.x, window, localMean.data(), integral);
-                                for (Index i = 0; i < plane; ++i)
-                                    m[i] = pl[i] > ratio * localMean[static_cast<std::size_t>(i)] + offset ? 1 : 0;
+                                for (Index i = 0; i < plane; ++i) {
+                                    const double mu = localMean[static_cast<std::size_t>(i)];
+                                    const double T = ratio * mu + offset;
+                                    m[i] = pl[i] > T ? 1 : 0;
+                                    if (lowM) lowM[i] = pl[i] > mu + hysteresisRatio * (T - mu) ? 1 : 0;
+                                }
                             }
                         }
                         if (t == 0) cutText = byContrast ? "local mean + " + formatNumber(contrastK, 2) + " SD"
@@ -516,8 +583,31 @@ namespace sirius::app {
                     } else {
                         for (Index i = 0; i < n; ++i) mask[static_cast<std::size_t>(i)] = work[static_cast<std::size_t>(i)] > cut ? 1 : 0;
                         if (t == 0) cutText = "> " + formatNumber(cut, 4);
+                        if (hysteresis) {
+                            // the lower cut sits between the image floor and the
+                            // threshold, so the setting means the same thing
+                            // whatever the units and even when values are negative
+                            const float floorValue = *std::min_element(work.begin(), work.end());
+                            const float lowCut = floorValue + static_cast<float>(hysteresisRatio) * (cut - floorValue);
+                            maskLow.assign(static_cast<std::size_t>(n), 0);
+                            for (Index i = 0; i < n; ++i) maskLow[static_cast<std::size_t>(i)] = work[static_cast<std::size_t>(i)] > lowCut ? 1 : 0;
+                            if (t == 0) cutText += " (down to " + formatNumber(lowCut, 4) + ")";
+                        }
+                    }
+                    if (hysteresis) {
+                        ctx.throwIfCancelled();
+                        hysteresisMask(mask.data(), maskLow.data(), d.z, d.y, d.x, mask.data());
                     }
                     ctx.report(base + span * 0.5, "mask");
+                    // 2b. move the boundary to the best two-region fit of the image
+                    if (refine != "None") {
+                        ctx.report(base + span * 0.55, "active contour");
+                        for (Index z = 0; z < d.z; ++z) {
+                            ctx.throwIfCancelled();
+                            morphologicalChanVesePlane(work.data() + z * plane, mask.data() + z * plane, d.y, d.x, refineIterations,
+                                                       refineSmoothing, morph);
+                        }
+                    }
                     // 3. clean the mask, per plane
                     for (Index z = 0; z < d.z; ++z) {
                         ctx.throwIfCancelled();
@@ -546,8 +636,23 @@ namespace sirius::app {
                     }
                     ctx.throwIfCancelled();
                     ctx.report(base + span * 0.8, "instances");
-                    // 5. instances
-                    total += labelsFromProbabilities(fg.data(), nullptr, d.z, d.y, d.x, post, *labels, t);
+                    // 5. instances. The gradient watershed floods the image's own
+                    // edges instead of the distance map, which is what splits
+                    // touching objects that have a boundary but no waist.
+                    const float* landscape = nullptr;
+                    if (gradientWatershed) {
+                        edges.resize(static_cast<std::size_t>(n));
+                        gradientMagnitude(work.data(), d.z, d.y, d.x, zAspect, edges.data());
+                        landscape = edges.data();
+                    }
+                    std::uint32_t made = labelsFromProbabilities(fg.data(), landscape, d.z, d.y, d.x, post, *labels, t);
+                    if (shapeFilters) {
+                        made = filterLabelsByShape(labels->volume(t), d.z, d.y, d.x, shape);
+                        labels->recomputeStats(t, fg.data());
+                        for (LabelStats& st : labels->stats()) st.cls = post.className;
+                        labels->applyFlags(post.flags);
+                    }
+                    total += made;
                 }
                 for (LabelStats& s : labels->stats()) s.confidence = 1.0;   // intensities, not probabilities
                 labels->applyFlags(post.flags);

@@ -1292,6 +1292,10 @@ def _multi_otsu_upper(values: np.ndarray) -> float:
 def _global_cut(v: np.ndarray, method: str, params: Dict[str, Any]) -> float:
     if method == "Otsu":
         return _otsu_threshold(v)
+    if method == "Triangle":
+        return _triangle_threshold(v)
+    if method == "Li":
+        return _li_threshold(v)
     if method == "Multi-Otsu":
         return _multi_otsu_upper(v)
     if method == "Percentile":
@@ -1583,6 +1587,222 @@ def _filter_plane(pl: np.ndarray, tophat: int, sigma: float) -> np.ndarray:
     return np.asarray(out, dtype=np.float32)
 
 
+def _median_plane(pl: np.ndarray) -> np.ndarray:
+    """``medianFilterPlane``: 3x3 median with clamped borders."""
+    if pl.shape[0] < 3 or pl.shape[1] < 3:
+        return np.asarray(pl, dtype=np.float32)
+    return np.asarray(_ndimage().median_filter(pl, size=3, mode="nearest"), dtype=np.float32)
+
+
+def _anisotropic_diffusion_plane(pl: np.ndarray, iterations: int, k: float) -> np.ndarray:
+    """``anisotropicDiffusionPlane``: Perona-Malik with the exponential
+    conductance, four clamped neighbours and lambda 0.25. ``k`` is a fraction of
+    the plane's intensity range, measured once before the first step."""
+    out = np.asarray(pl, dtype=np.float32)
+    if iterations <= 0 or out.shape[0] < 3 or out.shape[1] < 3:
+        return out
+    lo, hi = float(out.min()), float(out.max())
+    kk = max(1e-12, k) * max(1e-12, hi - lo)
+    inv = 1.0 / (kk * kk)
+    for _ in range(iterations):
+        cur = out.astype(np.float64)
+        total = np.zeros_like(cur)
+        for shifted in (np.vstack([cur[:1], cur[:-1]]), np.vstack([cur[1:], cur[-1:]]),
+                        np.hstack([cur[:, :1], cur[:, :-1]]), np.hstack([cur[:, 1:], cur[:, -1:]])):
+            g = shifted - cur
+            total += g * np.exp(-g * g * inv)
+        out = (cur + 0.25 * total).astype(np.float32)
+    return out
+
+
+def _histogram_256(v: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """The 256 bin histogram ``triangleThreshold`` and ``liThreshold`` share."""
+    finite = v[np.isfinite(v)]
+    if finite.size == 0:
+        return np.zeros(256, dtype=np.int64), 0.0, 0.0
+    lo, hi = float(finite.min()), float(finite.max())
+    if not hi > lo:
+        return np.zeros(256, dtype=np.int64), lo, lo
+    idx = np.clip(((finite.astype(np.float64) - lo) * (255.0 / (hi - lo))).astype(np.int64), 0, 255)
+    return np.bincount(idx, minlength=256).astype(np.int64), lo, hi
+
+
+def _bin_value(bin_index: int, lo: float, hi: float) -> float:
+    return float(np.float32(lo + np.float32((bin_index + 0.5) / 256.0 * (hi - lo))))
+
+
+def _triangle_threshold(v: np.ndarray) -> float:
+    """``triangleThreshold``: the bin furthest from the line joining the
+    histogram's peak to the far end of its longer tail."""
+    bins, lo, hi = _histogram_256(v)
+    if not hi > lo:
+        return lo
+    peak = int(np.argmax(bins))
+    peak_count = int(bins[peak])
+    nonzero = np.nonzero(bins)[0]
+    first, last = int(nonzero[0]), int(nonzero[-1])
+    tail_right = (last - peak) >= (peak - first)
+    end = last if tail_right else first
+    if end == peak:
+        return _bin_value(peak, lo, hi)
+    dx = float(end - peak)
+    dy = -float(peak_count)
+    norm = math.sqrt(dx * dx + dy * dy)
+    span = range(min(peak, end), max(peak, end) + 1)
+    best, best_bin = -1.0, peak
+    for b in span:
+        px = float(b - peak)
+        py = float(int(bins[b]) - peak_count)
+        d = abs(px * dy - py * dx) / norm
+        if d > best:
+            best, best_bin = d, b
+    return _bin_value(best_bin, lo, hi)
+
+
+def _li_threshold(v: np.ndarray) -> float:
+    """``liThreshold``: Li & Tam's minimum cross-entropy fixed point."""
+    bins, lo, hi = _histogram_256(v)
+    if not hi > lo:
+        return lo
+    levels = np.arange(256, dtype=np.float64)
+    total = float(bins.sum())
+    if total <= 0.0:
+        return lo
+    t = float((levels * bins).sum() / total)
+    for _ in range(100):
+        below = levels <= t
+        count_lo, count_hi = float(bins[below].sum()), float(bins[~below].sum())
+        mean_lo = float((levels[below] * bins[below]).sum() / count_lo) if count_lo > 0.0 else 0.0
+        mean_hi = float((levels[~below] * bins[~below]).sum() / count_hi) if count_hi > 0.0 else 0.0
+        a, b = mean_lo + 1.0, mean_hi + 1.0
+        denominator = math.log(b) - math.log(a)
+        if denominator == 0.0:
+            break
+        nxt = (b - a) / denominator
+        if not math.isfinite(nxt):
+            break
+        if abs(nxt - t) < 0.5:
+            t = nxt
+            break
+        t = nxt
+    return _bin_value(int(min(max(t, 0.0), 255.0)), lo, hi)
+
+
+def _hysteresis_mask(high: np.ndarray, low: np.ndarray) -> np.ndarray:
+    """``hysteresisMask``: every 6-connected component of ``low`` that holds at
+    least one voxel of ``high``."""
+    ndimage = _ndimage()
+    labelled, count = ndimage.label(low.astype(bool), structure=ndimage.generate_binary_structure(low.ndim, 1))
+    if count == 0:
+        return np.zeros_like(low, dtype=np.uint8)
+    keep = np.zeros(count + 1, dtype=bool)
+    keep[np.unique(labelled[(high > 0) & (low > 0)])] = True
+    keep[0] = False
+    return keep[labelled].astype(np.uint8)
+
+
+def _gradient_magnitude(v: np.ndarray, z_aspect: float) -> np.ndarray:
+    """``gradientMagnitude``: central differences with clamped borders, z
+    divided by the voxel aspect so the gradient is physical."""
+    inv_z = 1.0 / z_aspect if z_aspect > 0.0 else 1.0
+    d = v.astype(np.float64)
+    gz = 0.5 * (np.concatenate([d[1:], d[-1:]]) - np.concatenate([d[:1], d[:-1]])) * inv_z
+    gy = 0.5 * (np.concatenate([d[:, 1:], d[:, -1:]], axis=1) - np.concatenate([d[:, :1], d[:, :-1]], axis=1))
+    gx = 0.5 * (np.concatenate([d[:, :, 1:], d[:, :, -1:]], axis=2) - np.concatenate([d[:, :, :1], d[:, :, :-1]], axis=2))
+    return np.sqrt(gx * gx + gy * gy + gz * gz).astype(np.float32)
+
+
+_LINE_DY = ((0, 0, 0), (-1, 0, 1), (-1, 0, 1), (-1, 0, 1))
+_LINE_DX = ((-1, 0, 1), (0, 0, 0), (-1, 0, 1), (1, 0, -1))
+
+
+def _line_shift(m: np.ndarray, dy: int, dx: int) -> np.ndarray:
+    out = m
+    if dy < 0:
+        out = np.vstack([out[:1]] * (-dy) + [out[:dy]])
+    elif dy > 0:
+        out = np.vstack([out[dy:]] + [out[-1:]] * dy)
+    if dx < 0:
+        out = np.hstack([out[:, :1]] * (-dx) + [out[:, :dx]])
+    elif dx > 0:
+        out = np.hstack([out[:, dx:]] + [out[:, -1:]] * dx)
+    return out
+
+
+def _sup_inf(m: np.ndarray, sup_of_inf: bool) -> np.ndarray:
+    """One half of the morphological curvature operator: the sup over the four
+    line elements of the inf along each, or the other way round."""
+    per_line = []
+    for line in range(4):
+        along = [_line_shift(m, _LINE_DY[line][k], _LINE_DX[line][k]) for k in range(3)]
+        stacked = np.stack(along)
+        per_line.append(stacked.min(axis=0) if sup_of_inf else stacked.max(axis=0))
+    stacked = np.stack(per_line)
+    return (stacked.max(axis=0) if sup_of_inf else stacked.min(axis=0)).astype(np.uint8)
+
+
+def _morphological_chan_vese_plane(image: np.ndarray, mask: np.ndarray, iterations: int, smoothing: int) -> np.ndarray:
+    """``morphologicalChanVesePlane``: the region force of Chan-Vese applied
+    only on the contour, then the morphological curvature operator."""
+    m = np.asarray(mask, dtype=np.uint8).copy()
+    if iterations <= 0 or m.size == 0:
+        return m
+    values = image.astype(np.float64)
+    for it in range(iterations):
+        inside = m > 0
+        if not inside.any() or inside.all():
+            return m
+        c1 = float(values[inside].mean())
+        c0 = float(values[~inside].mean())
+        cur = m.astype(np.int32)
+        gy = np.vstack([cur[1:], cur[-1:]]) - np.vstack([cur[:1], cur[:-1]])
+        gx = np.hstack([cur[:, 1:], cur[:, -1:]]) - np.hstack([cur[:, :1], cur[:, :-1]])
+        on_contour = (gy != 0) | (gx != 0)
+        aux = (values - c1) ** 2 - (values - c0) ** 2
+        m[on_contour & (aux < 0.0)] = 1
+        m[on_contour & (aux > 0.0)] = 0
+        for k in range(smoothing):
+            first = (it + k) % 2 == 0
+            m = _sup_inf(m, first)
+            m = _sup_inf(m, not first)
+    return m
+
+
+def _filter_labels_by_shape(labels: np.ndarray, max_voxels: int, min_fill: float, max_elongation: float,
+                            drop_border: bool) -> np.ndarray:
+    """``filterLabelsByShape``: bounding-box measures, then a dense relabel."""
+    max_id = int(labels.max())
+    if max_id == 0:
+        return labels
+    ndimage = _ndimage()
+    boxes = ndimage.find_objects(labels, max_label=max_id)
+    counts = np.bincount(labels.ravel(), minlength=max_id + 1)
+    remap = np.zeros(max_id + 1, dtype=np.uint32)
+    nxt = 0
+    nz, ny, nx = labels.shape
+    for label_id in range(1, max_id + 1):
+        box = boxes[label_id - 1]
+        voxels = int(counts[label_id])
+        if box is None or voxels == 0:
+            continue
+        if max_voxels > 0 and voxels > max_voxels:
+            continue
+        if drop_border and (box[1].start == 0 or box[1].stop == ny or box[2].start == 0 or box[2].stop == nx):
+            continue
+        dz = box[0].stop - box[0].start
+        dy = box[1].stop - box[1].start
+        dx = box[2].stop - box[2].start
+        if min_fill > 0.0:
+            volume = float(dz * dy * dx)
+            if volume > 0.0 and voxels / volume < min_fill:
+                continue
+        if max_elongation > 0.0 and max(dy, dx) / max(1, min(dy, dx)) > max_elongation:
+            continue
+        nxt += 1
+        remap[label_id] = nxt
+    return remap[labels]
+
+
 def _clean_plane(m: np.ndarray, opening: int, fill_holes: bool) -> np.ndarray:
     ndimage = _ndimage()
     if opening > 0:
@@ -1595,15 +1815,22 @@ def _clean_plane(m: np.ndarray, opening: int, fill_holes: bool) -> np.ndarray:
 
 _CLASSIC = StepSpec(
     "classic",
-    {"channel": 0, "enhance": "None", "enhance_sigma": 2.0, "enhance_sigma_max": 6.0, "enhance_scales": 4,
+    {"channel": 0, "denoise": "None", "diffusion_iterations": 5, "diffusion_k": 0.1,
+     "enhance": "None", "enhance_sigma": 2.0, "enhance_sigma_max": 6.0, "enhance_scales": 4,
      "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
-     "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5, "opening": 1, "fill_holes": True,
+     "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5,
+     "hysteresis": False, "hysteresis_ratio": 0.5,
+     "refine": "None", "refine_iterations": 20, "refine_smoothing": 1,
+     "opening": 1, "fill_holes": True,
      "post": "Watershed (distance)", "seeds": "H-maxima", "seed_distance": 8.0, "seed_depth": 2.0,
-     "blob_radius": 4.0, "blob_radius_max": 12.0, "blob_scales": 5, "min_voxels": 20, "class_name": "object"},
-    choices={"method": ("Otsu", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"),
+     "blob_radius": 4.0, "blob_radius_max": 12.0, "blob_scales": 5, "min_voxels": 20,
+     "max_voxels": 0, "min_fill": 0.0, "max_elongation": 0.0, "drop_border": False, "class_name": "object"},
+    choices={"method": ("Otsu", "Triangle", "Li", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"),
+             "denoise": ("None", "Median 3x3", "Anisotropic diffusion"),
              "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)"),
+             "refine": ("None", "Active contour (Chan-Vese)"),
              "seeds": ("Distance maxima", "H-maxima", "Blob centres (LoG)"),
-             "post": ("Watershed (distance)", "Connected components")},
+             "post": ("Watershed (distance)", "Watershed (gradient)", "Connected components")},
     aliases={"input_channel": "channel", "minVoxels": "min_voxels"})
 
 
@@ -1614,8 +1841,16 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     (tophat radius), Gaussian (sigma), a global (Otsu | Multi-Otsu | Manual |
     Percentile) or local (Local mean: window, local_ratio, local_offset; Local
     contrast: window, contrast_k) threshold, binary opening and hole filling;
-    then 3D instances (post, seeds, seed_distance, seed_depth, min_voxels)."""
+    then 3D instances (post, seeds, seed_distance, seed_depth, min_voxels).
+    Also denoise (Median 3x3 | Anisotropic diffusion: diffusion_iterations,
+    diffusion_k) before the enhancement, the Triangle and Li thresholds,
+    hysteresis (hysteresis_ratio), an active contour refinement (refine,
+    refine_iterations, refine_smoothing), the gradient watershed, and the shape
+    filters max_voxels, min_fill, max_elongation and drop_border."""
     c = _channel_index(params, "channel", meta, a.shape[0])
+    denoise = _choice(params.get("denoise"), _CLASSIC.choices["denoise"], "None")
+    diffusion_iterations = _int(params, "diffusion_iterations", 5)
+    diffusion_k = _float(params, "diffusion_k", 0.1)
     enhance = _choice(params.get("enhance"), _CLASSIC.choices["enhance"], "None")
     enhance_sigma = _float(params, "enhance_sigma", 2.0)
     enhance_sigma_max = _float(params, "enhance_sigma_max", 6.0)
@@ -1626,10 +1861,20 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     window = max(1, _int(params, "window", 51) // 2)
     ratio, offset = _float(params, "local_ratio", 1.1), _float(params, "local_offset", 0.0)
     contrast_k = _float(params, "contrast_k", 1.5)
+    hysteresis_ratio = _float(params, "hysteresis_ratio", 0.5)
+    hysteresis = _bool(params, "hysteresis", False) and hysteresis_ratio < 1.0
+    refine = _choice(params.get("refine"), _CLASSIC.choices["refine"], "None")
+    refine_iterations = _int(params, "refine_iterations", 20)
+    refine_smoothing = _int(params, "refine_smoothing", 1)
     opening = _int(params, "opening", 1)
     fill_holes = _bool(params, "fill_holes", True)
     post = _choice(params.get("post"), _CLASSIC.choices["post"], "Watershed (distance)")
     min_voxels = _int(params, "min_voxels", 20)
+    max_voxels = _int(params, "max_voxels", 0)
+    min_fill = _float(params, "min_fill", 0.0)
+    max_elongation = _float(params, "max_elongation", 0.0)
+    drop_border = _bool(params, "drop_border", False)
+    shape_filters = max_voxels > 0 or min_fill > 0.0 or max_elongation > 0.0 or drop_border
     seeds = _choice(params.get("seeds"), _CLASSIC.choices["seeds"], "H-maxima")
     seed_distance = _float(params, "seed_distance", 8.0)
     seed_depth = _float(params, "seed_depth", 2.0)
@@ -1644,6 +1889,10 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     foreground = 0.0
     for t in range(a.shape[1]):
         volume = a[c, t]
+        if denoise == "Median 3x3":
+            volume = np.stack([_median_plane(pl) for pl in volume])
+        elif denoise == "Anisotropic diffusion":
+            volume = np.stack([_anisotropic_diffusion_plane(pl, diffusion_iterations, diffusion_k) for pl in volume])
         if enhance == "Tubes (Frangi)":
             # tubes are a 3D filter: a filament running through z is invisible
             # to a plane-by-plane one
@@ -1655,28 +1904,47 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
                 pl = _dog_plane(pl, enhance_sigma)
             planes.append(_filter_plane(pl, tophat, sigma))
         work = np.stack(planes)
+        low = None
         if method in ("Local mean", "Local contrast"):
             by_contrast = method == "Local contrast"
-            rows = []
+            rows, low_rows = [], []
             for pl in work:
                 if by_contrast:
                     mean, sd = _local_stats_plane(pl, window)
-                    rows.append(pl > mean + contrast_k * sd + offset)
+                    cut_plane = mean + contrast_k * sd + offset
                 else:
-                    rows.append(pl > ratio * _local_mean_plane(pl, window) + offset)
+                    mean = _local_mean_plane(pl, window)
+                    cut_plane = ratio * mean + offset
+                rows.append(pl > cut_plane)
+                if hysteresis:
+                    low_rows.append(pl > mean + hysteresis_ratio * (cut_plane - mean))
             mask = np.stack(rows).astype(np.uint8)
+            if hysteresis:
+                low = np.stack(low_rows).astype(np.uint8)
             cuts.append(f"local mean + {contrast_k:g} SD" if by_contrast else f"local mean × {ratio:g}")
         else:
             cut = _global_cut(work, method, params)
             mask = (work > cut).astype(np.uint8)
+            if hysteresis:
+                floor_value = np.float32(work.min())
+                low_cut = floor_value + np.float32(hysteresis_ratio) * (np.float32(cut) - floor_value)
+                low = (work > low_cut).astype(np.uint8)
             cuts.append(cut)
+        if hysteresis and low is not None:
+            mask = _hysteresis_mask(mask, low)
+        if refine != "None":
+            mask = np.stack([_morphological_chan_vese_plane(work[z], mask[z], refine_iterations, refine_smoothing)
+                             for z in range(mask.shape[0])])
         mask = np.stack([_clean_plane(m, opening, fill_holes) for m in mask])
         foreground += float(mask.mean()) / a.shape[1]
         external = None
         if seeds == "Blob centres (LoG)" and post.startswith("Watershed"):
             external, _ = _log_blob_seeds(work, mask.astype(bool), z_aspect, blob_sigma, blob_sigma_max, blob_scales)
-        labels[t] = _labels_from_probabilities(mask.astype(np.float32), None, 0.5, post, min_voxels, seed_distance,
+        boundary = _gradient_magnitude(work, z_aspect) if post == "Watershed (gradient)" else None
+        labels[t] = _labels_from_probabilities(mask.astype(np.float32), boundary, 0.5, post, min_voxels, seed_distance,
                                                seeds, seed_depth, external)
+        if shape_filters:
+            labels[t] = _filter_labels_by_shape(labels[t], max_voxels, min_fill, max_elongation, drop_border)
         total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,

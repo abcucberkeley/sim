@@ -1603,6 +1603,42 @@
           "advanced": false,
           "choices": [
             "None",
+            "Median 3x3",
+            "Anisotropic diffusion"
+          ],
+          "default": "None",
+          "help": "Before anything else: a 3x3 median drops shot noise without moving an edge; Perona-Malik diffusion smooths the inside of a region and leaves its boundary alone",
+          "key": "denoise",
+          "label": "Denoise",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": true,
+          "default": 5,
+          "help": "Anisotropic diffusion: more steps, smoother interiors",
+          "key": "diffusion_iterations",
+          "label": "Diffusion steps",
+          "max": 200.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0.1,
+          "help": "Anisotropic diffusion: a gradient this large, as a fraction of the intensity range, counts as an edge and is kept",
+          "key": "diffusion_k",
+          "label": "Diffusion edge",
+          "max": 1.0,
+          "min": 0.001,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "None",
             "Blobs (DoG)",
             "Tubes (Frangi)"
           ],
@@ -1676,6 +1712,8 @@
           "advanced": false,
           "choices": [
             "Otsu",
+            "Triangle",
+            "Li",
             "Multi-Otsu",
             "Manual",
             "Percentile",
@@ -1683,6 +1721,7 @@
             "Local contrast"
           ],
           "default": "Otsu",
+          "help": "Otsu splits the histogram in two; Triangle suits the skewed histogram of a mostly empty field, where Otsu cuts too high; Li keeps dim objects; the local rules follow an uneven background",
           "key": "method",
           "label": "Threshold",
           "read_only": false,
@@ -1756,6 +1795,60 @@
         },
         {
           "advanced": false,
+          "default": false,
+          "help": "Keep everything connected to what is clearly above the cut, down to a lower one. A filament that fades stays whole instead of breaking into pieces",
+          "key": "hysteresis",
+          "label": "Hysteresis",
+          "read_only": false,
+          "type": "bool"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "Where the lower cut sits between the image floor and the threshold: 0.5 is halfway, 1 turns hysteresis off",
+          "key": "hysteresis_ratio",
+          "label": "Hysteresis low",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "choices": [
+            "None",
+            "Active contour (Chan-Vese)"
+          ],
+          "default": "None",
+          "help": "Morphological Chan-Vese: moves the mask boundary to the best two-region fit of the image. It has no shape assumption, so it suits filaments as well as cells, and it repairs a threshold that leaked or pinched",
+          "key": "refine",
+          "label": "Refine",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": true,
+          "default": 20,
+          "key": "refine_iterations",
+          "label": "Refine steps",
+          "max": 500.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 1,
+          "help": "Curvature rounds per step; more gives a smoother contour",
+          "key": "refine_smoothing",
+          "label": "Refine smoothing",
+          "max": 5.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
           "default": 1,
           "help": "Binary opening drops specks and necks thinner than this (0 = off)",
           "key": "opening",
@@ -1779,9 +1872,11 @@
           "advanced": false,
           "choices": [
             "Watershed (distance)",
+            "Watershed (gradient)",
             "Connected components"
           ],
           "default": "Watershed (distance)",
+          "help": "How the mask becomes objects. The distance watershed splits at the waist between two objects; the gradient watershed splits where the image itself has an edge, which is what separates touching objects that have a visible boundary but no waist",
           "key": "post",
           "label": "Instances",
           "read_only": false,
@@ -1869,6 +1964,48 @@
           "min": 0.0,
           "read_only": false,
           "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0,
+          "help": "Drop objects larger than this (0 = off): the usual way to remove a merged clump",
+          "key": "max_voxels",
+          "label": "Max. voxels",
+          "max": 1000000000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "help": "Drop objects that fill less than this fraction of their bounding box (0 = off): removes scattered debris",
+          "key": "min_fill",
+          "label": "Min. fill",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": true,
+          "default": 0.0,
+          "help": "Drop objects whose bounding box is longer than this many times its width (0 = off)",
+          "key": "max_elongation",
+          "label": "Max. elongation",
+          "max": 100.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": false,
+          "help": "Objects touching the x / y edge are cut off, so their shape and size are not measurable",
+          "key": "drop_border",
+          "label": "Drop border objects",
+          "read_only": false,
+          "type": "bool"
         },
         {
           "advanced": true,

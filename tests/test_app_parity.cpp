@@ -156,6 +156,22 @@ namespace {
         // asserted directly in tests/test_app_tracking.cpp.
         {"classic_tubes", "classic", {{"channel", 0}, {"enhance", "Tubes (Frangi)"}, {"enhance_sigma", 1.0}, {"enhance_sigma_max", 3.0}, {"enhance_scales", 3}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
         {"classic_tophat", "classic", {{"channel", 0}, {"tophat", 4}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1}, {"post", "Connected components"}, {"min_voxels", 4}}},
+        {"classic_triangle", "classic", {{"channel", 0}, {"method", "Triangle"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_li", "classic", {{"channel", 0}, {"method", "Li"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_median", "classic", {{"channel", 0}, {"denoise", "Median 3x3"}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_hysteresis", "classic", {{"channel", 0}, {"method", "Otsu"}, {"hysteresis", true}, {"hysteresis_ratio", 0.6}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_snake", "classic", {{"channel", 0}, {"method", "Otsu"}, {"refine", "Active contour (Chan-Vese)"}, {"refine_iterations", 6}, {"refine_smoothing", 1}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_gradient_watershed", "classic", {{"channel", 0}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1}, {"post", "Watershed (gradient)"}, {"seeds", "H-maxima"}, {"seed_depth", 1.5}, {"min_voxels", 4}}},
+        // two objects before the filter, one after: the fixture would pass on a
+        // filter that did nothing if both survived it
+        {"classic_shape_filter", "classic", {{"channel", 0}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 1}, {"max_voxels", 30}, {"max_elongation", 8.0}}},
+        {"classic_shape_fill", "classic", {{"channel", 0}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 1}, {"min_fill", 0.5}}},
+        // No "Anisotropic diffusion" case: every step of it evaluates exp(),
+        // and the C++ standard library and NumPy do not agree in the last bit.
+        // Five iterations later a voxel can land on the other side of the
+        // threshold. The mirror follows the same formula and is asserted on
+        // its own behaviour (an edge kept, an interior flattened) in
+        // tests/test_app_labels.cpp.
     };
 
     ParamSet paramsOf(const json& j) {

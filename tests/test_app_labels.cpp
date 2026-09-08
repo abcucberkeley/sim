@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/labels.hpp"
+#include "core/ops/builtin.hpp"
 
 using namespace sirius;
 using namespace sirius::app;
@@ -496,4 +497,261 @@ TEST_CASE("labelColor cycles the palette and keeps the background black", "[app]
     CHECK(labelColor(1) == labelColor(8));
     CHECK(labelColor(1) != labelColor(2));
     CHECK_THAT(labelColor(2)[2], WithinAbs(1.0, 1e-6));   // #7c9cff
+}
+
+// --- the classical segmentation's newer building blocks --------------------
+
+TEST_CASE("A median filter removes shot noise and leaves the edge alone", "[app][labels][classic]") {
+    // a step edge down the middle, with one hot pixel on each side
+    const Index y = 7, x = 8;
+    std::vector<float> plane(static_cast<std::size_t>(y * x), 0.0f);
+    for (Index r = 0; r < y; ++r)
+        for (Index c = 4; c < x; ++c) plane[static_cast<std::size_t>(r * x + c)] = 1.0f;
+    plane[static_cast<std::size_t>(3 * x + 1)] = 9.0f;   // hot pixel in the dark half
+    plane[static_cast<std::size_t>(3 * x + 6)] = -9.0f;  // cold pixel in the bright half
+
+    std::vector<float> tmp;
+    medianFilterPlane(plane.data(), y, x, tmp);
+    CHECK_THAT(plane[static_cast<std::size_t>(3 * x + 1)], WithinAbs(0.0, 1e-6));
+    CHECK_THAT(plane[static_cast<std::size_t>(3 * x + 6)], WithinAbs(1.0, 1e-6));
+    // the edge did not move: column 3 is still dark, column 4 still bright
+    CHECK_THAT(plane[static_cast<std::size_t>(1 * x + 3)], WithinAbs(0.0, 1e-6));
+    CHECK_THAT(plane[static_cast<std::size_t>(1 * x + 4)], WithinAbs(1.0, 1e-6));
+
+    SECTION("a plane too small to hold the window is left alone") {
+        std::vector<float> tiny{1.0f, 5.0f};
+        medianFilterPlane(tiny.data(), 1, 2, tmp);
+        CHECK_THAT(tiny[1], WithinAbs(5.0, 1e-6));
+    }
+}
+
+TEST_CASE("Anisotropic diffusion flattens the inside and keeps the boundary", "[app][labels][classic]") {
+    const Index y = 9, x = 10;
+    std::vector<float> plane(static_cast<std::size_t>(y * x), 0.0f);
+    for (Index r = 0; r < y; ++r)
+        for (Index c = 5; c < x; ++c) plane[static_cast<std::size_t>(r * x + c)] = 1.0f;
+    // texture inside each half that diffusion should even out
+    for (Index r = 0; r < y; ++r) {
+        plane[static_cast<std::size_t>(r * x + 2)] += (r % 2 == 0 ? 0.05f : -0.05f);
+        plane[static_cast<std::size_t>(r * x + 7)] += (r % 2 == 0 ? -0.05f : 0.05f);
+    }
+    const float stepBefore = plane[static_cast<std::size_t>(4 * x + 5)] - plane[static_cast<std::size_t>(4 * x + 4)];
+    auto roughness = [&](const std::vector<float>& v, Index column) {
+        double sum = 0.0;
+        for (Index r = 1; r < y; ++r)
+            sum += std::fabs(v[static_cast<std::size_t>(r * x + column)] - v[static_cast<std::size_t>((r - 1) * x + column)]);
+        return sum;
+    };
+    const double roughBefore = roughness(plane, 2);
+
+    std::vector<float> tmp;
+    anisotropicDiffusionPlane(plane.data(), y, x, 12, 0.05, tmp);
+    CHECK(roughness(plane, 2) < 0.4 * roughBefore);
+    const float stepAfter = plane[static_cast<std::size_t>(4 * x + 5)] - plane[static_cast<std::size_t>(4 * x + 4)];
+    CHECK(stepAfter > 0.8f * stepBefore);   // a Gaussian would have halved it
+
+    SECTION("no iterations is no change") {
+        std::vector<float> flat(static_cast<std::size_t>(y * x), 0.25f);
+        anisotropicDiffusionPlane(flat.data(), y, x, 0, 0.1, tmp);
+        CHECK_THAT(flat[10], WithinAbs(0.25, 1e-9));
+        // a plane with nothing in it must not divide by its own zero range
+        anisotropicDiffusionPlane(flat.data(), y, x, 3, 0.1, tmp);
+        CHECK(std::isfinite(flat[10]));
+    }
+}
+
+TEST_CASE("Triangle and Li cut a skewed histogram lower than Otsu", "[app][labels][classic]") {
+    // the shape of a fluorescence field: a tall background peak at 0.05 and a
+    // thin tail of signal running up from it with no gap in between. Otsu wants
+    // two classes of comparable weight, so it cuts well into the tail and
+    // throws most of the signal away; the triangle sits at the foot of the
+    // peak and Li lands between the two.
+    std::vector<float> values;
+    for (int i = 0; i <= 20; ++i)
+        for (int k = 0, count = 40 * (11 - std::abs(i - 10)); k < count; ++k) values.push_back(0.005f * static_cast<float>(i));
+    const float backgroundPeak = 0.05f, backgroundTop = 0.10f;
+    for (int i = 0; i < 60; ++i) values.push_back(0.12f + 0.014f * static_cast<float>(i));
+    const float signalTop = 0.12f + 0.014f * 59.0f;
+    const Index n = static_cast<Index>(values.size());
+
+    const float triangle = triangleThreshold(values.data(), n);
+    const float li = liThreshold(values.data(), n);
+    const float otsu = otsuThreshold(values.data(), n);
+    CHECK(triangle > backgroundPeak);
+    CHECK(triangle < li);
+    CHECK(li < otsu);
+    CHECK(otsu < signalTop);
+    // what the ordering costs and buys: the triangle keeps every signal voxel
+    // and lets some background in, Otsu is the other way round
+    auto kept = [&](float cut, float from, float to) {
+        Index count = 0;
+        for (float v : values)
+            if (v > cut && v >= from && v <= to) ++count;
+        return count;
+    };
+    CHECK(kept(triangle, 0.12f, 1.0f) == 60);
+    CHECK(kept(otsu, 0.12f, 1.0f) < 60);
+    CHECK(kept(otsu, 0.0f, backgroundTop) == 0);
+    CHECK(kept(triangle, 0.0f, backgroundTop) > 0);
+
+    SECTION("a flat image has no threshold to find") {
+        std::vector<float> flat(64, 0.4f);
+        CHECK_THAT(triangleThreshold(flat.data(), 64), WithinAbs(0.4, 1e-6));
+        CHECK_THAT(liThreshold(flat.data(), 64), WithinAbs(0.4, 1e-6));
+        CHECK_THAT(triangleThreshold(nullptr, 0), WithinAbs(0.0, 1e-9));
+        CHECK_THAT(liThreshold(nullptr, 0), WithinAbs(0.0, 1e-9));
+    }
+}
+
+TEST_CASE("Hysteresis keeps what is attached to something certain", "[app][labels][classic]") {
+    // a bright core with a dim tail, and a dim speck on its own
+    const Index z = 1, y = 5, x = 9;
+    const Index n = z * y * x;
+    std::vector<std::uint8_t> high(static_cast<std::size_t>(n), 0), low(static_cast<std::size_t>(n), 0), out(static_cast<std::size_t>(n), 0);
+    auto at = [&](Index r, Index c) { return static_cast<std::size_t>(r * x + c); };
+    for (Index c = 1; c <= 2; ++c) high[at(2, c)] = 1;             // the certain core
+    for (Index c = 1; c <= 5; ++c) low[at(2, c)] = 1;              // core plus its fading tail
+    low[at(0, 8)] = 1;                                             // a speck with no core
+
+    const Index kept = hysteresisMask(high.data(), low.data(), z, y, x, out.data());
+    CHECK(kept == 5);
+    for (Index c = 1; c <= 5; ++c) CHECK(out[at(2, c)] == 1);
+    CHECK(out[at(0, 8)] == 0);
+
+    SECTION("nothing certain keeps nothing") {
+        std::fill(high.begin(), high.end(), std::uint8_t{0});
+        CHECK(hysteresisMask(high.data(), low.data(), z, y, x, out.data()) == 0);
+    }
+}
+
+TEST_CASE("The gradient magnitude peaks on the edge, not in the object", "[app][labels][classic]") {
+    const Index z = 3, y = 5, x = 7;
+    std::vector<float> values(static_cast<std::size_t>(z * y * x), 0.0f);
+    auto at = [&](Index k, Index r, Index c) { return static_cast<std::size_t>((k * y + r) * x + c); };
+    for (Index k = 0; k < z; ++k)
+        for (Index r = 0; r < y; ++r)
+            for (Index c = 4; c < x; ++c) values[at(k, r, c)] = 1.0f;
+    std::vector<float> g(values.size(), 0.0f);
+    gradientMagnitude(values.data(), z, y, x, 1.0, g.data());
+    CHECK_THAT(g[at(1, 2, 3)], WithinAbs(0.5, 1e-6));   // one voxel before the step
+    CHECK_THAT(g[at(1, 2, 4)], WithinAbs(0.5, 1e-6));   // one voxel after it
+    CHECK_THAT(g[at(1, 2, 1)], WithinAbs(0.0, 1e-6));   // flat inside
+    CHECK_THAT(g[at(1, 2, 6)], WithinAbs(0.0, 1e-6));
+
+    SECTION("z is measured in the same physical units as x and y") {
+        std::vector<float> ramp(static_cast<std::size_t>(z * y * x), 0.0f);
+        for (Index k = 0; k < z; ++k)
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) ramp[at(k, r, c)] = static_cast<float>(k);
+        gradientMagnitude(ramp.data(), z, y, x, 2.0, g.data());
+        CHECK_THAT(g[at(1, 2, 3)], WithinAbs(0.5, 1e-6));   // one per plane, planes twice as far apart
+    }
+}
+
+TEST_CASE("The active contour moves the mask onto the object", "[app][labels][classic]") {
+    // a bright square on a dark ground
+    const Index y = 16, x = 16;
+    std::vector<float> image(static_cast<std::size_t>(y * x), 0.0f);
+    auto at = [&](Index r, Index c) { return static_cast<std::size_t>(r * x + c); };
+    for (Index r = 4; r < 12; ++r)
+        for (Index c = 4; c < 12; ++c) image[at(r, c)] = 1.0f;
+    auto agreement = [&](const std::vector<std::uint8_t>& m) {
+        Index inside = 0, outside = 0;
+        for (Index r = 0; r < y; ++r)
+            for (Index c = 0; c < x; ++c)
+                if (m[at(r, c)]) ((r >= 4 && r < 12 && c >= 4 && c < 12) ? inside : outside) += 1;
+        return std::pair<Index, Index>{inside, outside};
+    };
+    std::vector<std::uint8_t> tmp;
+
+    SECTION("a mask that fell short of the object grows out to its edge") {
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(y * x), 0);
+        for (Index r = 6; r < 10; ++r)
+            for (Index c = 6; c < 10; ++c) mask[at(r, c)] = 1;
+        // no curvature term here: the region force alone has to do the work
+        morphologicalChanVesePlane(image.data(), mask.data(), y, x, 30, 0, tmp);
+        const auto [inside, outside] = agreement(mask);
+        CHECK(inside == 64);   // the whole square
+        CHECK(outside == 0);
+    }
+
+    SECTION("a mask that spilled over the object contracts onto it") {
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(y * x), 0);
+        for (Index r = 2; r < 14; ++r)
+            for (Index c = 2; c < 14; ++c) mask[at(r, c)] = 1;
+        morphologicalChanVesePlane(image.data(), mask.data(), y, x, 30, 0, tmp);
+        const auto [inside, outside] = agreement(mask);
+        CHECK(inside == 64);
+        CHECK(outside == 0);
+    }
+
+    SECTION("the curvature term removes a thin arm the threshold left behind") {
+        std::vector<std::uint8_t> mask(static_cast<std::size_t>(y * x), 0);
+        for (Index r = 4; r < 12; ++r)
+            for (Index c = 4; c < 12; ++c) mask[at(r, c)] = 1;
+        for (Index c = 12; c < 15; ++c) mask[at(8, c)] = 1;   // one voxel wide, over dark ground
+        morphologicalChanVesePlane(image.data(), mask.data(), y, x, 6, 1, tmp);
+        for (Index c = 12; c < 15; ++c) CHECK(mask[at(8, c)] == 0);
+        const auto [inside, outside] = agreement(mask);
+        CHECK(inside > 50);
+        CHECK(outside == 0);
+    }
+
+    SECTION("a mask that covers everything is left alone") {
+        std::vector<std::uint8_t> all(static_cast<std::size_t>(y * x), 1);
+        morphologicalChanVesePlane(image.data(), all.data(), y, x, 5, 1, tmp);
+        CHECK(std::all_of(all.begin(), all.end(), [](std::uint8_t v) { return v == 1; }));
+    }
+}
+
+TEST_CASE("Shape filters drop what is not the object being looked for", "[app][labels][classic]") {
+    const Index z = 1, y = 12, x = 12;
+    std::vector<std::uint32_t> labels(static_cast<std::size_t>(z * y * x), 0u);
+    auto at = [&](Index r, Index c) { return static_cast<std::size_t>(r * x + c); };
+    // 1: a compact 3x3 block well inside the plane
+    for (Index r = 4; r < 7; ++r)
+        for (Index c = 4; c < 7; ++c) labels[at(r, c)] = 1;
+    // 2: a long thin line, also inside
+    for (Index c = 1; c < 11; ++c) labels[at(9, c)] = 2;
+    // 3: a block against the left edge
+    for (Index r = 1; r < 3; ++r)
+        for (Index c = 0; c < 2; ++c) labels[at(r, c)] = 3;
+
+    auto surviving = [&](const ShapeFilter& f) {
+        std::vector<std::uint32_t> copy = labels;
+        const std::uint32_t count = filterLabelsByShape(copy.data(), z, y, x, f);
+        std::set<std::uint32_t> ids;
+        for (std::uint32_t v : copy)
+            if (v) ids.insert(v);
+        CHECK(ids.size() == count);   // relabelled densely
+        return count;
+    };
+
+    ShapeFilter none;
+    CHECK(surviving(none) == 3);
+
+    ShapeFilter border;
+    border.dropBorder = true;
+    CHECK(surviving(border) == 2);   // the one against the edge goes
+
+    ShapeFilter thin;
+    thin.maxElongation = 3.0;
+    CHECK(surviving(thin) == 2);     // the 10 x 1 line goes
+
+    ShapeFilter big;
+    big.maxVoxels = 10;
+    CHECK(surviving(big) == 3);      // the largest object here is the 10 voxel line
+    big.maxVoxels = 9;
+    CHECK(surviving(big) == 2);      // which this drops
+    big.maxVoxels = 5;
+    CHECK(surviving(big) == 1);      // only the 4 voxel corner block is left
+
+    ShapeFilter fill;
+    fill.minFill = 0.9;
+    CHECK(surviving(fill) == 3);     // all three fill their own boxes
+
+    SECTION("a volume with no labels filters to nothing") {
+        std::vector<std::uint32_t> empty(static_cast<std::size_t>(z * y * x), 0u);
+        CHECK(filterLabelsByShape(empty.data(), z, y, x, border) == 0);
+    }
 }

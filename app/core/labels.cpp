@@ -1,6 +1,7 @@
 #include "core/labels.hpp"
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <cmath>
 #include <limits>
@@ -965,6 +966,340 @@ namespace sirius::app {
         std::uint32_t next = 0;
         for (std::uint32_t id = 1; id <= maxId; ++id)
             if (counts[id] > 0 && counts[id] >= minVoxels) remap[id] = ++next;
+        for (Index i = 0; i < n; ++i) labels[i] = remap[labels[i]];
+        return next;
+    }
+
+    // --- filters and thresholds -------------------------------------------
+
+    void medianFilterPlane(float* plane, Index y, Index x, std::vector<float>& tmp) {
+        if (y < 3 || x < 3) return;
+        tmp.assign(plane, plane + static_cast<std::size_t>(y * x));
+        std::array<float, 9> win{};
+        for (Index r = 0; r < y; ++r)
+            for (Index c = 0; c < x; ++c) {
+                int k = 0;
+                for (Index dr = -1; dr <= 1; ++dr)
+                    for (Index dc = -1; dc <= 1; ++dc) {
+                        const Index rr = std::clamp<Index>(r + dr, 0, y - 1), cc = std::clamp<Index>(c + dc, 0, x - 1);
+                        win[static_cast<std::size_t>(k++)] = tmp[static_cast<std::size_t>(rr * x + cc)];
+                    }
+                std::nth_element(win.begin(), win.begin() + 4, win.end());
+                plane[r * x + c] = win[4];
+            }
+    }
+
+    void anisotropicDiffusionPlane(float* plane, Index y, Index x, int iterations, double k, std::vector<float>& tmp) {
+        if (iterations <= 0 || y < 3 || x < 3) return;
+        const Index n = y * x;
+        float lo = std::numeric_limits<float>::max(), hi = std::numeric_limits<float>::lowest();
+        for (Index i = 0; i < n; ++i) {
+            lo = std::min(lo, plane[i]);
+            hi = std::max(hi, plane[i]);
+        }
+        // k is a fraction of the range, so the same setting works whatever the
+        // units are; a flat plane has nothing to diffuse
+        const double kk = std::max(1e-12, k) * std::max(1e-12, static_cast<double>(hi - lo));
+        const double inv = 1.0 / (kk * kk);
+        constexpr double kLambda = 0.25;   // stability limit for four neighbours
+        for (int it = 0; it < iterations; ++it) {
+            tmp.assign(plane, plane + static_cast<std::size_t>(n));
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) {
+                    const float centre = tmp[static_cast<std::size_t>(r * x + c)];
+                    double sum = 0.0;
+                    const Index rr[4] = {r > 0 ? r - 1 : 0, r + 1 < y ? r + 1 : y - 1, r, r};
+                    const Index cc[4] = {c, c, c > 0 ? c - 1 : 0, c + 1 < x ? c + 1 : x - 1};
+                    for (int nb = 0; nb < 4; ++nb) {
+                        const double g = static_cast<double>(tmp[static_cast<std::size_t>(rr[nb] * x + cc[nb])]) - centre;
+                        sum += g * std::exp(-g * g * inv);   // Perona-Malik conductance
+                    }
+                    plane[r * x + c] = static_cast<float>(centre + kLambda * sum);
+                }
+        }
+    }
+
+    namespace {
+        // 256 bin histogram over the data range; the thresholds below all work
+        // on it, and all return a value in the data's own units.
+        struct Histogram {
+            std::array<Index, 256> bins{};
+            float lo = 0.0f, hi = 0.0f;
+            bool degenerate = true;
+
+            float valueOf(std::size_t bin) const {
+                return lo + static_cast<float>((static_cast<double>(bin) + 0.5) / 256.0 * (static_cast<double>(hi) - lo));
+            }
+        };
+
+        Histogram histogramOf(const float* values, Index n) {
+            Histogram h;
+            if (n <= 0) return h;
+            h.lo = std::numeric_limits<float>::max();
+            h.hi = std::numeric_limits<float>::lowest();
+            for (Index i = 0; i < n; ++i) {
+                if (!std::isfinite(values[i])) continue;
+                h.lo = std::min(h.lo, values[i]);
+                h.hi = std::max(h.hi, values[i]);
+            }
+            if (!(h.hi > h.lo)) return h;
+            h.degenerate = false;
+            const double scale = 255.0 / (static_cast<double>(h.hi) - h.lo);
+            for (Index i = 0; i < n; ++i) {
+                if (!std::isfinite(values[i])) continue;
+                const int b = static_cast<int>((static_cast<double>(values[i]) - h.lo) * scale);
+                ++h.bins[static_cast<std::size_t>(std::clamp(b, 0, 255))];
+            }
+            return h;
+        }
+    } // namespace
+
+    float triangleThreshold(const float* values, Index n) {
+        const Histogram h = histogramOf(values, n);
+        if (h.degenerate) return h.lo;
+        // peak, and the far end of the histogram: the last non-empty bin
+        std::size_t peak = 0;
+        Index peakCount = 0;
+        for (std::size_t b = 0; b < h.bins.size(); ++b)
+            if (h.bins[b] > peakCount) {
+                peakCount = h.bins[b];
+                peak = b;
+            }
+        std::size_t first = 0, last = h.bins.size() - 1;
+        while (first < h.bins.size() && h.bins[first] == 0) ++first;
+        while (last > 0 && h.bins[last] == 0) --last;
+        // the long tail is the side of the peak with more room; the method
+        // measures the drop from the peak to the end of that tail
+        const bool tailRight = last - peak >= peak - first;
+        const std::size_t end = tailRight ? last : first;
+        if (end == peak) return h.valueOf(peak);
+        const double dx = static_cast<double>(end) - static_cast<double>(peak);
+        const double dy = -static_cast<double>(peakCount);
+        const double norm = std::sqrt(dx * dx + dy * dy);
+        double best = -1.0;
+        std::size_t bestBin = peak;
+        const std::size_t from = std::min(peak, end), to = std::max(peak, end);
+        for (std::size_t b = from; b <= to; ++b) {
+            // distance from the bin to the line peak -> end
+            const double px = static_cast<double>(b) - static_cast<double>(peak);
+            const double py = static_cast<double>(h.bins[b]) - static_cast<double>(peakCount);
+            const double d = std::fabs(px * dy - py * dx) / norm;
+            if (d > best) {
+                best = d;
+                bestBin = b;
+            }
+        }
+        return h.valueOf(bestBin);
+    }
+
+    float liThreshold(const float* values, Index n) {
+        const Histogram h = histogramOf(values, n);
+        if (h.degenerate) return h.lo;
+        // Li & Tam's fixed point: the cut is the point where the two class
+        // means agree with the cross entropy, found by iterating on it
+        double total = 0.0, weighted = 0.0;
+        for (std::size_t b = 0; b < h.bins.size(); ++b) {
+            total += static_cast<double>(h.bins[b]);
+            weighted += static_cast<double>(b) * static_cast<double>(h.bins[b]);
+        }
+        if (total <= 0.0) return h.lo;
+        double t = weighted / total;   // start at the mean
+        for (int it = 0; it < 100; ++it) {
+            double sumLo = 0.0, countLo = 0.0, sumHi = 0.0, countHi = 0.0;
+            for (std::size_t b = 0; b < h.bins.size(); ++b) {
+                const double c = static_cast<double>(h.bins[b]);
+                if (static_cast<double>(b) <= t) {
+                    sumLo += static_cast<double>(b) * c;
+                    countLo += c;
+                } else {
+                    sumHi += static_cast<double>(b) * c;
+                    countHi += c;
+                }
+            }
+            const double meanLo = countLo > 0.0 ? sumLo / countLo : 0.0;
+            const double meanHi = countHi > 0.0 ? sumHi / countHi : 0.0;
+            // both means have to be positive for the logarithms to exist; the
+            // histogram starts at bin 0, so shift by one
+            const double a = meanLo + 1.0, b2 = meanHi + 1.0;
+            const double next = (b2 - a) / (std::log(b2) - std::log(a));
+            if (!std::isfinite(next)) break;
+            if (std::fabs(next - t) < 0.5) {
+                t = next;
+                break;
+            }
+            t = next;
+        }
+        return h.valueOf(static_cast<std::size_t>(std::clamp(t, 0.0, 255.0)));
+    }
+
+    Index hysteresisMask(const std::uint8_t* high, const std::uint8_t* low, Index z, Index y, Index x, std::uint8_t* out) {
+        const Index n = z * y * x;
+        std::vector<std::uint8_t> keep(static_cast<std::size_t>(n), 0);
+        std::vector<Index> stack;
+        for (Index i = 0; i < n; ++i)
+            if (high[i] && low[i] && !keep[static_cast<std::size_t>(i)]) {
+                keep[static_cast<std::size_t>(i)] = 1;
+                stack.push_back(i);
+                while (!stack.empty()) {
+                    const Index cur = stack.back();
+                    stack.pop_back();
+                    const Index cz = cur / (y * x), rest = cur % (y * x), cy = rest / x, cx = rest % x;
+                    const Index nz[6] = {cz - 1, cz + 1, cz, cz, cz, cz};
+                    const Index ny[6] = {cy, cy, cy - 1, cy + 1, cy, cy};
+                    const Index nx[6] = {cx, cx, cx, cx, cx - 1, cx + 1};
+                    for (int k = 0; k < 6; ++k) {
+                        if (nz[k] < 0 || nz[k] >= z || ny[k] < 0 || ny[k] >= y || nx[k] < 0 || nx[k] >= x) continue;
+                        const Index j = (nz[k] * y + ny[k]) * x + nx[k];
+                        if (low[j] && !keep[static_cast<std::size_t>(j)]) {
+                            keep[static_cast<std::size_t>(j)] = 1;
+                            stack.push_back(j);
+                        }
+                    }
+                }
+            }
+        Index kept = 0;
+        for (Index i = 0; i < n; ++i) {
+            out[i] = keep[static_cast<std::size_t>(i)];
+            kept += out[i];
+        }
+        return kept;
+    }
+
+    void gradientMagnitude(const float* values, Index z, Index y, Index x, double zAspect, float* out) {
+        const double invZ = zAspect > 0.0 ? 1.0 / zAspect : 1.0;
+        for (Index k = 0; k < z; ++k)
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) {
+                    const Index i = (k * y + r) * x + c;
+                    const Index kp = std::min(k + 1, z - 1), km = std::max<Index>(k - 1, 0);
+                    const Index rp = std::min(r + 1, y - 1), rm = std::max<Index>(r - 1, 0);
+                    const Index cp = std::min(c + 1, x - 1), cm = std::max<Index>(c - 1, 0);
+                    const double gx = 0.5 * (static_cast<double>(values[(k * y + r) * x + cp]) - values[(k * y + r) * x + cm]);
+                    const double gy = 0.5 * (static_cast<double>(values[(k * y + rp) * x + c]) - values[(k * y + rm) * x + c]);
+                    const double gz = 0.5 * (static_cast<double>(values[(kp * y + r) * x + c]) - values[(km * y + r) * x + c]) * invZ;
+                    out[i] = static_cast<float>(std::sqrt(gx * gx + gy * gy + gz * gz));
+                }
+    }
+
+    namespace {
+        // The four line elements of the morphological curvature operator: the
+        // horizontal, the vertical and the two diagonals.
+        constexpr int kLineDy[4][3] = {{0, 0, 0}, {-1, 0, 1}, {-1, 0, 1}, {-1, 0, 1}};
+        constexpr int kLineDx[4][3] = {{-1, 0, 1}, {0, 0, 0}, {-1, 0, 1}, {1, 0, -1}};
+
+        std::uint8_t lineValue(const std::uint8_t* m, Index y, Index x, Index r, Index c, int line, bool maximum) {
+            std::uint8_t acc = maximum ? 0 : 1;
+            for (int k = 0; k < 3; ++k) {
+                const Index rr = std::clamp<Index>(r + kLineDy[line][k], 0, y - 1);
+                const Index cc = std::clamp<Index>(c + kLineDx[line][k], 0, x - 1);
+                const std::uint8_t v = m[rr * x + cc];
+                acc = maximum ? std::max(acc, v) : std::min(acc, v);
+            }
+            return acc;
+        }
+
+        // sup over the lines of the inf along each (SI), or the other way (IS)
+        void supInf(std::uint8_t* mask, Index y, Index x, std::vector<std::uint8_t>& tmp, bool supOfInf) {
+            tmp.assign(mask, mask + static_cast<std::size_t>(y * x));
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) {
+                    std::uint8_t acc = supOfInf ? 0 : 1;
+                    for (int line = 0; line < 4; ++line) {
+                        const std::uint8_t v = lineValue(tmp.data(), y, x, r, c, line, !supOfInf);
+                        acc = supOfInf ? std::max(acc, v) : std::min(acc, v);
+                    }
+                    mask[r * x + c] = acc;
+                }
+        }
+    } // namespace
+
+    void morphologicalChanVesePlane(const float* image, std::uint8_t* mask, Index y, Index x, int iterations, int smoothing,
+                                    std::vector<std::uint8_t>& tmp) {
+        const Index n = y * x;
+        if (iterations <= 0 || n <= 0) return;
+        for (int it = 0; it < iterations; ++it) {
+            double sumIn = 0.0, countIn = 0.0, sumOut = 0.0, countOut = 0.0;
+            for (Index i = 0; i < n; ++i) {
+                if (mask[i]) {
+                    sumIn += image[i];
+                    countIn += 1.0;
+                } else {
+                    sumOut += image[i];
+                    countOut += 1.0;
+                }
+            }
+            if (countIn == 0.0 || countOut == 0.0) return;   // the contour has vanished or filled the plane
+            const double c1 = sumIn / countIn, c0 = sumOut / countOut;
+            // the region force only acts where the contour is: |grad u| is
+            // zero everywhere else, which is what keeps this a narrow band
+            tmp.assign(mask, mask + static_cast<std::size_t>(n));
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) {
+                    const Index i = r * x + c;
+                    const Index rp = std::min(r + 1, y - 1), rm = std::max<Index>(r - 1, 0);
+                    const Index cp = std::min(c + 1, x - 1), cm = std::max<Index>(c - 1, 0);
+                    const int gy = static_cast<int>(tmp[static_cast<std::size_t>(rp * x + c)]) - tmp[static_cast<std::size_t>(rm * x + c)];
+                    const int gx = static_cast<int>(tmp[static_cast<std::size_t>(r * x + cp)]) - tmp[static_cast<std::size_t>(r * x + cm)];
+                    if (gy == 0 && gx == 0) continue;
+                    const double v = image[i];
+                    const double aux = (v - c1) * (v - c1) - (v - c0) * (v - c0);
+                    if (aux < 0.0) mask[i] = 1;        // closer to the inside
+                    else if (aux > 0.0) mask[i] = 0;   // closer to the outside
+                }
+            for (int k = 0; k < smoothing; ++k) {
+                // alternating, as the paper has it: SI then IS, then IS then SI
+                supInf(mask, y, x, tmp, (it + k) % 2 == 0);
+                supInf(mask, y, x, tmp, (it + k) % 2 != 0);
+            }
+        }
+    }
+
+    std::uint32_t filterLabelsByShape(std::uint32_t* labels, Index z, Index y, Index x, const ShapeFilter& filter) {
+        const Index n = z * y * x;
+        std::uint32_t maxId = 0;
+        for (Index i = 0; i < n; ++i) maxId = std::max(maxId, labels[i]);
+        if (maxId == 0) return 0;
+        struct Acc {
+            Index z0 = std::numeric_limits<Index>::max(), z1 = 0, y0 = std::numeric_limits<Index>::max(), y1 = 0;
+            Index x0 = std::numeric_limits<Index>::max(), x1 = 0;
+            Index voxels = 0;
+        };
+        std::vector<Acc> acc(static_cast<std::size_t>(maxId) + 1);
+        for (Index k = 0; k < z; ++k)
+            for (Index r = 0; r < y; ++r)
+                for (Index c = 0; c < x; ++c) {
+                    const std::uint32_t id = labels[(k * y + r) * x + c];
+                    if (id == 0) continue;
+                    Acc& a = acc[id];
+                    a.z0 = std::min(a.z0, k);
+                    a.z1 = std::max(a.z1, k + 1);
+                    a.y0 = std::min(a.y0, r);
+                    a.y1 = std::max(a.y1, r + 1);
+                    a.x0 = std::min(a.x0, c);
+                    a.x1 = std::max(a.x1, c + 1);
+                    ++a.voxels;
+                }
+        std::vector<std::uint32_t> remap(acc.size(), 0);
+        std::uint32_t next = 0;
+        for (std::uint32_t id = 1; id <= maxId; ++id) {
+            const Acc& a = acc[id];
+            if (a.voxels == 0) continue;
+            if (filter.minVoxels > 0 && a.voxels < filter.minVoxels) continue;
+            if (filter.maxVoxels > 0 && a.voxels > filter.maxVoxels) continue;
+            if (filter.dropBorder && (a.y0 == 0 || a.y1 == y || a.x0 == 0 || a.x1 == x)) continue;
+            const Index dz = a.z1 - a.z0, dy = a.y1 - a.y0, dx = a.x1 - a.x0;
+            if (filter.minFill > 0.0) {
+                const double box = static_cast<double>(dz) * static_cast<double>(dy) * static_cast<double>(dx);
+                if (box > 0.0 && static_cast<double>(a.voxels) / box < filter.minFill) continue;
+            }
+            if (filter.maxElongation > 0.0) {
+                // in plane only: a stack of few, thick planes is not elongated
+                // in z in any sense the caller means by the word
+                const Index longSide = std::max(dy, dx), shortSide = std::max<Index>(1, std::min(dy, dx));
+                if (static_cast<double>(longSide) / static_cast<double>(shortSide) > filter.maxElongation) continue;
+            }
+            remap[id] = ++next;
+        }
         for (Index i = 0; i < n; ++i) labels[i] = remap[labels[i]];
         return next;
     }
