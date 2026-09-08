@@ -282,6 +282,7 @@ namespace sirius::app {
         Index nz() const { return model.dims().z; }
         Index nt() const { return model.dims().t; }
         double zAspect() const {
+            if (!vs().physicalZ) return 1.0;   // voxel grid: one row per plane
             const auto& v = model.meta().voxelUm;
             return v[0] > 0.0 && v[2] > 0.0 ? v[2] / v[0] : 1.0;
         }

@@ -16,6 +16,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
@@ -76,6 +77,7 @@ namespace sirius::app {
         QComboBox* readAs = nullptr;
         QTableWidget* recent = nullptr;
         QPushButton* open = nullptr;
+        QPushButton* oneStack = nullptr;   // a folder of TIFFs, a frame per file
         QTimer probeTimer;
         DatasetMeta probed;
         bool probeOk = false;
@@ -250,8 +252,7 @@ namespace sirius::app {
                                    : fi.suffix().isEmpty()                 ? QStringLiteral("dir")
                                                                            : fi.suffix();
             impl_->recent->setItem(r, 1, new QTableWidgetItem(format));
-            impl_->recent->setItem(r, 2, new QTableWidgetItem(fi.exists() ? fi.lastModified().toString(QStringLiteral("MMM d HH:mm"))
-                                                                          : QStringLiteral("missing")));
+            impl_->recent->setItem(r, 2, new QTableWidgetItem(fi.exists() ? fi.lastModified().toString(QStringLiteral("MMM d HH:mm")) : QStringLiteral("missing")));
         }
         root->addWidget(impl_->recent);
 
@@ -260,15 +261,21 @@ namespace sirius::app {
         buttons->addStretch(1);
         auto* cancel = new QPushButton(QStringLiteral("Cancel"), this);
         widgets::setButtonClass(cancel, "ghost");
+        impl_->oneStack = new QPushButton(QStringLiteral("Open as one stack"), this);
+        widgets::setButtonClass(impl_->oneStack, "secondary");
+        impl_->oneStack->hide();
+        impl_->oneStack->setToolTip(QStringLiteral("Every TIFF in the folder as one time point of one stack, in name order"));
         impl_->open = new QPushButton(QStringLiteral("Open"), this);
         widgets::setButtonClass(impl_->open, "primary");
         impl_->open->setDefault(true);
         buttons->addWidget(cancel);
+        buttons->addWidget(impl_->oneStack);
         buttons->addWidget(impl_->open);
         root->addLayout(buttons);
 
         connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
         connect(impl_->open, &QPushButton::clicked, this, &QDialog::accept);
+        connect(impl_->oneStack, &QPushButton::clicked, this, [this] { openAsOneStack(); });
         connect(browse, &QPushButton::clicked, this, [this] {
             const QString start = impl_->path->text().isEmpty() ? QString() : QFileInfo(impl_->path->text()).absolutePath();
             const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Open dataset"), start, fileFilter());
@@ -310,6 +317,7 @@ namespace sirius::app {
             impl_->probeOk = false;
             impl_->isFolder = false;
             impl_->error->hide();
+            impl_->oneStack->hide();
             impl_->layoutBox->setVisible(true);
             if (p.isEmpty() || !QFileInfo::exists(p)) {
                 impl_->facts->setText(p.isEmpty() ? QStringLiteral("Choose a TIFF / OME-TIFF file, a zarr / N5 store or a folder of TIFF files.")
@@ -322,12 +330,15 @@ namespace sirius::app {
                 // a folder of TIFFs without a manifest is not yet a dataset
                 const int tiffs = tiffCount(p);
                 if (tiffs > 0) {
-                    impl_->facts->setText(QStringLiteral("Folder of %1 TIFF file(s) without a %2 manifest. %3")
+                    impl_->facts->setText(QStringLiteral("Folder of %1 TIFF file(s) without a %2 manifest. "
+                                                         "Open as one stack reads them in name order, one time point each. "
+                                                         "%3")
                                               .arg(tiffs)
                                               .arg(QLatin1String(DatasetManifest::kFileName),
-                                                   impl_->bridge ? QStringLiteral("Use Folder… to describe how the file names map to channels, time points and tiles.")
-                                                                 : QStringLiteral("Describe the files with File ▸ Open folder…")));
+                                                   impl_->bridge ? QStringLiteral("For channels, tiles or another order, use Folder….")
+                                                                 : QStringLiteral("For anything else, File ▸ Open folder….")));
                     impl_->open->setEnabled(false);
+                    impl_->oneStack->setVisible(impl_->bridge != nullptr);
                     updatePageCheck();
                     return;
                 }
@@ -390,6 +401,54 @@ namespace sirius::app {
         impl_->fastSi->setEnabled(false);
         impl_->open->setEnabled(false);
         impl_->probeTimer.start();
+    }
+
+    // A folder of TIFFs with no manifest, read the plain way: every file one
+    // time point of one stack, in name order. The manifest is written beside
+    // the files, as the Folder dialog does, so the folder opens directly from
+    // then on and the reading can be corrected by hand.
+    void OpenDatasetDialog::openAsOneStack() {
+        const QString folder = impl_->path->text().trimmed();
+        if (folder.isEmpty() || !impl_->bridge) return;
+        const std::filesystem::path dir(toStd(folder));
+        DatasetManifest manifest;
+        try {
+            manifest = manifestOfOneStack(dir);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, QStringLiteral("Open as one stack"), QString::fromUtf8(e.what()));
+            return;
+        }
+        if (manifest.files.empty()) {
+            QMessageBox::information(this, QStringLiteral("Open as one stack"),
+                                     QStringLiteral("No TIFF files in %1.").arg(folder));
+            return;
+        }
+        const std::filesystem::path manifestPath = dir / DatasetManifest::kFileName;
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(QStringLiteral("Open as one stack"));
+        box.setText(QStringLiteral("Read the %1 files as one stack, one time point each?").arg(manifest.files.size()));
+        box.setInformativeText(QStringLiteral("In name order, %1 first and %2 last. A %3 is written beside the files so the "
+                                              "folder opens directly from then on; edit it, or use Folder…, for channels, "
+                                              "tiles or another order.")
+                                   .arg(fromStd(manifest.files.front().path), fromStd(manifest.files.back().path),
+                                        QLatin1String(DatasetManifest::kFileName)));
+        QPushButton* go = box.addButton(QStringLiteral("Open"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(go);
+        box.exec();
+        if (box.clickedButton() != go) return;
+        try {
+            manifest.save(manifestPath);
+            OpenOptions options;
+            options.tile = 0;
+            impl_->bridge->wb().openDataset(toStd(folder), options);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, QStringLiteral("Open as one stack"), QString::fromUtf8(e.what()));
+            return;
+        }
+        addRecentFile(folder);
+        reject();   // the dataset is open; the caller must not open it again
     }
 
     OpenDatasetDialog::~OpenDatasetDialog() = default;

@@ -99,6 +99,7 @@ namespace sirius::app {
                 {"labels", labels},
                 {"bounding_box", boundingBox},
                 {"scale_bar", scaleBar},
+                {"physical_z", physicalZ},
                 {"sync_zt", syncZT},
                 {"channels", channelVisible},
                 {"zoom", zoom},
@@ -136,6 +137,7 @@ namespace sirius::app {
         boolean("labels", s.labels);
         boolean("bounding_box", s.boundingBox);
         boolean("scale_bar", s.scaleBar);
+        boolean("physical_z", s.physicalZ);
         boolean("sync_zt", s.syncZT);
         if (j.contains("channels") && j["channels"].is_array()) {
             s.channelVisible.clear();

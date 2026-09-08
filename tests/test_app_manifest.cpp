@@ -210,8 +210,7 @@ TEST_CASE("DatasetManifest round-trips through JSON and TOML", "[app][manifest]"
     b.positionUm = {0.0, 0.0, 12.5};
     b.gridIndex = {0, 0, 1};
     m.tiles = {a, b};
-    m.files = {{"a_488.tif", "GFP", 0, "tile_x0_y0"}, {"a_610.tif", "mCherry", 0, "tile_x0_y0"},
-               {"b_488.tif", "GFP", 0, "tile_x1_y0"}, {"b_610_t1.tif", "mCherry", 1, "tile_x1_y0"}};
+    m.files = {{"a_488.tif", "GFP", 0, "tile_x0_y0"}, {"a_610.tif", "mCherry", 0, "tile_x0_y0"}, {"b_488.tif", "GFP", 0, "tile_x1_y0"}, {"b_610_t1.tif", "mCherry", 1, "tile_x1_y0"}};
 
     CHECK(m.channelIndex("mCherry") == 1);
     CHECK(m.channelIndex("1") == 1);   // an index as text
@@ -621,5 +620,57 @@ TEST_CASE("Stitch fuses the tiles of a folder dataset back into the scene", "[ap
         DatasetMeta single = in.meta;
         single.tiles.resize(1);
         CHECK_FALSE(op.validate(p, single).ok());   // one tile is nothing to stitch
+    }
+}
+
+TEST_CASE("A folder of TIFFs reads as one stack without a pattern", "[app][manifest]") {
+    // The layout that needs no describing: a frame per file, in the order a
+    // person reads the names.
+    TempFolder dir;
+    for (const char* name : {"frame1.tif", "frame2.tif", "frame10.tif", "frame11.tif", "notes.txt", ".hidden.tif"})
+        std::ofstream(dir.path / name, std::ios::binary) << "x";
+
+    const std::vector<std::string> names = tiffNamesInOrder(dir.path);
+    // "frame2" before "frame10": plain alphabetical order gets this wrong, and
+    // a time series read out of order is worse than one that fails to open
+    CHECK(names == std::vector<std::string>{"frame1.tif", "frame2.tif", "frame10.tif", "frame11.tif"});
+
+    const DatasetManifest m = manifestOfOneStack(dir.path);
+    CHECK(m.files.size() == 4);
+    CHECK(m.channels.size() == 1);
+    CHECK(m.tiles.size() == 1);
+    CHECK(m.timePoints() == 4);
+    CHECK(m.acquisition == "One stack per file");
+    for (std::size_t i = 0; i < m.files.size(); ++i) {
+        CHECK(m.files[i].path == names[i]);
+        CHECK(m.files[i].t == static_cast<Index>(i));   // one time point each, in that order
+    }
+
+    SECTION("real files: the manifest validates and the folder opens as N time points") {
+        TempFolder real;
+        const Index frames = 5;
+        for (Index t = 0; t < frames; ++t) {
+            Buffer<std::uint16_t> stack(Shape{3, 8, 8});
+            for (Index i = 0; i < 3 * 8 * 8; ++i) stack.data()[i] = static_cast<std::uint16_t>(t * 100 + i);
+            writeTiffStack<std::uint16_t>((real.path / ("f" + std::to_string(t == 0 ? 1 : t * 5) + ".tif")).string(),
+                                          stack.view(), TiffCompression::None);
+        }
+        const DatasetManifest m = manifestOfOneStack(real.path);
+        REQUIRE(m.files.size() == static_cast<std::size_t>(frames));
+        CHECK(m.validate(real.path).empty());
+        m.save(real.path / DatasetManifest::kFileName);
+        CHECK(isFolderDataset(real.path.string()));
+
+        const OpenResult opened = openDataset(real.path.string(), {});
+        CHECK(opened.meta.dims.t == frames);   // a file each
+        CHECK(opened.meta.dims.z == 3);        // the pages of one file
+        CHECK(opened.meta.dims.c == 1);
+    }
+
+    SECTION("a folder with no TIFFs makes an empty manifest, not a broken one") {
+        TempFolder empty;
+        std::ofstream(empty.path / "readme.md") << "nothing here";
+        CHECK(tiffNamesInOrder(empty.path).empty());
+        CHECK(manifestOfOneStack(empty.path).files.empty());
     }
 }

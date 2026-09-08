@@ -78,9 +78,21 @@ namespace sirius::app {
                 for (const auto& [k, v] : *t) out[std::string(k.str())] = tomlToJson(v);
                 return out;
             }
-            if (const auto* d = n.as_date()) { std::ostringstream ss; ss << *d; return ss.str(); }
-            if (const auto* t = n.as_time()) { std::ostringstream ss; ss << *t; return ss.str(); }
-            if (const auto* dt = n.as_date_time()) { std::ostringstream ss; ss << *dt; return ss.str(); }
+            if (const auto* d = n.as_date()) {
+                std::ostringstream ss;
+                ss << *d;
+                return ss.str();
+            }
+            if (const auto* t = n.as_time()) {
+                std::ostringstream ss;
+                ss << *t;
+                return ss.str();
+            }
+            if (const auto* dt = n.as_date_time()) {
+                std::ostringstream ss;
+                ss << *dt;
+                return ss.str();
+            }
             return json();
         }
 
@@ -301,7 +313,8 @@ namespace sirius::app {
         t.insert("version", std::int64_t{1});
         std::ofstream out(target);
         if (!out) throw std::runtime_error("cannot write " + target.string());
-        out << "# SIRIUS multi-file dataset: one TIFF stack per channel, time point and tile.\n" << t << "\n";
+        out << "# SIRIUS multi-file dataset: one TIFF stack per channel, time point and tile.\n"
+            << t << "\n";
         if (!out) throw std::runtime_error("cannot write " + target.string());
     }
 
@@ -499,6 +512,37 @@ namespace sirius::app {
 
     } // namespace
 
+    // naturalLess above is what puts "f2" before "f10".
+    std::vector<std::string> tiffNamesInOrder(const fs::path& folder) {
+        std::vector<std::string> names;
+        std::error_code ec;
+        for (const fs::directory_entry& e : fs::directory_iterator(folder, ec)) {
+            if (!e.is_regular_file(ec) || !isTiffName(e.path())) continue;
+            const std::string name = e.path().filename().string();
+            if (!name.empty() && name.front() == '.') continue;   // resource forks and the like
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end(), naturalLess);
+        return names;
+    }
+
+    DatasetManifest manifestOfOneStack(const fs::path& folder) {
+        DatasetManifest m;
+        m.name = folderName(folder);
+        m.acquisition = "One stack per file";
+        m.channels.push_back(ChannelInfo{});
+        m.tiles.push_back(TileInfo{});
+        Index t = 0;
+        for (const std::string& name : tiffNamesInOrder(folder)) {
+            ManifestFile f;
+            f.path = name;
+            f.channel = m.channels.front().label;
+            f.t = t++;
+            m.files.push_back(std::move(f));
+        }
+        return m;
+    }
+
     DatasetManifest manifestFromFolder(const fs::path& folder, const FilenameRule& rule, std::vector<std::string>* unmatched) {
         std::error_code ec;
         if (!fs::is_directory(folder, ec)) throw std::runtime_error("not a folder: " + folder.string());
@@ -613,23 +657,23 @@ namespace sirius::app {
             TileInfo tile;
             tile.name = tileNames[i];
             switch (rule.positions) {
-            case FilenameRule::Positions::GridIndex: {
-                const bool anyIndex = !f.x.empty() || !f.y.empty() || !f.z.empty();
+                case FilenameRule::Positions::GridIndex: {
+                    const bool anyIndex = !f.x.empty() || !f.y.empty() || !f.z.empty();
                 // a `tile` group without grid tokens: lay the tiles out in a row
-                tile.gridIndex = {f.z.empty() ? 0 : parseIndex(f.z, "z index", f.name),
-                                  f.y.empty() ? 0 : parseIndex(f.y, "y index", f.name),
-                                  f.x.empty() ? (anyIndex ? 0 : static_cast<Index>(i)) : parseIndex(f.x, "x index", f.name)};
-                for (std::size_t k = 0; k < 3; ++k)
-                    tile.positionUm[k] = static_cast<double>(tile.gridIndex[k]) * extentUm[k] * step;
-                break;
-            }
-            case FilenameRule::Positions::Microns:
-                tile.positionUm = {zs[i], ys[i], xs[i]};
-                tile.gridIndex = {zRank.at(zs[i]), yRank.at(ys[i]), xRank.at(xs[i])};
-                break;
-            case FilenameRule::Positions::None:
-                tile.gridIndex = {0, 0, static_cast<Index>(i)};
-                break;
+                    tile.gridIndex = {f.z.empty() ? 0 : parseIndex(f.z, "z index", f.name),
+                                      f.y.empty() ? 0 : parseIndex(f.y, "y index", f.name),
+                                      f.x.empty() ? (anyIndex ? 0 : static_cast<Index>(i)) : parseIndex(f.x, "x index", f.name)};
+                    for (std::size_t k = 0; k < 3; ++k)
+                        tile.positionUm[k] = static_cast<double>(tile.gridIndex[k]) * extentUm[k] * step;
+                    break;
+                }
+                case FilenameRule::Positions::Microns:
+                    tile.positionUm = {zs[i], ys[i], xs[i]};
+                    tile.gridIndex = {zRank.at(zs[i]), yRank.at(ys[i]), xRank.at(xs[i])};
+                    break;
+                case FilenameRule::Positions::None:
+                    tile.gridIndex = {0, 0, static_cast<Index>(i)};
+                    break;
             }
             manifest.tiles.push_back(std::move(tile));
         }

@@ -324,6 +324,7 @@ namespace sirius::app {
         QAction* soloLabel = nullptr;
         QAction* recordSession = nullptr;
         QAction* scaleBar = nullptr;
+        QAction* physicalZ = nullptr;
         QAction* syncZT = nullptr;
         QAction* backendCuda = nullptr;
         QAction* backendCpu = nullptr;
@@ -499,6 +500,14 @@ namespace sirius::app {
                 wb().setViewState(s);
             });
             scaleBar->setCheckable(true);
+            physicalZ = action(view, QStringLiteral("Physical z scaling"), QKeySequence(), [this] {
+                ViewState s = wb().viewState();
+                s.physicalZ = !s.physicalZ;
+                wb().setViewState(s);
+            });
+            physicalZ->setCheckable(true);
+            physicalZ->setStatusTip(QStringLiteral("Scale the XZ / YZ panes by the voxel aspect. Off draws one row per "
+                                                   "plane, for checking the grid rather than the shape"));
             view->addSeparator();
             action(view, QStringLiteral("Zoom in"), QKeySequence(Qt::Key_Plus), [this] { viewer->zoomIn(); });
             action(view, QStringLiteral("Zoom out"), QKeySequence(Qt::Key_Minus), [this] { viewer->zoomOut(); });
@@ -809,6 +818,7 @@ namespace sirius::app {
                                            ? QStringLiteral("Stop recording (%1 events)").arg(w.recordedLines())
                                            : QStringLiteral("Record session…"));
             scaleBar->setChecked(v.scaleBar);
+            physicalZ->setChecked(v.physicalZ);
             syncZT->setChecked(v.syncZT);
             backendCuda->setChecked(w.backend() == Backend::Cuda);
             backendCpu->setChecked(w.backend() == Backend::Cpu);

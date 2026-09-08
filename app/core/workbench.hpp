@@ -85,6 +85,11 @@ namespace sirius::app {
         double labelOpacity = 0.45;
         std::uint32_t selectedLabel = 0;
         bool soloLabel = false;                 // draw only the selected label (slices and 3D)
+        // The ortho panes scale z by the voxel aspect, so what is on screen is
+        // physically proportioned -- which is what you want of a result and not
+        // what you want when checking the grid a reconstruction was built on.
+        // Off draws one row per plane.
+        bool physicalZ = true;
 
         bool channelOn(Index c) const noexcept {
             return c < 0 || static_cast<std::size_t>(c) >= channelVisible.size() || channelVisible[static_cast<std::size_t>(c)];

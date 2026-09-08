@@ -357,7 +357,9 @@ motion model and lineages, in the worker) · Threshold · Label cleanup. Labels 
 filled, merged, split and deleted in the viewer; every edit, parameter change and
 assistant action is one undo entry.
 
-**Viewer**: Ortho (XY, YZ, XZ, MIP·Z with a shared crosshair, physical z scaling, scale
+**Viewer**: Ortho (XY, YZ, XZ, MIP·Z with a shared crosshair, physical z scaling — View ▸
+Physical z scaling turns it off for one row per plane, when the grid matters more than
+the shape — scale
 bars, zoom/pan), 3D (OpenGL ray casting or MIP with presets, yaw/pitch, z clip,
 bounding box), Compare (raw next to the viewed step over the same physical field);
 tools Navigate, Probe, Measure, ROI, Paint; the label overlay toggles in every mode, 3D included. Solo (O) shows only the selected label, and selecting a label then jumps to it, for inspecting and correcting masks one at a time. The diagnostics dock shows what the
@@ -409,7 +411,9 @@ table and the tile map as the pattern is edited — and tile origins come from g
 indices plus an overlap fraction or from micron coordinates in the names. The result
 is written to `sirius-dataset.toml` beside the files (channels, tile origins, voxel
 size, one row per file with its tile / channel / t), so the folder opens directly from
-then on and the manifest can be edited by hand. The viewer's tile chooser and the Load
+then on and the manifest can be edited by hand. A folder of TIFFs that needs no
+describing — a frame per file — has Open as one stack in the Open dialog: name order
+(so `f2` before `f10`), one time point each, and the manifest written for you. The viewer's tile chooser and the Load
 step's Tile parameter pick the tile; Stitch with no tile files fuses all of them,
 registering on one channel and time point and applying that layout to every other.
 

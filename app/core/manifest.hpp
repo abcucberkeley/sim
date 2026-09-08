@@ -99,6 +99,16 @@ namespace sirius::app {
     DatasetManifest manifestFromFolder(const std::filesystem::path& folder, const FilenameRule& rule,
                                        std::vector<std::string>* unmatched = nullptr);
 
+    // The simple case, without a pattern to write: every TIFF in the folder is
+    // one time point of one stack, in the order a person reads the names --
+    // "f2" before "f10", which plain alphabetical order gets wrong. One
+    // channel, one tile. This is what a time series saved a frame per file
+    // looks like, and it is the folder layout that needs no describing.
+    DatasetManifest manifestOfOneStack(const std::filesystem::path& folder);
+
+    // File names in that reading order, for the dialog to show and count.
+    std::vector<std::string> tiffNamesInOrder(const std::filesystem::path& folder);
+
 } // namespace sirius::app
 
 #endif // SIRIUS_APP_MANIFEST_HPP

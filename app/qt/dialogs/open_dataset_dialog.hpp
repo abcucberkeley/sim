@@ -40,6 +40,8 @@ namespace sirius::app {
         static QStringList recentFiles();
         static void addRecentFile(const QString& path);
 
+        void openAsOneStack();
+
     private:
         void updatePageCheck();
         struct Impl;
