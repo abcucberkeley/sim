@@ -371,6 +371,15 @@ dataset, a folder through the manifest dialog, several image files at once as th
 containing folder, a `*.sirius.toml` as a pipeline, a `.py` in the user-operations
 editor. `--drop <path>` does the same from the command line, for smoke tests.
 
+**Training data**: File ▸ Export training data… turns a step's labels into a
+dataset folder — `instances.tif` (one id per object), `semantic.tif` (one id per
+class), `boxes.json` (3D boxes and per-plane boxes with voxel counts, centroids and
+a border flag), `image.tif`, and optionally `slices/` with one 8-bit plane and one
+YOLO file per z. Every export appends a line to `index.jsonl` and grows `classes.txt`
+at the root, so many runs accumulate into one training set instead of overwriting each
+other. The assistant tool `export_training_data` does the same, for generating labels
+in bulk from the classical steps.
+
 **Session recording**: File ▸ Record session… writes what you do to a JSON-lines
 file, one event per line, flushed as it goes so a recording survives a crash. The
 header carries the dataset and the pipeline; then come `dataset`, `step_added`,

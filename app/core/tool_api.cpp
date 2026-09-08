@@ -1,5 +1,7 @@
 #include "core/tool_api.hpp"
 
+#include "core/training_export.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
@@ -36,8 +38,7 @@ namespace sirius::app {
                  json ds;
                  if (wb_.hasDataset()) {
                      const DatasetMeta& m = wb_.dataset();
-                     ds = {{"name", m.name}, {"path", m.sourcePath}, {"format", m.format}, {"shape", m.shapeString()},
-                           {"voxel_um", m.voxelUm}, {"acquisition", m.acquisition}, {"dtype", toString(m.sourceType)}};
+                     ds = {{"name", m.name}, {"path", m.sourcePath}, {"format", m.format}, {"shape", m.shapeString()}, {"voxel_um", m.voxelUm}, {"acquisition", m.acquisition}, {"dtype", toString(m.sourceType)}};
                      json ch = json::array();
                      for (const ChannelInfo& c : m.channels) ch.push_back({{"label", c.label}, {"wavelength_nm", c.wavelengthNm}, {"color", c.hexColor()}});
                      ds["channels"] = ch;
@@ -62,8 +63,7 @@ namespace sirius::app {
                      if (op->kind() == "load") continue;
                      json params = json::array();
                      for (const ParamSpec& s : op->info().params)
-                         params.push_back({{"key", s.key}, {"label", s.label}, {"default", toJson(s.defaultValue)},
-                                           {"schema", schemaOf(s)}});
+                         params.push_back({{"key", s.key}, {"label", s.label}, {"default", toJson(s.defaultValue)}, {"schema", schemaOf(s)}});
                      out.push_back({{"kind", op->kind()}, {"name", op->info().name}, {"group", op->info().group}, {"params", params}});
                  }
                  return out;
@@ -239,8 +239,14 @@ namespace sirius::app {
                      s.tool = *t;
                      note(std::string("tool ") + toString(*t));
                  }
-                 if (a.contains("z")) { s.z = a["z"].get<Index>(); note("z " + std::to_string(s.z)); }
-                 if (a.contains("t")) { s.t = a["t"].get<Index>(); note("t " + std::to_string(s.t)); }
+                 if (a.contains("z")) {
+                     s.z = a["z"].get<Index>();
+                     note("z " + std::to_string(s.z));
+                 }
+                 if (a.contains("t")) {
+                     s.t = a["t"].get<Index>();
+                     note("t " + std::to_string(s.t));
+                 }
                  if (a.contains("crosshair") && a["crosshair"].is_array() && a["crosshair"].size() >= 2) {
                      s.cx = a["crosshair"][0].get<Index>();
                      s.cy = a["crosshair"][1].get<Index>();
@@ -248,17 +254,32 @@ namespace sirius::app {
                      s.crosshair = true;
                      note("crosshair " + std::to_string(s.cx) + ", " + std::to_string(s.cy));
                  }
-                 if (a.contains("labels")) { s.labels = a["labels"].get<bool>(); note(s.labels ? "labels on" : "labels off"); }
-                 if (a.contains("solo")) { s.soloLabel = a["solo"].get<bool>(); note(s.soloLabel ? "solo label" : "all labels"); }
+                 if (a.contains("labels")) {
+                     s.labels = a["labels"].get<bool>();
+                     note(s.labels ? "labels on" : "labels off");
+                 }
+                 if (a.contains("solo")) {
+                     s.soloLabel = a["solo"].get<bool>();
+                     note(s.soloLabel ? "solo label" : "all labels");
+                 }
                  std::uint32_t focus = 0;
-                 if (a.contains("label")) { focus = a["label"].get<std::uint32_t>(); note("label " + std::to_string(focus)); }
+                 if (a.contains("label")) {
+                     focus = a["label"].get<std::uint32_t>();
+                     note("label " + std::to_string(focus));
+                 }
                  if (a.contains("channels") && a["channels"].is_array()) {
                      s.channelVisible.clear();
                      for (const json& e : a["channels"]) s.channelVisible.push_back(e.get<bool>());
                      note("channels");
                  }
-                 if (a.contains("yaw")) { s.yaw = a["yaw"].get<double>(); note("yaw"); }
-                 if (a.contains("pitch")) { s.pitch = a["pitch"].get<double>(); note("pitch"); }
+                 if (a.contains("yaw")) {
+                     s.yaw = a["yaw"].get<double>();
+                     note("yaw");
+                 }
+                 if (a.contains("pitch")) {
+                     s.pitch = a["pitch"].get<double>();
+                     note("pitch");
+                 }
                  const DatasetMeta meta = wb_.outputMetaOf(wb_.viewedIndex());
                  s.z = std::clamp<Index>(s.z, 0, std::max<Index>(meta.dims.z - 1, 0));
                  s.t = std::clamp<Index>(s.t, 0, std::max<Index>(meta.dims.t - 1, 0));
@@ -342,6 +363,58 @@ namespace sirius::app {
                  json steps = json::array();
                  for (int i = 0; i < wb_.pipeline().size(); ++i) steps.push_back(stepJson(i));
                  return json{{"steps", steps}};
+             }});
+        add({"export_training_data",
+             "Write a step's labels as training data: instance masks, a semantic mask, bounding boxes (3D and per plane) and "
+             "optionally one 8-bit image plus one YOLO file per plane, into a dataset folder that accumulates one sample per call.",
+             obj({{"step", stepParam()},
+                  {"directory", {{"type", "string"}, {"description", "Dataset folder; created if missing"}}},
+                  {"sample", {{"type", "string"}, {"description", "Sample folder name; a number is appended if it is taken"}}},
+                  {"image", {{"type", "boolean"}}},
+                  {"instances", {{"type", "boolean"}}},
+                  {"semantic", {{"type", "boolean"}}},
+                  {"boxes", {{"type", "boolean"}}},
+                  {"slices", {{"type", "boolean"}, {"description", "One 8-bit plane and one YOLO file per z, for 2D detectors"}}},
+                  {"min_voxels", {{"type", "integer"}, {"description", "Objects smaller than this are left out"}}}},
+                 {"directory"}),
+             [this](const json& a) {
+                 const int i = a.contains("step") ? resolveStep(a) : wb_.viewedIndex();
+                 std::shared_ptr<const StepOutput> out = wb_.output(i);
+                 if (!out) throw std::invalid_argument("step " + Step::number(i) + " has not been computed yet; run it first");
+                 if (!out->labels || out->labels->empty()) throw std::invalid_argument("step " + Step::number(i) + " produced no labels");
+                 TrainingExportOptions o;
+                 o.directory = a.value("directory", std::string());
+                 o.sample = a.value("sample", wb_.hasDataset() ? wb_.dataset().name : std::string("sample"));
+                 o.image = a.value("image", true);
+                 o.instances = a.value("instances", true);
+                 o.semantic = a.value("semantic", true);
+                 o.boxes = a.value("boxes", true);
+                 o.slices = a.value("slices", false);
+                 o.minVoxels = static_cast<std::uint64_t>(std::max(1, a.value("min_voxels", 1)));
+                 o.provenance = {{"step", Step::number(i)},
+                                 {"step_name", wb_.pipeline().at(i).name},
+                                 {"kind", wb_.pipeline().at(i).kind},
+                                 {"dataset", wb_.hasDataset() ? wb_.dataset().sourcePath : std::string()},
+                                 {"pipeline", wb_.pipeline().toJson()}};
+                 ArrayPtr array = o.image || o.slices ? out->asInput().materialize() : nullptr;
+                 const Array5 empty;
+                 const TrainingExportResult r = exportTrainingData(array ? *array : empty, out->meta, *out->labels, o);
+                 wb_.recordEvent("training_export", {{"directory", r.directory.string()},
+                                                     {"objects", r.objects},
+                                                     {"classes", r.classes},
+                                                     {"frames", r.frames}});
+                 actions_.push_back({ActionRecord::Kind::Run,
+                                     "Training data → " + r.directory.string() + " · " + std::to_string(r.objects) + " objects",
+                                     "log",
+                                     {},
+                                     "export_training_data"});
+                 return json{{"directory", r.directory.string()},
+                             {"files", r.files},
+                             {"objects", r.objects},
+                             {"slice_objects", r.sliceObjects},
+                             {"classes", r.classes},
+                             {"frames", r.frames},
+                             {"bytes", r.bytes}};
              }});
         add({"get_log", "The most recent lines of the workbench log.",
              obj({{"lines", {{"type", "integer"}}}}),

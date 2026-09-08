@@ -43,6 +43,7 @@
 
 #include "core/export.hpp"
 #include "qt/dialogs/export_dialog.hpp"
+#include "qt/dialogs/training_export_dialog.hpp"
 #include "qt/dialogs/folder_dataset_dialog.hpp"
 #include "qt/dialogs/model_hub_dialog.hpp"
 #include "qt/dialogs/open_dataset_dialog.hpp"
@@ -343,6 +344,7 @@ namespace sirius::app {
         QAction* clearCache = nullptr;
         QAction* clearAll = nullptr;
         QAction* exportResult = nullptr;
+        QAction* exportTraining = nullptr;
         QAction* exportPython = nullptr;
         QAction* exportFigure = nullptr;
         QAction* savePipeline = nullptr;
@@ -433,6 +435,10 @@ namespace sirius::app {
             file->addSeparator();
             exportResult = action(file, QStringLiteral("Export result…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E),
                                   [this] { exportResultDialog(); });
+            exportTraining = action(file, QStringLiteral("Export training data…"), QKeySequence(),
+                                    [this] { exportTrainingDialog(); });
+            exportTraining->setStatusTip(QStringLiteral("Write the labels of a step as instance masks, bounding boxes and a "
+                                                        "semantic mask into a dataset folder"));
             exportPython = action(file, QStringLiteral("Export pipeline as Python script…"), QKeySequence(),
                                   [this] { exportPythonScript(); });
             file->addSeparator();
@@ -964,6 +970,34 @@ namespace sirius::app {
                 ArrayPtr array = out->asInput().materialize(progress);
                 exportArray(*array, out->meta, out->labels.get(), options, progress, cancelled);
             });
+        }
+
+        void exportTrainingDialog() {
+            if (!wb().hasDataset()) return;
+            TrainingExportDialog dialog(bridge, self);
+            if (dialog.exec() != QDialog::Accepted) return;
+            const int step = dialog.stepIndex();
+            std::shared_ptr<const StepOutput> out = wb().output(step);
+            if (!out || !out->labels || out->labels->empty()) {
+                QMessageBox::information(self, QStringLiteral("Export training data"),
+                                         QStringLiteral("Step %1 has no labels. Run a segmentation step first.").arg(fromStd(Step::number(step))));
+                return;
+            }
+            TrainingExportOptions options = dialog.options();
+            // the pipeline goes with the sample: it is how the labels were made
+            options.provenance = {{"step", Step::number(step)},
+                                  {"step_name", wb().pipeline().at(step).name},
+                                  {"kind", wb().pipeline().at(step).kind},
+                                  {"dataset", wb().hasDataset() ? wb().dataset().sourcePath : std::string()},
+                                  {"pipeline", wb().pipeline().toJson()}};
+            std::shared_ptr<const LabelVolume> labels = out->labels;
+            bridge.startTask(QStringLiteral("Export training data"),
+                             [out, labels, options](const WorkbenchBridge::TaskProgress& progress,
+                                                    const WorkbenchBridge::TaskCancelled& cancelled) {
+                                 ArrayPtr array = options.image || options.slices ? out->asInput().materialize(progress) : nullptr;
+                                 const Array5 empty;
+                                 exportTrainingData(array ? *array : empty, out->meta, *labels, options, progress, cancelled);
+                             });
         }
 
         void exportPythonScript() {
