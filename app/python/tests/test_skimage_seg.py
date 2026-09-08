@@ -80,6 +80,42 @@ class TestMethods(unittest.TestCase):
         few, _ = skimage_seg.run(self.volume, strict)
         self.assertGreater(int(many.max()), int(few.max()))
 
+    def test_a_single_plane_goes_through_the_active_contour(self):
+        # a 2D dataset reaches the worker as one plane; the edge map and the
+        # contour both differentiate along every axis, so a volume one voxel
+        # deep has to be handed over as the 2D image it is
+        plane = two_balls(1, 32, 32)
+        labels, info = skimage_seg.run(plane, {"method": "Active contour (geodesic)", "iterations": 5,
+                                               "min_voxels": 5})
+        self.assertEqual(labels.shape, plane.shape)
+        self.assertGreaterEqual(int(labels.max()), 1)
+        self.assertEqual(int(info["labels"]), int(labels.max()))
+
+    def test_an_all_foreground_mask_still_yields_its_objects(self):
+        # with no background there is no background marker, and the random
+        # walker renumbers the markers it is given: object 1 must not be
+        # mistaken for the background and dropped
+        labels, info = skimage_seg.run(self.volume, {"method": "Random walker", "threshold": -1.0,
+                                                     "seed_depth": 1.0, "min_voxels": 1})
+        self.assertGreaterEqual(int(info["seeds"]), 1)
+        self.assertEqual(int(labels.max()), int(info["seeds"]))
+
+    def test_a_non_finite_voxel_does_not_flatten_the_volume(self):
+        # one inf makes the intensity span infinite and one NaN is refused
+        # outright by SLIC, so both have to be dealt with before normalising
+        for bad in (np.inf, np.nan):
+            spoiled = self.volume.copy()
+            spoiled[0, 0, 0] = bad
+            for method in ("Superpixels (SLIC)", "Random walker"):
+                labels, _ = skimage_seg.run(spoiled, {"method": method, "n_segments": 20, "seed_depth": 1.0,
+                                                      "min_voxels": 1})
+                clean, _ = skimage_seg.run(self.volume, {"method": method, "n_segments": 20, "seed_depth": 1.0,
+                                                         "min_voxels": 1})
+                self.assertEqual(labels.shape, spoiled.shape)
+                self.assertGreaterEqual(int(labels.max()), 1, f"{method} with {bad}")
+                self.assertAlmostEqual(int(labels.max()), int(clean.max()), delta=2,
+                                       msg=f"{method}: one {bad} changed the segmentation")
+
     def test_a_manual_threshold_is_used_instead_of_otsu(self):
         # nothing is above 5.0, so the mask is empty and nothing can seed
         labels, info = skimage_seg.run(self.volume, {"method": "Random walker", "threshold": 5.0})

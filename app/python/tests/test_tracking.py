@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -69,6 +71,85 @@ class TestBtrack(unittest.TestCase):
         with self.assertRaises(tracking.NotAvailable) as cm:
             tracking.run_btrack(moving_labels(), (1.0, 1.0, 1.0), {"config": "/no/such/config.json"})
         self.assertIn("config", str(cm.exception).lower())
+
+
+class _StubTrack:
+    """One btrack tracklet: the frames it was seen in and where it was."""
+
+    def __init__(self, ident, t, z, y, x, parent=None):
+        self.ID, self.t, self.z, self.y, self.x, self.parent = ident, t, z, y, x, parent
+
+
+class _StubTracker:
+    """Enough of BayesianTracker to reach run_btrack's own relabelling."""
+
+    tracks: list = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def configure(self, config):
+        pass
+
+    def append(self, objects):
+        pass
+
+    def track(self, **kwargs):
+        pass
+
+    def optimize(self):
+        pass
+
+
+class TestRelabelling(unittest.TestCase):
+    """What run_btrack does with the tracks it is handed, without btrack: the
+    relabelling is ours, and it is where a track can quietly lose its object."""
+
+    def setUp(self):
+        stub = types.ModuleType("btrack")
+        stub.utils = types.SimpleNamespace(segmentation_to_objects=lambda labels: ["object"] * 3)
+        stub.BayesianTracker = _StubTracker
+        stub.datasets = types.SimpleNamespace(cell_config=lambda: "config")
+        stub.libwrapper = types.SimpleNamespace(get_library=lambda: None)
+        modules = {"btrack": stub, "btrack.utils": stub.utils, "btrack.libwrapper": stub.libwrapper}
+        patch = unittest.mock.patch.dict(sys.modules, modules)
+        patch.start()
+        self.addCleanup(patch.stop)
+        available = unittest.mock.patch.object(tracking, "available", lambda: (True, ""))
+        available.start()
+        self.addCleanup(available.stop)
+
+    def test_a_ring_keeps_its_track_although_its_centroid_is_on_the_background(self):
+        # a ring, a C, a bent filament: the centroid btrack reports is outside
+        # the object, so the label under it is background and the track would
+        # repaint nothing at all
+        labels = np.zeros((3, 1, 21, 21), np.uint32)
+        yy, xx = np.ogrid[:21, :21]
+        radius = (yy - 10) ** 2 + (xx - 10) ** 2
+        labels[:, 0][:, (radius <= 64) & (radius >= 25)] = 1
+        self.assertEqual(int(labels[0, 0, 10, 10]), 0, "the centroid is meant to be on the background")
+        _StubTracker.tracks = [_StubTrack(1, [0, 1, 2], [0, 0, 0], [10.0] * 3, [10.0] * 3)]
+
+        out, info = tracking.run_btrack(labels, (1.0, 1.0, 1.0), {"min_length": 2})
+        self.assertEqual(info["tracks"], 1)
+        for t in range(3):
+            self.assertEqual(int((out[t] > 0).sum()), int((labels[t] > 0).sum()), f"frame {t} lost its object")
+            self.assertEqual(set(np.unique(out[t][labels[t] == 1]).tolist()), {1})
+
+    def test_one_division_is_one_division(self):
+        # btrack gives every daughter the mother's id as its parent, so a
+        # division is seen twice if the daughters are what gets counted
+        labels = np.zeros((2, 1, 10, 10), np.uint32)
+        labels[:, 0, 2:5, 2:5] = 1
+        labels[:, 0, 6:9, 6:9] = 2
+        _StubTracker.tracks = [_StubTrack(1, [0, 1], [0, 0], [3.0, 3.0], [3.0, 3.0], parent=1),
+                               _StubTrack(2, [0, 1], [0, 0], [7.0, 7.0], [7.0, 7.0], parent=1)]
+        _, info = tracking.run_btrack(labels, (1.0, 1.0, 1.0), {"min_length": 2})
+        self.assertEqual(info["tracks"], 2)
+        self.assertEqual(info["divisions"], 1)
 
 
 if __name__ == "__main__":

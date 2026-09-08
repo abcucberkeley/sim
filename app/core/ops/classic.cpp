@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <functional>
 #include <limits>
 #include <array>
 #include <cmath>
@@ -270,7 +271,8 @@ namespace sirius::app {
         // are found whatever their direction, which a plane-by-plane filter
         // cannot do: it only sees the slice through them.
         void frangiVolume(const float* src, float* dst, Index z, Index y, Index x, double zAspect, double sigmaMin,
-                          double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp) {
+                          double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp,
+                          const std::function<void()>& poll) {
             const Index plane = y * x, n = z * plane;
             std::fill(dst, dst + n, 0.0f);
             scales = std::max(1, scales);
@@ -288,7 +290,11 @@ namespace sirius::app {
                 std::fill(vesselness.begin(), vesselness.end(), 0.0f);
                 std::fill(sVals.begin(), sVals.end(), 0.0);
                 double maxS = 0.0;
-                for (Index iz = 0; iz < z; ++iz)
+                for (Index iz = 0; iz < z; ++iz) {
+                    // a whole volume at every scale: asked once per plane, so
+                    // a cancel is noticed within a plane instead of within the
+                    // whole filter, which is minutes on a full-size stack
+                    if (poll) poll();
                     for (Index iy = 0; iy < y; ++iy)
                         for (Index ix = 0; ix < x; ++ix) {
                             const Index i = (iz * y + iy) * x + ix;
@@ -318,6 +324,7 @@ namespace sirius::app {
                             vesselness[static_cast<std::size_t>(i)] =
                                 static_cast<float>((1.0 - std::exp(-ra * ra / 0.5)) * std::exp(-rb * rb / 0.5));
                         }
+                }
                 const double c2 = 2.0 * std::max(1e-12, 0.5 * maxS) * std::max(1e-12, 0.5 * maxS);
                 for (Index i = 0; i < n; ++i) {
                     if (vesselness[static_cast<std::size_t>(i)] <= 0.0f) continue;
@@ -335,7 +342,8 @@ namespace sirius::app {
         // filaments it holds together where Frangi, which needs two small
         // eigenvalues and one large, starts to break up.
         void meijeringVolume(const float* src, float* dst, Index z, Index y, Index x, double zAspect, double sigmaMin,
-                             double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp) {
+                             double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp,
+                             const std::function<void()>& poll) {
             const Index plane = y * x, n = z * plane;
             std::fill(dst, dst + n, 0.0f);
             scales = std::max(1, scales);
@@ -354,7 +362,8 @@ namespace sirius::app {
                 gaussianVolume(work, z, y, x, sigma, sigma, sigma / zAspect, tmp);
                 const double norm = sigma * sigma;
                 double maxResponse = 0.0;
-                for (Index iz = 0; iz < z; ++iz)
+                for (Index iz = 0; iz < z; ++iz) {
+                    if (poll) poll();
                     for (Index iy = 0; iy < y; ++iy)
                         for (Index ix = 0; ix < x; ++ix) {
                             const Index i = (iz * y + iy) * x + ix;
@@ -388,6 +397,7 @@ namespace sirius::app {
                             response[static_cast<std::size_t>(i)] = static_cast<float>(v);
                             maxResponse = std::max(maxResponse, v);
                         }
+                }
                 // each scale is normalised to its own maximum, as the method
                 // has it, so one scale cannot drown the others
                 if (maxResponse <= 0.0) continue;
@@ -773,12 +783,13 @@ namespace sirius::app {
                         const bool tubes = enhance == "Tubes (Frangi)";
                         ctx.report(base + span * 0.1, tubes ? "vesselness" : "neuriteness");
                         enhA.resize(static_cast<std::size_t>(n));
+                        const auto poll = [&] { ctx.throwIfCancelled(); };
                         if (tubes)
                             frangiVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
-                                         std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
+                                         std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp, poll);
                         else
                             meijeringVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
-                                            std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
+                                            std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp, poll);
                         std::copy_n(enhA.data(), n, work.data());
                     }
                     for (Index z = 0; z < d.z; ++z) {
@@ -928,7 +939,7 @@ namespace sirius::app {
                         std::uint32_t* volume = labels->volume(t);
                         std::vector<std::uint8_t> solid(static_cast<std::size_t>(n));
                         for (Index i = 0; i < n; ++i) solid[static_cast<std::size_t>(i)] = volume[i] ? 1 : 0;
-                        skeletonize3D(solid.data(), d.z, d.y, d.x);
+                        skeletonize3D(solid.data(), d.z, d.y, d.x, [&] { ctx.throwIfCancelled(); });
                         for (Index i = 0; i < n; ++i)
                             if (!solid[static_cast<std::size_t>(i)]) volume[i] = 0;
                         labels->recomputeStats(t, fg.data());

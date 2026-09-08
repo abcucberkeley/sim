@@ -619,7 +619,11 @@ TEST_CASE("A disk spill is written before the entry is published", "[app][execut
             CHECK(before->array->at(0, 0, 0, 0, 1) == 2.0f);
             CHECK(std::filesystem::exists(firstFile));   // removed only after the swap
         }
-        CHECK(ex.cachedBytes() >= 0u);
+        // The point of asking from inside the spill observer is that the
+        // executor answers at all: the write happens outside the lock, so a
+        // query here must return rather than deadlock. Its value is not the
+        // claim (an unsigned is trivially >= 0).
+        CHECK_NOTHROW(ex.cachedBytes());
     });
     ex.run(p, 1, ctx);
     CHECK(observed == 1);
@@ -1207,7 +1211,13 @@ TEST_CASE("A recorded session holds what the user did, in order", "[app][workben
         CHECK(std::filesystem::file_size(log) == before);
     }
     SECTION("an unwritable path is reported, not swallowed") {
-        CHECK_THROWS(wb.startRecording((scratch.dir / "no" / "such" / "\0bad").string()));
+        // a folder that cannot be made because a file of that name is in
+        // the way: create_directories fails and the open after it has to be
+        // the thing that reports the problem
+        const std::filesystem::path blocker = scratch.dir / "blocker";
+        std::ofstream(blocker) << "not a folder";
+        CHECK_THROWS(wb.startRecording((blocker / "session.jsonl").string()));
+        CHECK_FALSE(wb.recording());
     }
 }
 

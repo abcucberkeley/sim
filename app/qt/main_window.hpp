@@ -16,6 +16,8 @@
 
 #include "qt/workbench_bridge.hpp"
 
+class QMimeData;
+
 namespace sirius::app {
 
     class ViewerWidget;
@@ -49,6 +51,10 @@ namespace sirius::app {
         void dragEnterEvent(QDragEnterEvent* event) override;
         void dragMoveEvent(QDragMoveEvent* event) override;
         void dropEvent(QDropEvent* event) override;
+        // The drop itself only accepts and defers: opening reads files and can
+        // raise dialogs, neither of which belongs inside the drop callback.
+        bool canAcceptDrop(const QMimeData* mime) const;
+        void openDroppedPaths(const QStringList& paths);
         // The status bar's log line opens the log dock.
         bool eventFilter(QObject* watched, QEvent* event) override;
 

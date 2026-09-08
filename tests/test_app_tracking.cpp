@@ -209,3 +209,38 @@ TEST_CASE("logBlobSeeds puts one seed in each blob whatever its size", "[app][tr
     CHECK(inSmall == 1);
     CHECK(inLarge == 1);
 }
+
+TEST_CASE("Gap closing follows a chain of missed frames, not just the first link",
+          "[app][tracking]") {
+    // One stationary object detected in frames 0, 2 and 4 and missed in 1 and
+    // 3. Both gaps are within the gate, so this is one object seen five frames
+    // running, not two tracks. The end-to-start assignment finds both links;
+    // applying them has to follow the first merge, or the second link is
+    // dropped because its "from" track was the one just consumed.
+    const std::array<double, 3> voxel{1.0, 1.0, 1.0};
+    TrackOptions options;
+    options.maxDistanceUm = 10.0;
+    options.overlapWeight = 0.0;
+    options.minLength = 1;
+    options.maxGap = 1;   // a gap of one missed frame, twice over
+    const std::vector<std::vector<TrackObject>> frames{
+        {object(1, 0, 0, 0)}, {}, {object(1, 0, 0, 0)}, {}, {object(1, 0, 0, 0)}};
+
+    const TrackResult r = linkTracks(frames, {}, voxel, options);
+    REQUIRE(r.tracks.size() == 1);
+    CHECK(r.gapsClosed == 2);
+    CHECK(r.tracks[0].length() == 3);
+    CHECK(r.tracks[0].first() == 0);
+    CHECK(r.tracks[0].last() == 4);
+
+    SECTION("a chain of three gaps closes as one track too") {
+        const std::vector<std::vector<TrackObject>> six{{object(1, 0, 0, 0)}, {},
+                                                        {object(1, 0, 0, 0)}, {},
+                                                        {object(1, 0, 0, 0)}, {},
+                                                        {object(1, 0, 0, 0)}};
+        const TrackResult chain = linkTracks(six, {}, voxel, options);
+        REQUIRE(chain.tracks.size() == 1);
+        CHECK(chain.gapsClosed == 3);
+        CHECK(chain.tracks[0].length() == 4);
+    }
+}

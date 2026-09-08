@@ -27,11 +27,12 @@ namespace sirius::app::secrets {
 
     namespace {
 
-        // The QSettings subtree the stored blobs live in, next to (but not on
-        // top of) the plaintext key the migration reads.
-        QString settingsKey(const QString& key) { return QStringLiteral("secrets/") + key; }
-
 #ifdef Q_OS_WIN
+
+        // The QSettings subtree the DPAPI blobs live in, next to (but not on
+        // top of) the plaintext key the migration reads. Only this backend
+        // keeps anything in QSettings; the file backend below has no use for it.
+        QString settingsKey(const QString& key) { return QStringLiteral("secrets/") + key; }
 
         DATA_BLOB blobOf(QByteArray& bytes) {
             DATA_BLOB b;

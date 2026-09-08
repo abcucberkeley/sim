@@ -66,6 +66,26 @@ def _config(path: str):
                            "(btrack's cell_config.json), or connect once so it can be fetched and cached") from e
 
 
+def _frame_centroids(frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """The ids and centroids (z, y, x, in voxels) of one frame's objects.
+
+    btrack reports a track's position as the centroid of the object it came
+    from, so this is what turns a track point back into the label to repaint.
+    Reading the label *under* the centroid instead loses anything the centroid
+    misses -- a ring, a C, a bent filament -- because for those the centroid
+    lies on the background."""
+    flat = frame.reshape(-1)
+    idx = np.flatnonzero(flat)
+    if idx.size == 0:
+        return np.zeros(0, dtype=np.uint32), np.zeros((0, 3), dtype=np.float64)
+    ids = flat[idx].astype(np.int64)
+    coords = np.stack(np.unravel_index(idx, frame.shape), axis=1).astype(np.float64)
+    counts = np.bincount(ids)
+    sums = np.stack([np.bincount(ids, weights=coords[:, k]) for k in range(3)], axis=1)
+    present = np.flatnonzero(counts)
+    return present.astype(np.uint32), sums[present] / counts[present][:, None]
+
+
 def run_btrack(labels: np.ndarray, voxel_um: Tuple[float, float, float], params: Dict[str, Any],
                progress=None) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Track the objects of a (t, z, y, x) label volume with btrack.
@@ -109,9 +129,10 @@ def run_btrack(labels: np.ndarray, voxel_um: Tuple[float, float, float], params:
 
     min_length = max(1, int(params.get("min_length", 2)))
     out = np.zeros_like(labels)
+    centroids = [_frame_centroids(labels[t]) for t in range(t_)]
     kept = 0
     lengths = []
-    divisions = 0
+    parents = set()
     for track in tracks:
         frames = list(track.t)
         if len(frames) < min_length:
@@ -120,22 +141,32 @@ def run_btrack(labels: np.ndarray, voxel_um: Tuple[float, float, float], params:
         lengths.append(len(frames))
         parent = getattr(track, "parent", None)
         if parent is not None and parent != track.ID:
-            divisions += 1
-        # btrack keeps the source object's centroid; the label under it names
-        # the object to repaint
+            # one division makes two daughters, and each of them names the
+            # mother: it is the mothers that have to be counted
+            parents.add(parent)
+        # btrack keeps the source object's centroid, so the object to repaint
+        # is the one whose centroid the track point is standing on. A point
+        # btrack interpolated across a gap stands on no object at all; fall
+        # back to the label under it, which is how those used to be found.
         for t, zc, yc, xc in zip(frames, track.z, track.y, track.x):
             if not (0 <= t < t_):
                 continue
-            zi = int(round(zc)) if z_ > 1 else 0
-            yi, xi = int(round(yc)), int(round(xc))
-            zi = min(max(zi, 0), z_ - 1)
-            yi = min(max(yi, 0), y_ - 1)
-            xi = min(max(xi, 0), x_ - 1)
-            src = labels[t, zi, yi, xi]
+            ids_t, centres_t = centroids[t]
+            src = 0
+            if ids_t.size:
+                want = np.array([zc if z_ > 1 else 0.0, yc, xc], dtype=np.float64)
+                near = int(np.argmin(((centres_t - want) ** 2).sum(axis=1)))
+                if ((centres_t[near] - want) ** 2).sum() <= 1.0:
+                    src = int(ids_t[near])
+            if not src:
+                zi = min(max(int(round(zc)) if z_ > 1 else 0, 0), z_ - 1)
+                yi = min(max(int(round(yc)), 0), y_ - 1)
+                xi = min(max(int(round(xc)), 0), x_ - 1)
+                src = int(labels[t, zi, yi, xi])
             if src:
                 out[t][labels[t] == src] = kept
     if progress:
         progress(1.0, f"{kept} tracks")
-    return out, {"tracks": kept, "objects": len(objects), "divisions": divisions,
+    return out, {"tracks": kept, "objects": len(objects), "divisions": len(parents),
                  "mean_length": float(np.mean(lengths)) if lengths else 0.0,
                  "longest": int(max(lengths)) if lengths else 0}

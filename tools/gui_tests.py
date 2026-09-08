@@ -38,17 +38,85 @@ class Failure(Exception):
     pass
 
 
+def check_offscreen_plugin(app: Path) -> Optional[str]:
+    """Why ``-platform offscreen`` will not start, if it will not.
+
+    windeployqt does not copy the offscreen platform plugin, so a Windows build
+    that runs fine on screen fails every scenario here with a Qt abort that says
+    nothing about the cause. Say it up front instead.
+    """
+    if os.name != "nt":
+        return None
+    platforms = app.parent / "platforms"
+    if any((platforms / name).is_file() for name in ("qoffscreen.dll", "qoffscreend.dll")):
+        return None
+    return (
+        f"no offscreen platform plugin in {platforms}\n"
+        "      windeployqt does not deploy it; copy it from the Qt kit, e.g.\n"
+        f'      cp "$QTDIR/plugins/platforms/qoffscreend.dll" "{platforms}"'
+    )
+
+
+def kill_tree(process: subprocess.Popen[bytes]) -> None:
+    """Kill the application and anything it started.
+
+    sirius-app spawns ``python -m sirius_worker`` for the Python steps. Killing
+    only the application leaves that worker running, and the next scenario then
+    competes with it for the port and the GPU.
+    """
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run(app: Path, args: List[str], timeout: int = 300, env: Optional[Dict[str, str]] = None) -> str:
     """Run the application once, offscreen, and return everything it printed."""
     full = [str(app), "-platform", "offscreen", *args]
-    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen", **(env or {})}
+    # The scenarios read the application's own qInfo lines. sirius-app is a
+    # WIN32 (no console) binary, and Qt's default handler then sends those to
+    # OutputDebugString rather than the pipe, so every run comes back empty
+    # unless stderr logging is asked for by name.
+    environment = {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_FORCE_STDERR_LOGGING": "1",
+        **(env or {}),
+    }
+    # Files, not pipes. A worker that outlives the application inherits the
+    # write end of a pipe, and reading one to EOF then blocks for as long as
+    # that worker lives -- past this function's own timeout, for ever. A file
+    # has no such end to wait for: the run is over when the application is,
+    # whatever it left behind. (That leftover does keep the file open, and on
+    # Windows an open file cannot be deleted, so the cleanup forgives it.)
+    box = Path(tempfile.mkdtemp(prefix="sirius-run-"))
     try:
-        done = subprocess.run(full, capture_output=True, text=True, timeout=timeout, env=environment)
-    except subprocess.TimeoutExpired as e:
-        raise Failure(f"timed out after {timeout}s: {' '.join(full)}") from e
-    if done.returncode != 0:
-        raise Failure(f"exit {done.returncode}: {' '.join(full)}\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}")
-    return done.stdout + done.stderr
+        out_path, err_path = box / "stdout.txt", box / "stderr.txt"
+        with out_path.open("wb") as out, err_path.open("wb") as err:
+            process = subprocess.Popen(full, stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=environment)
+            try:
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                kill_tree(process)
+                raise Failure(f"timed out after {timeout}s: {' '.join(full)}") from None
+        # Qt writes its messages in the local 8-bit encoding: a decode error in
+        # one log line must not look like a failed scenario.
+        text = out_path.read_text(errors="replace") + err_path.read_text(errors="replace")
+    finally:
+        shutil.rmtree(box, ignore_errors=True)
+    if code != 0:
+        raise Failure(f"exit {code}: {' '.join(full)}\n{text[-4000:]}")
+    return text
 
 
 def tool_results(output: str) -> Dict[str, List[Any]]:
@@ -309,24 +377,30 @@ def main() -> int:
     if not args.app.is_file():
         print(f"no such application: {args.app}", file=sys.stderr)
         return 2
+    if problem := check_offscreen_plugin(args.app):
+        print(f"cannot run offscreen: {problem}", file=sys.stderr)
+        return 2
+
+    chosen = [s for s in SCENARIOS if not args.only or args.only in s.__name__]
+    if not chosen:
+        print(f"--only {args.only!r} matched none of: {', '.join(s.__name__ for s in SCENARIOS)}", file=sys.stderr)
+        return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="sirius-gui-"))
     failures = 0
     try:
-        for scenario in SCENARIOS:
-            if args.only and args.only not in scenario.__name__:
-                continue
+        for scenario in chosen:
             name = scenario.__name__.removeprefix("test_").replace("_", " ")
             try:
                 scenario(args.app, tmp)
             except Failure as e:
                 failures += 1
-                print(f"FAIL  {name}\n      {e}", file=sys.stderr)
+                print(f"FAIL  {name}\n      {e}", file=sys.stderr, flush=True)
             else:
-                print(f"ok    {name}")
+                print(f"ok    {name}", flush=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    print(f"\n{len(SCENARIOS) - failures}/{len(SCENARIOS)} scenarios passed")
+    print(f"\n{len(chosen) - failures}/{len(chosen)} scenarios passed")
     return 1 if failures else 0
 
 

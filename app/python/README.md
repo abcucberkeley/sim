@@ -84,6 +84,7 @@ versions and which end to update.
 | `install` | `{family, dry_run?}` | `progress`\* (one frame per output line) then `result`: `{ok, returncode, available, command, installer, tail}`; runs the family's install command (`pip install cellpose`; `conda install -c conda-forge micro_sam` when the interpreter lives in a conda environment, pip otherwise) in the worker's own Python; cancellable |
 | `model_prepare` | `{spec, token?}` | `progress`\* then `result`: `{spec, path, cached}`; fetches a family model's weights (or an `hf:` file) now instead of on the first run |
 | `models_list` | | `result`: `{cache, models: [{spec, path, bytes, repo, file}]}` -- the local model cache |
+| `models_delete` | `{path}` | `result`: `{path, bytes, removed_directories}`; removes one file or one repository directory from the model cache, and only from there -- a path anywhere else is refused, since a model can be named from outside the cache and that file is the user's own |
 | `run` | `{kind, params, meta?}` + tensors | `progress`\* (`{fraction, message}`) then `result` + tensors, or `error` |
 | `cancel` | `{id}` | `result`: `{cancelled: id}`; the cancelled run replies `error` `"cancelled"` |
 | `shutdown` | | `result` `{}` and the worker exits |
@@ -101,6 +102,8 @@ but `hello` is served before a successful `hello`, and `install` and
 | --- | --- | --- | --- |
 | `torch_segment` | `input` (z, y, x) float32 | `prob` (C, z, y, x) float32 -- or, for a model family, `labels` (z, y, x) uint32 and optionally `prob` (1, z, y, x) | `{channels, device}` / `{labels, format, model, device}` |
 | `sim` | `input` (sections, y, x) or (c, t, sections, y, x) float32 | `output` (same rank, zoomed) | `{meta, info: {fits, wiener, ...}}` |
+| `skimage_seg` | `input` (z, y, x) float32 | `labels` (z, y, x) uint32 | `{method, seeds?, labels, note?, device}`; one frame at a time, so the ids start again at 1 in each |
+| `btrack` | `labels` (t, z, y, x) or (t, y, x) uint32 | `labels` (same shape) renumbered by track | `{tracks, objects, divisions, mean_length, longest}` |
 | any other kind | `input` (c, t, z, y, x) float32, optional `labels` (t, z, y, x) uint32 | `output` (c', t', z', y', x') float32, optional `labels`, `prob` | `{meta, info}` |
 
 `meta` in `params`/results is the dataset metadata dict of `sirius.workbench`

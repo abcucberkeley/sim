@@ -244,7 +244,12 @@ namespace sirius::app {
             std::function<void(const QString&, std::uint32_t)> onAction;
 
             void paint(QPainter* p, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-                QStyledItemDelegate::paint(p, option, QModelIndex());   // background / selection only
+                // Background and selection only: the model has no display text
+                // or decoration for this column, so the base class draws just
+                // those. It must be given the real index -- a debug Qt asserts
+                // on an invalid one (QStyledItemDelegate::paint) and aborts the
+                // application the moment the label table has a row to draw.
+                QStyledItemDelegate::paint(p, option, index);
                 p->save();
                 p->setFont(theme::font(theme::kSmallPx));
                 p->setPen(theme::kAccentText);
@@ -253,7 +258,6 @@ namespace sirius::app {
                 const int x = r.left() + QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text());
                 widgets::drawIcon(*p, QRectF(x, r.center().y() - 5.5, 11, 11), Icon::Trash, theme::kAccentText, 1.25);
                 p->restore();
-                (void)index;
             }
             QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex&) const override {
                 return {QFontMetrics(theme::font(theme::kSmallPx)).horizontalAdvance(text()) + 23, option.rect.height()};

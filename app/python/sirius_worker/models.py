@@ -198,6 +198,10 @@ def delete_cached_model(path: str) -> Dict[str, Any]:
         raise ModelError(f"cannot resolve {path}: {e}") from e
     if not resolved.is_relative_to(root):
         raise ModelError(f"{path} is not in the model cache ({root}); delete it yourself if you meant to")
+    if resolved == root:
+        # is_relative_to() is true for the root itself, and a client naming
+        # the cache directory would otherwise rmtree every cached model.
+        raise ModelError(f"{path} is the model cache itself, not a model in it")
     if not resolved.exists():
         raise ModelError(f"{path} is already gone")
 

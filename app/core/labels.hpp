@@ -20,6 +20,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -270,7 +271,11 @@ namespace sirius::app {
     // down the middle of the structure, and has the same topology as it had:
     // the centreline of a filament, and the length of one measured on it.
     // Returns the number of voxels that remain.
-    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x);
+    //
+    // `poll` is called once per direction of every pass: a thinning runs the
+    // whole volume many times over, and a step that cannot be cancelled until
+    // it finishes is a step that cannot be cancelled. Throw from it to stop.
+    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x, const std::function<void()>& poll = {});
 
     // Grow every label outwards into the background, up to `distance` voxels
     // measured in x / y pixels -- a step in z costs `zAspect` of them, the

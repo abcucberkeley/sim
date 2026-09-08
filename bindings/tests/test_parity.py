@@ -65,13 +65,19 @@ else:
 
 
 def _fixture_dir():
+    """The fixture directory: SIRIUS_PARITY_DIR when set, else the most
+    recently written build/*/parity. Newest rather than alphabetically first,
+    because a stale directory from an earlier build lacks the cases newer
+    steps add, and the coverage check would then fail for the wrong reason."""
     env = os.environ.get("SIRIUS_PARITY_DIR")
-    candidates = [Path(env)] if env else []
-    candidates += sorted((REPO / "build").glob("*/parity")) + sorted((REPO / "build").glob("*/tests/parity"))
-    for d in candidates:
-        if (d / "cases.json").is_file():
-            return d
-    return None
+    if env:
+        d = Path(env)
+        return d if (d / "cases.json").is_file() else None
+    found = [d for d in list((REPO / "build").glob("*/parity")) + list((REPO / "build").glob("*/tests/parity"))
+             if (d / "cases.json").is_file()]
+    if not found:
+        return None
+    return max(found, key=lambda d: (d / "cases.json").stat().st_mtime)
 
 
 FIXTURES = _fixture_dir()

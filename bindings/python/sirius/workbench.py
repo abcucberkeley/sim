@@ -2281,11 +2281,13 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
                                                seeds, seed_depth, external)
         if shape_filters:
             labels[t] = _filter_labels_by_shape(labels[t], max_voxels, min_fill, max_elongation, drop_border)
+        # counted here, as the C++ counts: growing the labels adds none, and
+        # thinning them to centrelines must not look like losing one
+        total += int(labels[t].max())
         if expand > 0.0:
             labels[t] = _expand_labels(labels[t], expand, z_aspect)
         if skeleton:
             labels[t] = np.where(_skeletonize_3d(labels[t] > 0) > 0, labels[t], 0)
-        total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,
                             "foreground_fraction": foreground, "class_name": _str(params, "class_name", "object")})

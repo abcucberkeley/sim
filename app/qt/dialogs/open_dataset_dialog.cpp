@@ -410,6 +410,14 @@ namespace sirius::app {
     void OpenDatasetDialog::openAsOneStack() {
         const QString folder = impl_->path->text().trimmed();
         if (folder.isEmpty() || !impl_->bridge) return;
+        // The manifest is written before the dataset is opened, so the refusal
+        // has to come first: otherwise a run in progress leaves the file behind
+        // for a dataset that never opened.
+        if (!impl_->bridge->wb().canEdit()) {
+            QMessageBox::information(this, QStringLiteral("Open as one stack"),
+                                     QStringLiteral("A run is in progress: cancel it (Esc) or wait before opening a dataset."));
+            return;
+        }
         const std::filesystem::path dir(toStd(folder));
         DatasetManifest manifest;
         try {

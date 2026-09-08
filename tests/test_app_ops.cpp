@@ -971,12 +971,72 @@ TEST_CASE("Classical segmentation: enhancement, local thresholds and seeding", "
         const StepOutput whole = op.run(inputOf(data, meta), p, prog.ctx);
         REQUIRE(whole.labels);
         CHECK(whole.labels->stats().size() == 1);
-        // a shallow depth lets every bump seed again
+        // a shallow depth lets every bump seed again: strictly more objects,
+        // or the section is not testing the setting it names
         p.set("seed_depth", 0.2);
         const StepOutput split = op.run(inputOf(data, meta), p, prog.ctx);
-        CHECK(split.labels->stats().size() >= whole.labels->stats().size());
+        REQUIRE(split.labels);
+        CHECK(split.labels->stats().size() > whole.labels->stats().size());
     }
 }
+
+TEST_CASE("The 3D filters ask whether they have been cancelled", "[app][ops][classic]") {
+    // The vesselness and the thinning each run the whole volume, several times
+    // over, between two of run()'s own checks. Without a poll of their own a
+    // cancel is not noticed until they are finished, which on a full-size
+    // stack is minutes: the run keeps working after the user stopped it.
+    const Dims5 dims{1, 1, 6, 24, 24};
+    const DatasetMeta meta = metaFor(dims);
+    const Operation& op = requireOperation("classic");
+    auto data = blobArray(dims, 2, 3.0);
+
+    auto pollsOf = [&](const ParamSet& p) {
+        Progress prog;
+        int polls = 0;
+        prog.ctx.cancelled = [&polls] {
+            ++polls;
+            return false;
+        };
+        op.run(inputOf(data, meta), p, prog.ctx);
+        return polls;
+    };
+
+    ParamSet base = op.defaults();
+    base.set("sigma", 0.0);
+    base.set("opening", std::int64_t{0});
+    base.set("post", std::string("Connected components"));
+    const int plain = pollsOf(base);
+
+    SECTION("the Frangi vesselness polls once per plane per scale") {
+        ParamSet p = base;
+        p.set("enhance", std::string("Tubes (Frangi)"));
+        p.set("enhance_scales", std::int64_t{5});
+        CHECK(pollsOf(p) >= plain + 5 * dims.z);
+    }
+    SECTION("Meijering does too") {
+        ParamSet p = base;
+        p.set("enhance", std::string("Neurites (Meijering)"));
+        p.set("enhance_scales", std::int64_t{5});
+        CHECK(pollsOf(p) >= plain + 5 * dims.z);
+    }
+    SECTION("the thinning polls once per direction of every pass") {
+        ParamSet p = base;
+        p.set("skeleton", true);
+        CHECK(pollsOf(p) >= plain + 6);
+    }
+    SECTION("and a cancellation raised inside them stops the step") {
+        ParamSet p = base;
+        p.set("enhance", std::string("Tubes (Frangi)"));
+        p.set("enhance_scales", std::int64_t{5});
+        Progress prog;
+        int polls = 0;
+        // true only once the vesselness has started: the plain run never gets
+        // this far, so nothing but a poll inside the filter can see it
+        prog.ctx.cancelled = [&polls, plain] { return ++polls > plain; };
+        CHECK_THROWS(op.run(inputOf(data, meta), p, prog.ctx));
+    }
+}
+
 
 namespace {
     // A worker that answers hello / model_info / run(torch_segment) with a

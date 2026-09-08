@@ -803,6 +803,9 @@ namespace sirius::app {
             clearCache->setEnabled(edit && stepOk);
             clearAll->setEnabled(edit);
             exportResult->setEnabled(w.hasDataset() && !running);
+            // It reads a step's output and its labels on the task thread, which
+            // a run is free to replace underneath it, so it goes with the rest.
+            exportTraining->setEnabled(w.hasDataset() && !running);
             exportPython->setEnabled(true);
             closeDataset->setEnabled(edit && w.hasDataset());
             savePipeline->setEnabled(true);
@@ -983,7 +986,7 @@ namespace sirius::app {
         }
 
         void exportTrainingDialog() {
-            if (!wb().hasDataset()) return;
+            if (!wb().hasDataset() || bridge.running()) return;
             TrainingExportDialog dialog(bridge, self);
             if (dialog.exec() != QDialog::Accepted) return;
             const int step = dialog.stepIndex();
@@ -1430,38 +1433,66 @@ namespace sirius::app {
         }
     } // namespace
 
+    // A drop is an edit: the workbench refuses every one of them while a run
+    // holds the pipeline (Workbench::canEdit), so the cursor has to say so
+    // rather than take the drop and answer it with an error box.
+    bool MainWindow::canAcceptDrop(const QMimeData* mime) const {
+        return impl_->wb().canEdit() && !droppablePaths(mime).isEmpty();
+    }
+
     void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
-        if (droppablePaths(event->mimeData()).isEmpty()) return;
+        if (!canAcceptDrop(event->mimeData())) {
+            event->ignore();
+            return;
+        }
         event->setDropAction(Qt::LinkAction);   // "open this", not "move it here"
         event->accept();
     }
 
     void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
-        if (droppablePaths(event->mimeData()).isEmpty()) return;
+        if (!canAcceptDrop(event->mimeData())) {
+            event->ignore();
+            return;
+        }
         event->setDropAction(Qt::LinkAction);
         event->accept();
     }
 
     void MainWindow::dropPaths(const QStringList& paths) {
-        QMimeData mime;
-        QList<QUrl> urls;
-        for (const QString& path : paths) urls << QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath());
-        mime.setUrls(urls);
-        QDropEvent event(QPointF(width() / 2.0, height() / 2.0), Qt::LinkAction, &mime, Qt::NoButton, Qt::NoModifier);
-        dropEvent(&event);
+        QStringList absolute;
+        for (const QString& path : paths)
+            if (!path.isEmpty()) absolute << QFileInfo(path).absoluteFilePath();
+        openDroppedPaths(absolute);
     }
 
     void MainWindow::dropEvent(QDropEvent* event) {
         const QStringList paths = droppablePaths(event->mimeData());
         if (paths.isEmpty()) return;
         event->acceptProposedAction();
-        // Several dataset files at once are what a folder dataset is for, so
-        // offer that rather than opening one and dropping the rest.
-        const bool manyDatasets =
-            paths.size() > 1 && std::all_of(paths.begin(), paths.end(),
-                                            [](const QString& p) { return kindOfDrop(p) == DropKind::Dataset; });
+        // Opening reads the file and can raise a dialog (the folder pattern
+        // dialog, an error box). Both belong after the drop has been answered:
+        // while this handler runs, the application the files were dragged from
+        // is blocked waiting for it.
+        QMetaObject::invokeMethod(
+            this, [this, paths] { openDroppedPaths(paths); }, Qt::QueuedConnection);
+    }
+
+    void MainWindow::openDroppedPaths(const QStringList& paths) {
+        if (paths.isEmpty()) return;
+        if (!impl_->wb().canEdit()) {
+            // logLine reaches the status bar's log line, so this is said as
+            // well as shown by the cursor that refused the drop.
+            impl_->wb().logLine("A run is in progress: cancel it (Esc) or wait before opening " + toStd(paths.first()) + ".");
+            return;
+        }
+        // Several dataset files from one folder at once are what a folder
+        // dataset is for, so offer that rather than opening one and dropping
+        // the rest. Files from different folders have no such folder to open.
+        const QString folder = QFileInfo(paths.first()).absolutePath();
+        const bool manyDatasets = paths.size() > 1 && std::all_of(paths.begin(), paths.end(), [&folder](const QString& p) {
+                                      return kindOfDrop(p) == DropKind::Dataset && QFileInfo(p).absolutePath() == folder;
+                                  });
         if (manyDatasets) {
-            const QString folder = QFileInfo(paths.first()).absolutePath();
             impl_->wb().logLine("Dropped " + std::to_string(paths.size()) + " files: opening " + toStd(folder) +
                                 " as a folder dataset.");
             openDatasetPath(folder);
@@ -1480,6 +1511,10 @@ namespace sirius::app {
                     openDatasetPath(path);
                     break;
                 case DropKind::None:
+                    // only reachable through --drop: a real drop is filtered
+                    // by droppablePaths before it gets here
+                    impl_->wb().logLine("Nothing to open in " + toStd(path) +
+                                        ": expected a TIFF / zarr / N5, a folder, a .sirius.toml or a .py operation.");
                     break;
             }
             // one dataset at a time: a second would replace the first

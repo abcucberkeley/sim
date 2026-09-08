@@ -1,6 +1,8 @@
 #include "qt/dialogs/training_export_dialog.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 
 #include <QBoxLayout>
 #include <QCheckBox>
@@ -53,6 +55,14 @@ namespace sirius::app {
         QLabel* summary = nullptr;
         QLabel* problem = nullptr;
         QPushButton* exportBtn = nullptr;
+
+        // boundingBoxes() walks every voxel of every time point. refresh()
+        // runs on every keystroke in the folder field and on every checkbox,
+        // so the count is kept until the step or the size filter moves.
+        std::shared_ptr<const StepOutput> countedOut;
+        int countedStep = -1;
+        std::uint64_t countedMin = 0;
+        QString countedSummary;
     };
 
     TrainingExportDialog::TrainingExportDialog(WorkbenchBridge& bridge, QWidget* parent)
@@ -182,17 +192,23 @@ namespace sirius::app {
 
         QString summary;
         if (labels != nullptr && !labels->empty()) {
-            const ClassTable classes = classTable(*labels);
-            std::uint64_t objects = 0;
-            for (Index t = 0; t < labels->t(); ++t)
-                objects += boundingBoxes(*labels, t, classes, static_cast<std::uint64_t>(impl_->minVoxels->value())).size();
-            summary = QStringLiteral("%1 object%2 over %3 time point%4, %5 class%6.")
-                          .arg(objects)
-                          .arg(objects == 1 ? QString() : QStringLiteral("s"))
-                          .arg(labels->t())
-                          .arg(labels->t() == 1 ? QString() : QStringLiteral("s"))
-                          .arg(classes.size())
-                          .arg(classes.size() == 1 ? QString() : QStringLiteral("es"));
+            const std::uint64_t minVoxels = static_cast<std::uint64_t>(impl_->minVoxels->value());
+            if (out != impl_->countedOut || step != impl_->countedStep || minVoxels != impl_->countedMin) {
+                const ClassTable classes = classTable(*labels);
+                std::uint64_t objects = 0;
+                for (Index t = 0; t < labels->t(); ++t) objects += boundingBoxes(*labels, t, classes, minVoxels).size();
+                impl_->countedSummary = QStringLiteral("%1 object%2 over %3 time point%4, %5 class%6.")
+                                            .arg(objects)
+                                            .arg(objects == 1 ? QString() : QStringLiteral("s"))
+                                            .arg(labels->t())
+                                            .arg(labels->t() == 1 ? QString() : QStringLiteral("s"))
+                                            .arg(classes.size())
+                                            .arg(classes.size() == 1 ? QString() : QStringLiteral("es"));
+                impl_->countedOut = out;
+                impl_->countedStep = step;
+                impl_->countedMin = minVoxels;
+            }
+            summary = impl_->countedSummary;
             if (impl_->slices->isChecked())
                 summary += QStringLiteral(" The slice output writes %1 plane files.").arg(labels->t() * labels->z() * 2);
         }
@@ -201,11 +217,7 @@ namespace sirius::app {
         std::string problem;
         if (!out) problem = "step " + Step::number(step) + " has not been computed yet; run it first";
         else if (labels == nullptr || labels->empty()) problem = "step " + Step::number(step) + " produced no labels; segment first";
-        else {
-            LabelVolume probe;
-            problem = validateTrainingExport(options(), *labels);
-            (void)probe;
-        }
+        else problem = validateTrainingExport(options(), *labels);
         impl_->problem->setText(fromStd(problem));
         impl_->problem->setVisible(!problem.empty());
         impl_->exportBtn->setEnabled(problem.empty());

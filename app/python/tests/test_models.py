@@ -176,6 +176,18 @@ class TestCache(_CacheCase):
         with self.assertRaises(models.ModelError):
             models.delete_cached_model(str(models.cache_dir() / "hf" / "nothing--here" / "gone.pt"))
 
+    def test_delete_refuses_the_cache_directory_itself(self):
+        # is_relative_to() is true for the root, so without an explicit guard a
+        # client naming the cache directory would remove every cached model.
+        keep = models.cache_dir() / "hf" / "owner--repo"
+        keep.mkdir(parents=True)
+        (keep / "model.pt").write_bytes(b"\x00")
+        for root in (str(models.cache_dir()), str(models.cache_dir()) + os.sep):
+            with self.assertRaises(models.ModelError) as caught:
+                models.delete_cached_model(root)
+            self.assertIn("cache itself", str(caught.exception))
+        self.assertTrue((keep / "model.pt").exists())
+
     def test_default_cache_is_under_home(self):
         os.environ.pop("SIRIUS_MODEL_CACHE")
         self.assertEqual(models.cache_dir(), models.Path.home() / ".sirius" / "models")

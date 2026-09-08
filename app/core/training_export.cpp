@@ -247,7 +247,10 @@ namespace sirius::app {
         auto note = [&](const std::filesystem::path& p) {
             result.files.push_back(std::filesystem::relative(p, root).generic_string());
             std::error_code ec;
-            result.bytes += std::filesystem::file_size(p, ec);
+            // file_size answers uintmax_t(-1) on failure, which added to a
+            // running total reports sixteen exabytes written
+            const std::uintmax_t size = std::filesystem::file_size(p, ec);
+            if (!ec) result.bytes += size;
         };
 
         const ClassTable classes = classTable(labels);
@@ -423,6 +426,7 @@ namespace sirius::app {
 
         if (!options.pipelineToml.empty()) {
             std::ofstream out(dir / "pipeline.sirius.toml", std::ios::trunc);
+            if (!out) throw std::runtime_error("cannot write " + (dir / "pipeline.sirius.toml").string());
             out << options.pipelineToml;
             out.close();
             note(dir / "pipeline.sirius.toml");

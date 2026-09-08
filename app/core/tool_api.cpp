@@ -419,6 +419,11 @@ namespace sirius::app {
                   {"image_scaling", {{"type", "string"}, {"enum", {"cast", "minmax", "percentile"}}, {"description", "How the image is rescaled into that type (default percentile)"}}}},
                  {"directory"}),
              [this](const json& a) {
+                 // The export materializes the step's input through the same
+                 // ArraySource a running job may be reading; keep it under the
+                 // run-state rule every other entry point follows.
+                 if (!wb_.canEdit())
+                     throw std::runtime_error("A run is in progress: cancel it or wait before exporting training data.");
                  const int i = a.contains("step") ? resolveStep(a) : wb_.viewedIndex();
                  std::shared_ptr<const StepOutput> out = wb_.output(i);
                  if (!out) throw std::invalid_argument("step " + Step::number(i) + " has not been computed yet; run it first");

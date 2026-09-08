@@ -1450,7 +1450,7 @@ namespace sirius::app {
         }
     } // namespace
 
-    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x) {
+    Index skeletonize3D(std::uint8_t* mask, Index z, Index y, Index x, const std::function<void()>& poll) {
         const Index n = z * y * x;
         if (n <= 0) return 0;
         // the six directions, taken in turn: deleting a whole border at once
@@ -1463,6 +1463,7 @@ namespace sirius::app {
         for (int pass = 0; pass < 1000 && changed; ++pass) {
             changed = false;
             for (int dir = 0; dir < 6; ++dir) {
+                if (poll) poll();
                 candidates.clear();
                 for (Index k = 0; k < z; ++k)
                     for (Index r = 0; r < y; ++r)

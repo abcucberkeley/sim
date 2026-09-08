@@ -32,7 +32,12 @@ namespace sirius::app {
         void start(const std::filesystem::path& path, nlohmann::json header = {});
         void stop();
         bool recording() const;
-        const std::filesystem::path& path() const noexcept { return path_; }
+        // A copy under the lock: start()/stop() replace path_ under mutex_,
+        // and a reference handed out here could outlive it.
+        std::filesystem::path path() const {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return path_;
+        }
         // Lines written since start(), the "session" line included.
         std::uint64_t lines() const;
 

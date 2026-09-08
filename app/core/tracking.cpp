@@ -231,17 +231,29 @@ namespace sirius::app {
                     cost[r * starts.size() + c] = d / maxD + 0.25 * static_cast<double>(gap - 1);
                 }
             const std::vector<int> match = solveAssignment(cost, static_cast<int>(ends.size()), static_cast<int>(starts.size()));
-            // apply in order, skipping links whose target was already consumed
-            std::vector<char> merged(tracks.size(), 0);
+            // Applied in order. A track that was merged away has had its
+            // points moved into another one, so a later link out of it
+            // continues from where they went: an object missed twice is one
+            // track, not the first link and then nothing. Only the target of
+            // a link is consumed; following the chain is what closes the rest.
+            std::vector<std::size_t> mergedInto(tracks.size());
+            for (std::size_t k = 0; k < tracks.size(); ++k) mergedInto[k] = k;
+            std::vector<char> consumed(tracks.size(), 0);
+            auto rootOf = [&](std::size_t k) {
+                while (mergedInto[k] != k) k = mergedInto[k];
+                return k;
+            };
             for (std::size_t r = 0; r < ends.size(); ++r) {
                 const int c = match[r];
                 if (c < 0) continue;
-                const std::size_t from = ends[r], to = starts[static_cast<std::size_t>(c)];
-                if (merged[from] || merged[to] || tracks[to].points.empty() || tracks[from].points.empty()) continue;
+                const std::size_t to = starts[static_cast<std::size_t>(c)];
+                const std::size_t from = rootOf(ends[r]);
+                if (from == to || consumed[to] || tracks[to].points.empty() || tracks[from].points.empty()) continue;
                 if (tracks[to].first() <= tracks[from].last()) continue;
                 tracks[from].points.insert(tracks[from].points.end(), tracks[to].points.begin(), tracks[to].points.end());
                 tracks[to].points.clear();
-                merged[to] = 1;
+                consumed[to] = 1;
+                mergedInto[to] = from;
                 ++result.gapsClosed;
             }
         }

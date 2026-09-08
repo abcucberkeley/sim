@@ -54,21 +54,29 @@ def _mask(volume: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
     return volume > cut
 
 
-def _markers(volume: np.ndarray, mask: np.ndarray, depth: float) -> Tuple[np.ndarray, int]:
-    """Background as marker 1 and one marker per object from the h-maxima of
-    the distance transform, which is what the Classical step seeds with too."""
+def _markers(volume: np.ndarray, mask: np.ndarray, depth: float) -> Tuple[np.ndarray, int, int]:
+    """Background as one marker and one marker per object from the h-maxima of
+    the distance transform, which is what the Classical step seeds with too.
+
+    Returns (markers, object count, the value that means background -- 0 when
+    the mask leaves no background to mark). The values are always dense,
+    1..n: ``random_walker`` renumbers its markers 1..n in ascending order of
+    their values, so a gap would shift every object down by one and drop the
+    first one.
+    """
     from scipy import ndimage
     from skimage.morphology import h_maxima, label
 
     if not mask.any():
-        return np.zeros(volume.shape, dtype=np.int32), 0
+        return np.zeros(volume.shape, dtype=np.int32), 0, 1
     distance = ndimage.distance_transform_edt(mask).astype(np.float32)
     peaks = h_maxima(distance, max(1e-6, float(depth)))
     seeds, count = label(peaks * mask, connectivity=3, return_num=True)
+    background = 0 if mask.all() else 1
     markers = np.zeros(volume.shape, dtype=np.int32)
-    markers[~mask] = 1
-    markers[seeds > 0] = seeds[seeds > 0] + 1
-    return markers, int(count)
+    markers[~mask] = background   # nothing to write when there is no background
+    markers[seeds > 0] = seeds[seeds > 0] + background
+    return markers, int(count), background
 
 
 def _clean(labels: np.ndarray, min_voxels: int) -> np.ndarray:
@@ -86,10 +94,20 @@ def _clean(labels: np.ndarray, min_voxels: int) -> np.ndarray:
 
 
 def _normalized(volume: np.ndarray) -> np.ndarray:
-    lo, hi = float(np.nanmin(volume)), float(np.nanmax(volume))
+    """0..1 over the finite range, with the non-finite voxels pulled down to
+    the low end. A NaN (a ratio taken upstream) or an inf (a saturated
+    detector) left in place either flattens the whole volume -- one inf makes
+    the span infinite, so everything else divides to zero -- or reaches
+    scikit-image, which refuses an unmasked NaN outright."""
+    finite = np.isfinite(volume)
+    if not finite.any():
+        return np.zeros(volume.shape, dtype=np.float32)
+    values = volume[finite]
+    lo, hi = float(values.min()), float(values.max())
     if not hi > lo:
-        return np.zeros_like(volume, dtype=np.float32)
-    return ((volume - lo) / (hi - lo)).astype(np.float32)
+        return np.zeros(volume.shape, dtype=np.float32)
+    clean = np.where(finite, volume, np.float32(lo))
+    return ((clean - lo) / (hi - lo)).astype(np.float32)
 
 
 def run(volume: np.ndarray,
@@ -124,7 +142,7 @@ def run(volume: np.ndarray,
 
         report(0.1, "seeding")
         mask = _mask(volume, params)
-        markers, count = _markers(volume, mask, float(params.get("seed_depth", 2.0)))
+        markers, count, background = _markers(volume, mask, float(params.get("seed_depth", 2.0)))
         info["seeds"] = count
         if count == 0:
             return np.zeros(volume.shape, dtype=np.uint32), {**info, "note": "no seeds: nothing above the threshold"}
@@ -134,23 +152,37 @@ def run(volume: np.ndarray,
         solved = random_walker(_normalized(volume), markers, beta=float(params.get("beta", 130.0)),
                                mode="cg_j", tol=float(params.get("tolerance", 1e-3)))
         check()
-        labels = np.where(solved > 1, solved - 1, 0)
+        # the walker answers in the marker numbering: object k is k + background
+        labels = np.where(solved > background, solved - background, 0)
 
     elif method == "Active contour (geodesic)":
         from skimage.morphology import label
         from skimage.segmentation import inverse_gaussian_gradient, morphological_geodesic_active_contour
 
         report(0.2, "edge map")
-        edges = inverse_gaussian_gradient(_normalized(volume), alpha=float(params.get("alpha", 100.0)),
+        # Both the edge map and the contour differentiate along every axis of
+        # what they are given, and a gradient needs two samples on each. A 2D
+        # dataset arrives here as a single plane, so it goes through as the 2D
+        # image it is rather than as a volume one voxel deep.
+        flat = volume.shape[0] == 1
+        image = volume[0] if flat else volume
+        if min(image.shape) < 2:
+            raise SkimageError(f"the active contour needs at least two samples along every axis, got shape "
+                               f"{volume.shape}; use a threshold method on a volume this small")
+        start = _mask(volume, params)
+        edges = inverse_gaussian_gradient(_normalized(image), alpha=float(params.get("alpha", 100.0)),
                                           sigma=float(params.get("edge_sigma", 2.0)))
         check()
         report(0.4, "evolving")
         contour = morphological_geodesic_active_contour(
-            edges, num_iter=int(params.get("iterations", 30)), init_level_set=_mask(volume, params).astype(np.int8),
+            edges, num_iter=int(params.get("iterations", 30)),
+            init_level_set=(start[0] if flat else start).astype(np.int8),
             smoothing=int(params.get("smoothing", 1)), balloon=float(params.get("balloon", 0.0)),
             threshold=float(params.get("edge_threshold", 0.69)))
         check()
         labels = label(contour > 0, connectivity=1)
+        if flat:
+            labels = labels[np.newaxis]
 
     elif method == "Superpixels (SLIC)":
         from skimage.segmentation import slic
@@ -186,11 +218,12 @@ def run(volume: np.ndarray,
 
         report(0.1, "seeding")
         mask = _mask(volume, params)
-        markers, count = _markers(volume, mask, float(params.get("seed_depth", 2.0)))
+        markers, count, background = _markers(volume, mask, float(params.get("seed_depth", 2.0)))
         info["seeds"] = count
         if count == 0:
             return np.zeros(volume.shape, dtype=np.uint32), {**info, "note": "no seeds: nothing above the threshold"}
-        markers[markers == 1] = 0   # the background marker is not an object here
+        if background:
+            markers[markers == background] = 0   # the background marker is not an object here
         check()
         report(0.4, "flooding")
         # compactness pulls the regions towards compact shapes, which is what
