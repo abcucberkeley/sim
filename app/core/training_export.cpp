@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include <sirius/tiff_io.hpp>
