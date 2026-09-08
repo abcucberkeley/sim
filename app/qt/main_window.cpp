@@ -11,6 +11,8 @@
 #include <QBoxLayout>
 #include <QCloseEvent>
 #include <QDesktopServices>
+#include <QMimeData>
+#include <QDragEnterEvent>
 #include <QDockWidget>
 #include <QPushButton>
 #include <QWindow>
@@ -510,12 +512,8 @@ namespace sirius::app {
             });
             process->addSeparator();
             runAllAct = action(process, QStringLiteral("Run all enabled"), keys::runAll(), [this] { bridge.startRun(-1); });
-            runSelected = action(process, QStringLiteral("Run selected step"), keys::runSelected(),
-                                 [this] { runSelectedStep(); },
-                                 QStringLiteral("Run just this step; its input has to be computed already"));
-            runTo = action(process, QStringLiteral("Run to selected step"), QKeySequence(),
-                           [this] { bridge.startRun(wb().selectedIndex()); },
-                           QStringLiteral("Run every enabled step from the top down to this one"));
+            runSelected = action(process, QStringLiteral("Run selected step"), keys::runSelected(), [this] { runSelectedStep(); }, QStringLiteral("Run just this step; its input has to be computed already"));
+            runTo = action(process, QStringLiteral("Run to selected step"), QKeySequence(), [this] { bridge.startRun(wb().selectedIndex()); }, QStringLiteral("Run every enabled step from the top down to this one"));
             cancelRun = action(process, QStringLiteral("Cancel"), QKeySequence(Qt::Key_Escape), [this] {
                 if (bridge.running()) bridge.cancelRun();
                 if (bridge.taskRunning()) bridge.cancelTask();
@@ -932,7 +930,7 @@ namespace sirius::app {
                 }
             }
             bridge.startTask(QStringLiteral("Export"), [out, options](const WorkbenchBridge::TaskProgress& progress,
-                                                                     const WorkbenchBridge::TaskCancelled& cancelled) {
+                                                                      const WorkbenchBridge::TaskCancelled& cancelled) {
                 ArrayPtr array = out->asInput().materialize(progress);
                 exportArray(*array, out->meta, out->labels.get(), options, progress, cancelled);
             });
@@ -1114,6 +1112,7 @@ namespace sirius::app {
     MainWindow::MainWindow(WorkbenchBridge& bridge, QWidget* parent)
         : QMainWindow(parent), impl_(std::make_unique<Impl>(this, bridge)) {
         setObjectName(QStringLiteral("MainWindow"));
+        setAcceptDrops(true);   // datasets, folders, pipelines and plugins open by being dropped
         resize(1600, 960);
         setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
         setDockNestingEnabled(true);
@@ -1241,7 +1240,6 @@ namespace sirius::app {
         });
         connect(&bridge, &WorkbenchBridge::taskProgress, this, [this](double f, const QString& msg) {
             impl_->showProgress(f, msg);
-
         });
         connect(&bridge, &WorkbenchBridge::taskFinished, this, [this](bool ok, const QString& error) {
             impl_->statusProgress->hide();
@@ -1322,6 +1320,97 @@ namespace sirius::app {
             return true;
         }
         return QMainWindow::eventFilter(watched, event);
+    }
+
+    namespace {
+        // What a dropped path is, by extension and by what is inside a folder.
+        enum class DropKind { None,
+                              Dataset,
+                              Folder,
+                              Pipeline,
+                              Plugin };
+
+        DropKind kindOfDrop(const QString& path) {
+            const QFileInfo info(path);
+            if (info.isDir()) return DropKind::Folder;
+            if (!info.isFile()) return DropKind::None;
+            const QString name = info.fileName().toLower();
+            if (name.endsWith(QStringLiteral(".sirius.toml"))) return DropKind::Pipeline;
+            if (name.endsWith(QStringLiteral(".py"))) return DropKind::Plugin;
+            static const char* datasets[] = {".tif", ".tiff", ".ome.tif", ".ome.tiff", ".zarr", ".n5", ".sir5"};
+            for (const char* ext : datasets)
+                if (name.endsWith(QString::fromLatin1(ext))) return DropKind::Dataset;
+            return DropKind::None;
+        }
+
+        // The paths of a drop we know what to do with, in the order they came.
+        QStringList droppablePaths(const QMimeData* mime) {
+            QStringList out;
+            if (!mime || !mime->hasUrls()) return out;
+            for (const QUrl& url : mime->urls()) {
+                if (!url.isLocalFile()) continue;
+                const QString path = url.toLocalFile();
+                if (kindOfDrop(path) != DropKind::None) out << path;
+            }
+            return out;
+        }
+    } // namespace
+
+    void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+        if (droppablePaths(event->mimeData()).isEmpty()) return;
+        event->setDropAction(Qt::LinkAction);   // "open this", not "move it here"
+        event->accept();
+    }
+
+    void MainWindow::dragMoveEvent(QDragMoveEvent* event) {
+        if (droppablePaths(event->mimeData()).isEmpty()) return;
+        event->setDropAction(Qt::LinkAction);
+        event->accept();
+    }
+
+    void MainWindow::dropPaths(const QStringList& paths) {
+        QMimeData mime;
+        QList<QUrl> urls;
+        for (const QString& path : paths) urls << QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath());
+        mime.setUrls(urls);
+        QDropEvent event(QPointF(width() / 2.0, height() / 2.0), Qt::LinkAction, &mime, Qt::NoButton, Qt::NoModifier);
+        dropEvent(&event);
+    }
+
+    void MainWindow::dropEvent(QDropEvent* event) {
+        const QStringList paths = droppablePaths(event->mimeData());
+        if (paths.isEmpty()) return;
+        event->acceptProposedAction();
+        // Several dataset files at once are what a folder dataset is for, so
+        // offer that rather than opening one and dropping the rest.
+        const bool manyDatasets =
+            paths.size() > 1 && std::all_of(paths.begin(), paths.end(),
+                                            [](const QString& p) { return kindOfDrop(p) == DropKind::Dataset; });
+        if (manyDatasets) {
+            const QString folder = QFileInfo(paths.first()).absolutePath();
+            impl_->wb().logLine("Dropped " + std::to_string(paths.size()) + " files: opening " + toStd(folder) +
+                                " as a folder dataset.");
+            openDatasetPath(folder);
+            return;
+        }
+        for (const QString& path : paths) {
+            switch (kindOfDrop(path)) {
+                case DropKind::Pipeline:
+                    openPipelinePath(path);
+                    break;
+                case DropKind::Plugin:
+                    impl_->pluginManager(path);
+                    break;
+                case DropKind::Folder:
+                case DropKind::Dataset:
+                    openDatasetPath(path);
+                    break;
+                case DropKind::None:
+                    break;
+            }
+            // one dataset at a time: a second would replace the first
+            if (kindOfDrop(path) == DropKind::Dataset || kindOfDrop(path) == DropKind::Folder) break;
+        }
     }
 
     void MainWindow::closeEvent(QCloseEvent* event) {

@@ -366,6 +366,11 @@ deconvolution convergence, contrast histograms, alignment maps, the label review
 and queue, or a shape preview before a run. `?` / F1 opens the step's help page
 (Markdown + LaTeX in `app/help`, editable, reloaded on save).
 
+**Drag and drop**: dropping onto the window opens it — a TIFF or zarr as the
+dataset, a folder through the manifest dialog, several image files at once as their
+containing folder, a `*.sirius.toml` as a pipeline, a `.py` in the user-operations
+editor. `--drop <path>` does the same from the command line, for smoke tests.
+
 **Folder datasets**: an acquisition saved as one file per channel, tile or time
 point opens as one dataset (File ▸ Open folder as dataset…, or the Folder… button in
 Open). A regular expression with named groups (`channel`, `t`, `tile`, `x`, `y`, `z`)
@@ -439,7 +444,8 @@ Command line: `--dataset`, `--pipeline`, `--run`, and for scripting and smoke te
 "Export result"` (a menu item by text), `--ask "…"` (a message to the assistant),
 `--screenshot out.png` (grab the window, and any dialog, after the run and quit),
 `--wheel x,y,steps` and `--stroke x0,y0,x1,y1,moves` (real mouse events on the XY pane,
-in voxels, for zoom / paint timing) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
+in voxels, for zoom / paint timing), `--drop <path>` (as though the path were dropped on
+the window) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
 what every pane render, label overlay, paint and stroke costs. `QT_QPA_PLATFORM=offscreen`
 runs without a display (the 3D view then shows a notice: Qt's offscreen platform has no
 OpenGL widgets).

@@ -61,6 +61,8 @@ int main(int argc, char** argv) {
     // their text ("Assistant"), applied once the run (if any) has finished.
     const QCommandLineOption toolOpt(QStringLiteral("tool"), QStringLiteral("Call a tool of the assistant API (JSON, repeatable)"),
                                      QStringLiteral("json"));
+    const QCommandLineOption dropOpt(QStringLiteral("drop"), QStringLiteral("Act as though this path were dropped on the window (repeatable)"),
+                                     QStringLiteral("path"));
     const QCommandLineOption strokeOpt(QStringLiteral("stroke"), QStringLiteral("Drag on the XY pane: x0,y0,x1,y1,moves in voxels (repeatable, after the tools)"),
                                        QStringLiteral("spec"));
     const QCommandLineOption wheelOpt(QStringLiteral("wheel"), QStringLiteral("Wheel on the XY pane: x,y,steps in voxels (repeatable, before the strokes)"),
@@ -70,7 +72,7 @@ int main(int argc, char** argv) {
     const QCommandLineOption askOpt(QStringLiteral("ask"), QStringLiteral("Send a message to the assistant"), QStringLiteral("text"));
     const QCommandLineOption settleOpt(QStringLiteral("settle"), QStringLiteral("Milliseconds to wait before the screenshot (default 600)"),
                                        QStringLiteral("ms"));
-    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt, strokeOpt, wheelOpt});
+    parser.addOptions({datasetOpt, pipelineOpt, runOpt, screenshotOpt, quitAfterOpt, toolOpt, actionOpt, askOpt, settleOpt, strokeOpt, wheelOpt, dropOpt});
     parser.process(app);
 
     sirius::app::registerBuiltinOperations();
@@ -142,6 +144,7 @@ int main(int argc, char** argv) {
                 }
             if (!found) workbench.logLine("no action named " + sirius::app::toStd(text));
         }
+        if (parser.isSet(dropOpt)) window.dropPaths(parser.values(dropOpt));
         for (const QString& spec : parser.values(wheelOpt)) {
             const QStringList v = spec.split(QLatin1Char(','));
             if (v.size() == 3) window.viewer().syntheticWheel(QPointF(v[0].toDouble(), v[1].toDouble()), v[2].toDouble());
@@ -153,7 +156,7 @@ int main(int argc, char** argv) {
         }
         if (parser.isSet(askOpt)) window.askAssistant(parser.value(askOpt));
     };
-    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt) || parser.isSet(strokeOpt) || parser.isSet(wheelOpt);
+    const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt) || parser.isSet(strokeOpt) || parser.isSet(wheelOpt) || parser.isSet(dropOpt);
     // Nobody is at the keyboard in any of these modes, so the window must not
     // ask whether to cancel a running job on the way out (see
     // MainWindow::setUnattended).
@@ -166,8 +169,7 @@ int main(int argc, char** argv) {
             // action runs its own event loop, in which the timer still fires.
             if (!path.isEmpty()) QTimer::singleShot(settle, &window, [&window, &app, &bridge, path] {
                 // size report: which widget dictates the window's minimum
-                QString report = QStringLiteral("window %1x%2 min %3x%4").arg(window.width()).arg(window.height())
-                                     .arg(window.minimumSizeHint().width()).arg(window.minimumSizeHint().height());
+                QString report = QStringLiteral("window %1x%2 min %3x%4").arg(window.width()).arg(window.height()).arg(window.minimumSizeHint().width()).arg(window.minimumSizeHint().height());
                 if (QWidget* c = window.centralWidget())
                     report += QStringLiteral(" central-min %1x%2").arg(c->minimumSizeHint().width()).arg(c->minimumSizeHint().height());
                 for (QDockWidget* d : window.findChildren<QDockWidget*>())

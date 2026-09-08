@@ -29,6 +29,8 @@ namespace sirius::app {
         // Command-line conveniences; failures land in the log.
         void openDatasetPath(const QString& path);
         ViewerWidget& viewer();   // scripting hooks (--stroke, --wheel)
+        // Scripting: act as though these paths were dropped on the window.
+        void dropPaths(const QStringList& paths);
         void openPipelinePath(const QString& path);
         void runAll();
         // Shows the assistant dock and submits `text` (scripting).
@@ -41,6 +43,12 @@ namespace sirius::app {
 
     protected:
         void closeEvent(QCloseEvent* event) override;
+        // Files dropped anywhere on the window: a dataset opens, a folder goes
+        // through the manifest dialog, a pipeline loads, a Python file is added
+        // as a user operation.
+        void dragEnterEvent(QDragEnterEvent* event) override;
+        void dragMoveEvent(QDragMoveEvent* event) override;
+        void dropEvent(QDropEvent* event) override;
         // The status bar's log line opens the log dock.
         bool eventFilter(QObject* watched, QEvent* event) override;
 

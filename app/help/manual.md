@@ -33,6 +33,7 @@ $$
 |---|---|
 | **Pipeline files** <br> .sirius.toml | *File ▸ Save pipeline* writes every step with its parameters; *Load pipeline preset* restores one onto the current dataset. |
 | **Export** <br> TIFF · zarr | *Export result…* writes any step's output with full control over the container: strips or tiles, compression, pyramid levels, chunk shape, pixel type and scaling. |
+| **Drag and drop** <br> onto the window | A TIFF or zarr opens as the dataset; a folder goes through the manifest dialog; several image files at once open their folder as one dataset; a `*.sirius.toml` loads that pipeline; a `.py` opens in the user-operations editor. Anywhere on the window will do. |
 | **Folder datasets** <br> sirius-dataset.toml | *File ▸ Open folder as dataset…* opens one file per channel, tile or time point as a single dataset: a regular expression parses the names once, the result is saved beside the files and reused. The viewer's tile chooser and the Load step's *Tile* pick the tile; *Stitch* fuses all of them. |
 | **Models** <br> Segment menu | *Segment ▸ Download model…* fetches segmentation models from Hugging Face into the local model store and points a Torch segmentation step at them. |
 | **User operations** <br> Window menu | *Window ▸ User operations…* (also the link at the foot of the add menu) lists the Python files that define user steps, shows load errors, and edits or creates them in place; saving reloads the step. |
