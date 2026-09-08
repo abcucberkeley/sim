@@ -64,8 +64,8 @@ namespace sirius::app {
         root->setContentsMargins(20, 20, 20, 20);
         root->setSpacing(12);
 
-        auto* intro = widgets::label(QStringLiteral("Writes one sample folder per export -- instance masks, a semantic mask and "
-                                                    "bounding boxes -- and appends it to index.jsonl, so a folder collects the "
+        auto* intro = widgets::label(QStringLiteral("Writes one sample folder per export — instance masks, a semantic mask and "
+                                                    "bounding boxes — and appends it to index.jsonl, so a folder collects the "
                                                     "output of many runs into one training set."),
                                      11, theme::kNeutral600, -1, this);
         intro->setWordWrap(true);
