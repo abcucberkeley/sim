@@ -165,7 +165,7 @@ snapshot of the C++ parameter tables and
   or a legacy cudasirecon config, loaded first), `angles`, `phases`,
   `wiener`, `apodization` (`Cosine` | `Triangle` | `None`), `otf`, `na`,
   `nimm`, `wavelength_nm`, `linespacing_um`, `k0_angles`, `k0_start_angle`,
-  `band_specific_wiener`, `suppress_zero_order`, `bleach_correction`,
+  `suppress_zero_order`, `bleach_correction`,
   `zoomfact`, `z_zoom`, `orders`, `dz_psf`, `otfcutoff`, `background`,
   `apodize_input`, `napodize`, `suppression_radius`,
   `suppress_singularities`, `no_kz0`, `filter_overlaps`, `explodefact`,

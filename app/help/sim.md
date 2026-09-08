@@ -17,8 +17,10 @@ $$
 | **Wiener** <br> 10⁻⁴ – 10⁻² | Regularisation constant $w$ in the generalised Wiener filter. Small values sharpen but amplify noise (honeycomb artefacts); large values blur. Start at 0.001 and inspect the result spectrum. $\tilde{S}(\mathbf{k}) = \frac{\sum_m \tilde{O}^*_m \tilde{D}_m}{\sum_m \|\tilde{O}_m\|^2 + w^2}\,A(\mathbf{k})$ |
 | **Apodization** <br> cosine · triangle · none | Window $A(\mathbf{k})$ applied to the extended support to suppress ringing at the cut-off. Cosine is the safe default. |
 | **OTF** <br> measured · theoretical | Optical transfer function per band. A measured OTF from beads is preferred; the theoretical one assumes ideal aberration-free optics with the given NA, immersion index and emission wavelength. |
-| **Line spacing · start angle** <br> µm · rad | Where the pattern-vector search starts: the illumination period and the orientation of the first direction. The fit refines both; if it diverges, correct these. |
+| **Line spacing · start angle** <br> µm · ° | Where the pattern-vector search starts: the illumination period and the orientation of the first direction. Degrees, the same units the fit table reports, so a fitted angle can be typed straight back in. The fit refines both; if it diverges, correct these. |
 | **Modulation depth** <br> > 0.4 healthy | Diagnostic, not a parameter: contrast of the illumination pattern per angle. Below ~0.3 that angle contributes mostly noise — check focus, polarisation or the SLM. $m = \frac{|\tilde{D}_{\pm1}|}{|\tilde{D}_0|}\Big|_{\mathbf{k}=\mathbf{k}_0}$ |
+
+The **Separated bands** and **Wiener-filtered bands** tabs hold one band per direction at the middle kz — order 1, the side that carries the extra resolution. They are not the assembled Fourier mosaic. Capturing them keeps two complex volumes covering every direction and band, which runs to gigabytes on a full-size stack, so it is only done for stacks up to 512 × 512 and 64 z-cycles; above that the diagnostics say so and give the size it would have taken.
 
 ## Note
 

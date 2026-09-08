@@ -2519,7 +2519,7 @@ _SIM = StepSpec(
     "sim",
     {"mode": "Estimate", "params_file": "", "angles": 3, "phases": 5, "wiener": 0.001, "apodization": "Cosine",
      "otf": "", "na": 1.4, "nimm": 1.515, "wavelength_nm": 510.0, "linespacing_um": 0.2, "k0_angles": [],
-     "k0_start_angle": 0.0, "band_specific_wiener": False, "suppress_zero_order": True, "bleach_correction": True,
+     "k0_start_angle": 0.0, "suppress_zero_order": True, "bleach_correction": True,
      "zoomfact": 2.0, "z_zoom": 1, "orders": 0, "dz_psf": 0.0, "otfcutoff": 0.006, "background": 0.0,
      "apodize_input": "Triangle", "napodize": 10, "suppression_radius": 10, "suppress_singularities": True,
      "no_kz0": True, "filter_overlaps": True, "explodefact": 1.0, "equalizez": False},
@@ -2573,9 +2573,11 @@ def _sim_parameters(params: Dict[str, Any], meta: Dict[str, Any]):
         p.nimm = _float(params, "nimm", 1.515)
         p.wavelength_nm = _float(params, "wavelength_nm", 510.0)
         p.linespacing_um = _float(params, "linespacing_um", 0.2)
-        p.k0_start_angle = _float(params, "k0_start_angle", 0.0)
+        # degrees in the parameters, as the fit table reports them; radians in
+        # the library, converted once here as the application does
+        p.k0_start_angle = _float(params, "k0_start_angle", 0.0) * math.pi / 180.0
         if mode == "Manual":
-            angles = _floats(params.get("k0_angles"))
+            angles = [a * math.pi / 180.0 for a in _floats(params.get("k0_angles"))]
             if angles:
                 p.k0_angles = angles
         p.dampen_order0 = _bool(params, "suppress_zero_order", True)
@@ -2602,9 +2604,6 @@ def _sim_parameters(params: Dict[str, Any], meta: Dict[str, Any]):
         p.fast_si = _bool(params, "fast_si", p.fast_si)
     dz_psf = _float(params, "dz_psf", 0.0)
     p.dz_psf = dz_psf if dz_psf > 0.0 else p.dz
-    if _bool(params, "band_specific_wiener", False):
-        warnings.warn("step 'sim': band_specific_wiener is not available; the global Wiener constant applies "
-                      "to every band (as in the application)", UnknownParameterWarning, stacklevel=3)
     p.validate()
     return p
 

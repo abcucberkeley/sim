@@ -2,7 +2,7 @@
 // holds angles x phases x planes sections -- reconstructed with the library's
 // SimReconstructor through the ReconSession (which keeps the FFT plans and
 // the OTF between volumes). Diagnostics are the spectra the design's
-// "Raw spectrum / Separated bands / Shifted & stitched / Result spectrum"
+// "Raw spectrum / Separated bands / Wiener-filtered bands / Result spectrum"
 // tabs show, plus the fitted pattern table.
 #include "core/ops/builtin.hpp"
 
@@ -153,32 +153,23 @@ namespace sirius::app {
                         .withHelp("Used by the From file mode"),
                     intParam("angles", "Angles", 3).range(1, 16),
                     intParam("phases", "Phases", 5).range(2, 32),
-                    doubleParam("wiener", "Wiener", 0.001).range(1e-5, 1.0, 0.0005, 5)
-                        .withHelp("Regularisation constant of the generalised Wiener filter"),
+                    doubleParam("wiener", "Wiener", 0.001).range(1e-5, 1.0, 0.0005, 5).withHelp("Regularisation constant of the generalised Wiener filter"),
                     choiceParam("apodization", "Apodization", {"Cosine", "Triangle", "None"}, "Cosine")
                         .withHelp("Window applied to the extended support"),
-                    pathParam("otf", "OTF").withFilter("OTF (*.tif *.tiff);;All files (*)")
-                        .withHelp("Radially averaged OTF TIFF; empty = theoretical OTF from NA / wavelength"),
+                    pathParam("otf", "OTF").withFilter("OTF (*.tif *.tiff);;All files (*)").withHelp("Radially averaged OTF TIFF; empty = theoretical OTF from NA / wavelength"),
                     doubleParam("na", "NA", 1.4).range(0.1, 2.0, 0.01, 2),
                     doubleParam("nimm", "Immersion index", 1.515).range(1.0, 2.0, 0.001, 3),
                     doubleParam("wavelength_nm", "Emission λ", 510.0).range(300.0, 1000.0, 1.0, 0).withUnit("nm"),
                     doubleParam("linespacing_um", "Line spacing", 0.2).range(0.01, 5.0, 0.001, 4).withUnit("µm"),
-                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("rad")
-                        .withHelp("One angle per direction (Manual mode)"),
-                    doubleParam("k0_start_angle", "Start angle", 0.0).range(-kPi, kPi, 0.01, 4).withUnit("rad")
-                        .withHelp("Angle of direction 0 (Estimate mode); the others follow at π / angles")
-                        .asAdvanced(),
-                    boolParam("band_specific_wiener", "Band-specific Wiener", false)
-                        .withHelp("Not available in this build: the global constant applies to every band"),
+                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("°").withHelp("One angle per direction (Manual mode), in the same degrees the fit table reports"),
+                    doubleParam("k0_start_angle", "Start angle", 0.0).range(-180.0, 180.0, 1.0, 2).withUnit("°").withHelp("Angle of direction 0 (Estimate mode); the others follow at 180° / angles").asAdvanced(),
                     boolParam("suppress_zero_order", "Suppress zero-order", true)
                         .withHelp("Dampen the order-0 band where the side bands overlap it"),
                     boolParam("bleach_correction", "Bleach correction across phases", true),
-                    doubleParam("zoomfact", "Lateral zoom", 2.0).range(1.0, 4.0, 0.5, 1)
-                        .withHelp("Output grid enlargement in x and y").asAdvanced(),
+                    doubleParam("zoomfact", "Lateral zoom", 2.0).range(1.0, 4.0, 0.5, 1).withHelp("Output grid enlargement in x and y").asAdvanced(),
                     intParam("z_zoom", "Axial zoom", 1).range(1, 4).asAdvanced(),
                     intParam("orders", "Orders", 0).range(0, 8).withHelp("0 = phases / 2 + 1").asAdvanced(),
-                    doubleParam("dz_psf", "OTF axial step", 0.0).range(0.0, 10.0, 0.005, 4).withUnit("µm")
-                        .withHelp("Axial step of the OTF file (0 = the stack's dz)").asAdvanced(),
+                    doubleParam("dz_psf", "OTF axial step", 0.0).range(0.0, 10.0, 0.005, 4).withUnit("µm").withHelp("Axial step of the OTF file (0 = the stack's dz)").asAdvanced(),
                     doubleParam("otfcutoff", "OTF cutoff", 0.006).range(0.0, 1.0, 0.001, 4).asAdvanced(),
                     doubleParam("background", "Camera background", 0.0).range(0.0, 1e6, 1.0, 1).asAdvanced(),
                     choiceParam("apodize_input", "Input apodization", {"Triangle", "Cosine", "None"}, "Triangle").asAdvanced(),
@@ -212,9 +203,12 @@ namespace sirius::app {
                     p.nimm = params.getDouble("nimm", 1.515);
                     p.wavelength_nm = params.getDouble("wavelength_nm", 510.0);
                     p.linespacing_um = params.getDouble("linespacing_um", 0.2);
-                    p.k0_start_angle = params.getDouble("k0_start_angle", 0.0);
+                    // the form and the fit table both speak degrees; the
+                    // library wants radians, so the conversion happens once, here
+                    p.k0_start_angle = params.getDouble("k0_start_angle", 0.0) * kPi / 180.0;
                     if (mode == kManual) {
-                        const std::vector<double> angles = params.getDoubleList("k0_angles");
+                        std::vector<double> angles = params.getDoubleList("k0_angles");
+                        for (double& a : angles) a *= kPi / 180.0;
                         if (!angles.empty()) p.k0_angles = angles;
                     }
                     p.dampen_order0 = params.getBool("suppress_zero_order", true);
@@ -286,8 +280,6 @@ namespace sirius::app {
                                          std::to_string(input.sim.nphases) + " phases; the step uses " +
                                          std::to_string(p.ndirs) + " × " + std::to_string(p.nphases) + ".");
                 if (input.rgb) v.errors.push_back("SIM reconstruction needs raw channels, not an RGB merge.");
-                if (params.getBool("band_specific_wiener"))
-                    v.warnings.push_back("Band-specific Wiener is not available in this build; the global constant is used.");
                 return v;
             }
 
@@ -332,7 +324,24 @@ namespace sirius::app {
                 session.setParameters(p);
                 session.setOtfPath(params.getString("otf"));
                 const Index sections = input.meta.dims.z;
+                // Capturing the band spectra keeps two complex volumes covering
+                // every direction and band -- gigabytes on a full-size stack --
+                // so it is only done for small ones. When it is skipped the
+                // reason is reported, rather than the two tabs quietly going
+                // missing with nothing said.
                 const bool capture = input.meta.dims.y * input.meta.dims.x <= 512 * 512 && sections <= 64 * perPlane;
+                std::string captureNote;
+                if (!capture) {
+                    const int bands = 2 * std::max(1, p.norders) - 1;
+                    const double bytes = 2.0 * p.ndirs * bands * static_cast<double>(nz) *
+                                         static_cast<double>(input.meta.dims.y) * static_cast<double>(input.meta.dims.x) * 16.0;
+                    char buf[256];
+                    std::snprintf(buf, sizeof buf,
+                                  "not captured: the band spectra are kept only for stacks up to 512 × 512 and 64 z-cycles "
+                                  "(this one would hold about %.1f GB). Crop or bin to see them.",
+                                  bytes / (1024.0 * 1024.0 * 1024.0));
+                    captureNote = buf;
+                }
 
                 double seconds = 0.0;
                 bool plansReused = false;
@@ -357,7 +366,7 @@ namespace sirius::app {
                     convert(r.volume, result->volume(c, t));
                     ctx.throwIfCancelled();
                     if (first) {
-                        out.diagnostics = diagnostics(input, raw, r, p, nz, *result, params);
+                        out.diagnostics = diagnostics(input, raw, r, p, nz, *result, params, captureNote);
                         first = false;
                     }
                 });
@@ -373,8 +382,8 @@ namespace sirius::app {
 
         private:
             Diagnostics diagnostics(const StepInput& input, const Buffer<float>& raw, const ReconResult& r,
-                                    const SIMParameters& p, Index nz, const Array5& result,
-                                    const ParamSet& params) const {
+                                    const SIMParameters& p, Index nz, const Array5& result, const ParamSet& params,
+                                    const std::string& captureNote = {}) const {
                 Diagnostics d;
                 d.kind = DiagnosticsKind::Sim;
                 const Index ny = raw.dim(1), nx = raw.dim(2);
@@ -411,17 +420,20 @@ namespace sirius::app {
                 // --- Separated bands / Shifted & stitched (captured spectra)
                 if (r.diagnostics.captured) {
                     DiagnosticTab sepTab{"Separated bands", {}};
-                    DiagnosticTab filtTab{"Shifted & stitched", {}};
+                    // Named for what is drawn: one band per direction after the
+                    // Wiener filter, at the middle kz. It is not the assembled
+                    // Fourier mosaic, and calling it "stitched" said it was.
+                    DiagnosticTab filtTab{"Wiener-filtered bands", {}};
                     for (int dir = 0; dir < r.diagnostics.ndirs; ++dir) {
                         const std::string angle = dir < static_cast<int>(rows.size()) ? degrees(rows[static_cast<std::size_t>(dir)].angleDeg * kPi / 180.0) : "";
                         try {
                             DiagnosticImage sep = bandImage(r.diagnostics, r.diagnostics.separated, dir,
-                                                            "Band · angle " + std::to_string(dir + 1), angle);
+                                                            "Order 1 · angle " + std::to_string(dir + 1), angle);
                             const SpectrumPixels px = pixelsOf(sep, nx, ny, p.dx, p.dy);
                             addK0Marks(sep, px, r.fit.k0, DiagnosticMark::Kind::Cross, 0.0, true, dir);
                             sepTab.images.push_back(d.addImage(std::move(sep)));
                             DiagnosticImage filt = bandImage(r.diagnostics, r.diagnostics.filtered, dir,
-                                                             "Stitched · angle " + std::to_string(dir + 1), angle);
+                                                             "Filtered order 1 · angle " + std::to_string(dir + 1), angle);
                             const SpectrumPixels pxf = pixelsOf(filt, nx, ny, p.dx, p.dy);
                             addK0Marks(filt, pxf, r.fit.k0, DiagnosticMark::Kind::Ring, pxf.radiusPx(support), true, dir);
                             filtTab.images.push_back(d.addImage(std::move(filt)));
@@ -432,6 +444,7 @@ namespace sirius::app {
                     if (!sepTab.images.empty()) d.tabs.push_back(std::move(sepTab));
                     if (!filtTab.images.empty()) d.tabs.push_back(std::move(filtTab));
                 }
+                if (!captureNote.empty()) d.facts.push_back({"Band spectra", captureNote});
 
                 // --- Result spectrum: widefield vs SIM vs difference
                 {
@@ -505,8 +518,9 @@ namespace sirius::app {
                     char footer[160];
                     std::snprintf(footer, sizeof footer, "Wiener %g · OTF %s · apodization %s · resolution gain ≈ %.1f×",
                                   p.wiener, params.getString("otf").empty() ? "theoretical" : "measured",
-                                  p.apodize_output == ApodizationType::Cosine ? "cosine"
-                                  : p.apodize_output == ApodizationType::Triangle ? "triangle" : "none",
+                                  p.apodize_output == ApodizationType::Cosine     ? "cosine"
+                                  : p.apodize_output == ApodizationType::Triangle ? "triangle"
+                                                                                  : "none",
                                   gain);
                     d.footer = footer;
                     d.summary = summary(params, input.meta);

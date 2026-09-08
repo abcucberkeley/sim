@@ -293,33 +293,24 @@
         {
           "advanced": false,
           "default": [],
-          "help": "One angle per direction (Manual mode)",
+          "help": "One angle per direction (Manual mode), in the same degrees the fit table reports",
           "key": "k0_angles",
           "label": "Pattern angles",
           "read_only": false,
           "type": "double_list",
-          "unit": "rad"
+          "unit": "°"
         },
         {
           "advanced": true,
           "default": 0.0,
-          "help": "Angle of direction 0 (Estimate mode); the others follow at π / angles",
+          "help": "Angle of direction 0 (Estimate mode); the others follow at 180° / angles",
           "key": "k0_start_angle",
           "label": "Start angle",
-          "max": 3.141592653589793,
-          "min": -3.141592653589793,
+          "max": 180.0,
+          "min": -180.0,
           "read_only": false,
           "type": "double",
-          "unit": "rad"
-        },
-        {
-          "advanced": false,
-          "default": false,
-          "help": "Not available in this build: the global constant applies to every band",
-          "key": "band_specific_wiener",
-          "label": "Band-specific Wiener",
-          "read_only": false,
-          "type": "bool"
+          "unit": "°"
         },
         {
           "advanced": false,

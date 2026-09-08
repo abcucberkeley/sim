@@ -73,12 +73,52 @@ namespace sirius::app {
             }
     }
 
+    namespace {
+        // What a parameter's path points at, not the path itself. An OTF, a
+        // PSF, a flat-field image or the dataset can all be rewritten in place
+        // while the pipeline still names the same file, and the step's output
+        // would otherwise be served from the cache as though nothing had
+        // changed. Size and modification time are enough to notice that, and
+        // cost one stat.
+        std::string fileStamp(const std::string& path) {
+            if (path.empty()) return {};
+            std::error_code ec;
+            const std::filesystem::path file(path);
+            const std::filesystem::file_status status = std::filesystem::status(file, ec);
+            if (ec) return {};
+            if (std::filesystem::is_regular_file(status)) {
+                const std::uintmax_t size = std::filesystem::file_size(file, ec);
+                if (ec) return {};
+                const std::filesystem::file_time_type when = std::filesystem::last_write_time(file, ec);
+                if (ec) return {};
+                return std::to_string(size) + ":" + std::to_string(when.time_since_epoch().count());
+            }
+            if (std::filesystem::is_directory(status)) {
+                // a zarr / N5 store or a folder dataset. The directory's own
+                // stamp catches a file added, removed or renamed, but not a
+                // chunk rewritten in place: walking a whole store on every
+                // cache lookup would cost more than the run it protects.
+                const std::filesystem::file_time_type when = std::filesystem::last_write_time(file, ec);
+                if (ec) return {};
+                return "dir:" + std::to_string(when.time_since_epoch().count());
+            }
+            return {};
+        }
+    } // namespace
+
     std::string Executor::fingerprint(const Pipeline& p, int index) const {
         std::string upstream;
         for (int i = 0; i <= index && i < p.size(); ++i) {
             const Step& s = p.at(i);
             if (i > 0 && !s.enabled) continue;   // a skipped step is transparent
-            const std::string own = s.kind + "|" + s.params.toJson().dump() + "|" + upstream;
+            std::string own = s.kind + "|" + s.params.toJson().dump() + "|" + upstream;
+            // every file the step reads, by identity rather than by name
+            if (const Operation* op = findOperation(s.kind))
+                for (const ParamSpec& spec : op->info().params)
+                    if (spec.type == ParamType::Path) {
+                        const std::string stamp = fileStamp(s.params.getString(spec.key));
+                        if (!stamp.empty()) own += "|" + spec.key + "@" + stamp;
+                    }
             upstream = stableHash(own);
         }
         return upstream;

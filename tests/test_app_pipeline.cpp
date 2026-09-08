@@ -175,6 +175,36 @@ namespace {
         }
     };
 
+    // Reads a file named by a Path parameter: what the cache has to notice
+    // has changed when the file behind the path is rewritten.
+    struct FileOp final : Operation {
+        static inline std::atomic<int> runs{0};
+        OpInfo info_;
+        FileOp() {
+            info_.kind = "test_file";
+            info_.name = "Read file";
+            info_.group = "Intensity";
+            info_.kindLabel = "INTENSITY";
+            info_.params = {pathParam("source", "Source")};
+            info_.defaultCache = CachePolicy::Memory;
+        }
+        const OpInfo& info() const noexcept override { return info_; }
+        StepOutput run(const StepInput& in, const ParamSet& p, const StepContext&) const override {
+            ++runs;
+            ArrayPtr src = in.materialize();
+            auto out = std::make_shared<Array5>(src->clone());
+            // the offset is the file's size, so the output follows its content
+            std::error_code ec;
+            const std::uintmax_t bytes = std::filesystem::file_size(p.getString("source"), ec);
+            const float add = ec ? 0.0f : static_cast<float>(bytes);
+            for (Index i = 0; i < out->numel(); ++i) out->data()[i] += add;
+            StepOutput o;
+            o.meta = in.meta;
+            o.array = out;
+            return o;
+        }
+    };
+
     void registerTestOps() {
         static bool done = false;
         if (done) return;
@@ -186,6 +216,7 @@ namespace {
         registerOperation(std::make_unique<SlowOp>());
         registerOperation(std::make_unique<CancellingOp>());
         registerOperation(std::make_unique<LabelOp>());
+        registerOperation(std::make_unique<FileOp>());
     }
 
     std::shared_ptr<MemorySource> syntheticSource(Index c = 2, Index t = 3, Index z = 4, Index y = 8, Index x = 8) {
@@ -1385,4 +1416,59 @@ TEST_CASE("A live-preview step is displayed on its input until it runs", "[app][
     CHECK(actual == 1);
     wb.setStepEnabled(ci, false);        // a skipped step is never previewed
     CHECK_FALSE(wb.viewedIsLivePreview());
+}
+
+TEST_CASE("A rewritten file is not served from the cache", "[app][executor]") {
+    // The pipeline names a path; the cache has to key on what is behind it.
+    // An OTF, a PSF or a flat-field image edited in place keeps the same name,
+    // and the step that reads it must run again.
+    registerTestOps();
+    Scratch scratch;
+    Executor ex(scratch.dir / "cache");
+    const std::filesystem::path file = scratch.dir / "source.bin";
+    std::ofstream(file, std::ios::binary) << "aaaa";
+
+    Pipeline p;
+    p.add("test_file");
+    ParamSet q = p.at(1).params;
+    q.set("source", file.string());
+    p.setParams(1, q);
+
+    auto src = syntheticSource();
+    auto load = std::make_shared<StepOutput>();
+    load->meta = src->meta();
+    load->source = src;
+    ex.seed(p, 0, load);
+
+    StepContext ctx;
+    FileOp::runs = 0;
+    auto first = ex.runAll(p, ctx);
+    REQUIRE(first);
+    CHECK(FileOp::runs == 1);
+    const float before = first->array->at(0, 0, 0, 0, 0);
+    const std::string stamp = ex.fingerprint(p, 1);
+
+    SECTION("running again with the file untouched is a cache hit") {
+        ex.runAll(p, ctx);
+        CHECK(FileOp::runs == 1);
+        CHECK(ex.fingerprint(p, 1) == stamp);
+    }
+
+    SECTION("rewriting the file behind the same path runs the step again") {
+        // a different size, and a later timestamp: either is enough on its own
+        std::ofstream(file, std::ios::binary | std::ios::trunc) << "bbbbbbbb";
+        std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(2));
+        CHECK(ex.fingerprint(p, 1) != stamp);
+        auto again = ex.runAll(p, ctx);
+        REQUIRE(again);
+        CHECK(FileOp::runs == 2);
+        CHECK(again->array->at(0, 0, 0, 0, 0) != before);   // the new content reached the output
+    }
+
+    SECTION("a path that names nothing is simply not stamped") {
+        ParamSet missing = p.at(1).params;
+        missing.set("source", (scratch.dir / "not-here.bin").string());
+        p.setParams(1, missing);
+        CHECK_FALSE(ex.fingerprint(p, 1).empty());   // still a fingerprint, just without a file in it
+    }
 }
