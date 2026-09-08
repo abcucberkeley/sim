@@ -162,7 +162,8 @@ namespace sirius::app {
         QPushButton* remove = nullptr;
         QLabel* validation = nullptr;
 
-        int builtFor = -1;                 // step index the body was built for
+        int builtFor = -1;
+        std::string builtVisibility;                 // step index the body was built for
         std::string builtKind;
         std::map<std::string, std::function<void(const ParamSet&)>> updaters;   // key -> refresh from params
         bool updating = false;
@@ -351,6 +352,9 @@ namespace sirius::app {
             std::string group;
             for (const ParamSpec& s : specs) {
                 if (std::find(skip.begin(), skip.end(), s.key) != skip.end()) continue;
+                // a field the current mode ignores is not shown at all, not
+                // even folded away under "More parameters"
+                if (!s.visibleFor(params)) continue;
                 if (s.advanced && !includeAdvanced) {
                     advanced.push_back(&s);
                     continue;
@@ -913,6 +917,18 @@ namespace sirius::app {
         }
 
         // --- rebuild --------------------------------------------------------------
+        // The values every visibility rule of this step depends on. The panel
+        // is rebuilt when one of them moves, since that is what decides which
+        // fields exist at all; refreshing the values alone would leave the old
+        // set on screen.
+        std::string visibilitySignature(const OpInfo& info, const ParamSet& params) const {
+            std::string out;
+            for (const ParamSpec& s : info.params)
+                for (const ParamSpec::Visibility& rule : s.visibility)
+                    if (const ParamValue* v = params.find(rule.key)) out += rule.key + "=" + toDisplayString(*v) + ";";
+            return out;
+        }
+
         void rebuild() {
             updaters.clear();
             QWidget* old = scroll->takeWidget();
@@ -933,6 +949,7 @@ namespace sirius::app {
             }
             builtKind = st->kind;
             const OpInfo& info = st->op().info();
+            builtVisibility = visibilitySignature(info, st->params);
             const DatasetMeta input = wb.inputMetaOf(builtFor);
             if (st->kind == "load") buildLoad(*st, info, bodyLayout);
             else if (st->kind == "einsum") buildEinsum(*st, info, input, bodyLayout);
@@ -1034,7 +1051,9 @@ namespace sirius::app {
         void refresh() {
             refreshHeader();
             const Step* st = step();
-            if (!st || builtFor != index() || builtKind != st->kind) rebuild();
+            const bool sameShape = st && builtFor == index() && builtKind == st->kind &&
+                                   builtVisibility == visibilitySignature(st->op().info(), st->params);
+            if (!sameShape) rebuild();
             else refreshValues();
         }
     };

@@ -413,14 +413,14 @@ namespace sirius::app {
                     choiceParam("denoise", "Denoise", {"None", "Median 3x3", "Anisotropic diffusion"}, "None")
                         .withHelp("Before anything else: a 3x3 median drops shot noise without moving an edge; Perona-Malik "
                                   "diffusion smooths the inside of a region and leaves its boundary alone"),
-                    intParam("diffusion_iterations", "Diffusion steps", 5).range(1, 200).withHelp("Anisotropic diffusion: more steps, smoother interiors").asAdvanced(),
-                    doubleParam("diffusion_k", "Diffusion edge", 0.1).range(0.001, 1.0, 0.01, 3).withHelp("Anisotropic diffusion: a gradient this large, as a fraction of the intensity range, counts as an edge and is kept").asAdvanced(),
+                    intParam("diffusion_iterations", "Diffusion steps", 5).range(1, 200).withHelp("Anisotropic diffusion: more steps, smoother interiors").asAdvanced().visibleWhen("denoise", {"Anisotropic diffusion"}),
+                    doubleParam("diffusion_k", "Diffusion edge", 0.1).range(0.001, 1.0, 0.01, 3).withHelp("Anisotropic diffusion: a gradient this large, as a fraction of the intensity range, counts as an edge and is kept").asAdvanced().visibleWhen("denoise", {"Anisotropic diffusion"}),
                     choiceParam("enhance", "Enhance", {"None", "Blobs (DoG)", "Tubes (Frangi)", "Neurites (Meijering)"}, "None")
                         .withHelp("What to bring out before the threshold: round objects of one size, tubes of a range of "
                                   "widths, or the thinnest lines of all"),
-                    doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
-                    doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced(),
-                    intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced(),
+                    doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width").hiddenWhen("enhance", {"None"}),
+                    doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced().visibleWhen("enhance", {"Tubes (Frangi)", "Neurites (Meijering)"}),
+                    intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced().visibleWhen("enhance", {"Tubes (Frangi)", "Neurites (Meijering)"}),
                     choiceParam("background", "Background", {"Top-hat (box)", "Rolling ball"}, "Top-hat (box)")
                         .withHelp("How the background is estimated before it is subtracted. The box top-hat follows a flat "
                                   "background; the rolling ball follows a curved one, which is what uneven illumination or a "
@@ -432,29 +432,30 @@ namespace sirius::app {
                         .withHelp("Otsu splits the histogram in two; Triangle suits the skewed histogram of a mostly empty "
                                   "field, where Otsu cuts too high; Li keeps dim objects; the local rules follow an uneven "
                                   "background"),
-                    doubleParam("value", "Value", 0.5).range(-1e9, 1e9, 0.01, 4).withHelp("Manual threshold"),
-                    doubleParam("percentile", "Percentile", 90.0).range(0.0, 100.0, 0.5, 1).withUnit("%"),
-                    intParam("window", "Local window", 51).range(3, 4001).withUnit("px").withHelp("Local mean: side of the neighbourhood the mean is taken over"),
-                    doubleParam("local_ratio", "Local ratio", 1.1).range(0.0, 10.0, 0.05, 2).withHelp("Local mean: foreground where value > ratio × local mean + offset"),
-                    doubleParam("local_offset", "Local offset", 0.0).range(-1e9, 1e9, 0.01, 4).asAdvanced(),
+                    doubleParam("value", "Value", 0.5).range(-1e9, 1e9, 0.01, 4).withHelp("Manual threshold").visibleWhen("method", {"Manual"}),
+                    doubleParam("percentile", "Percentile", 90.0).range(0.0, 100.0, 0.5, 1).withUnit("%").visibleWhen("method", {"Percentile"}),
+                    intParam("window", "Local window", 51).range(3, 4001).withUnit("px").withHelp("Local mean: side of the neighbourhood the mean is taken over").visibleWhen("method", {"Local mean", "Local contrast"}),
+                    doubleParam("local_ratio", "Local ratio", 1.1).range(0.0, 10.0, 0.05, 2).withHelp("Local mean: foreground where value > ratio × local mean + offset").visibleWhen("method", {"Local mean"}),
+                    doubleParam("local_offset", "Local offset", 0.0).range(-1e9, 1e9, 0.01, 4).asAdvanced().visibleWhen("method", {"Local mean", "Local contrast"}),
                     doubleParam("contrast_k", "Contrast k", 1.5).range(0.0, 10.0, 0.1, 2).withHelp("Local contrast: the cut sits k local standard deviations above the local mean, so it "
-                                                                                                   "follows both the background level and the local noise"),
+                                                                                                   "follows both the background level and the local noise")
+                        .visibleWhen("method", {"Local contrast"}),
                     boolParam("hysteresis", "Hysteresis", false)
                         .withHelp("Keep everything connected to what is clearly above the cut, down to a lower one. A "
                                   "filament that fades stays whole instead of breaking into pieces"),
-                    doubleParam("hysteresis_ratio", "Hysteresis low", 0.5).range(0.0, 1.0, 0.05, 2).withHelp("Where the lower cut sits between the image floor and the threshold: 0.5 is halfway, 1 turns hysteresis off"),
+                    doubleParam("hysteresis_ratio", "Hysteresis low", 0.5).range(0.0, 1.0, 0.05, 2).withHelp("Where the lower cut sits between the image floor and the threshold: 0.5 is halfway, 1 turns hysteresis off").visibleWhen("hysteresis", {"on"}),
                     choiceParam("refine", "Refine", {"None", "Active contour (Chan-Vese)"}, "None")
                         .withHelp("Morphological Chan-Vese: moves the mask boundary to the best two-region fit of the image. "
                                   "It has no shape assumption, so it suits filaments as well as cells, and it repairs a "
                                   "threshold that leaked or pinched"),
-                    intParam("refine_iterations", "Refine steps", 20).range(1, 500).asAdvanced(),
-                    intParam("refine_smoothing", "Refine smoothing", 1).range(0, 5).withHelp("Curvature rounds per step; more gives a smoother contour").asAdvanced(),
+                    intParam("refine_iterations", "Refine steps", 20).range(1, 500).asAdvanced().hiddenWhen("refine", {"None"}),
+                    intParam("refine_smoothing", "Refine smoothing", 1).range(0, 5).withHelp("Curvature rounds per step; more gives a smoother contour").asAdvanced().hiddenWhen("refine", {"None"}),
                     intParam("opening", "Opening radius", 1).range(0, 100).withUnit("px").withHelp("Binary opening drops specks and necks thinner than this (0 = off)"),
                     boolParam("fill_holes", "Fill holes", true).withHelp("Enclosed background inside an object becomes object, per plane"),
                     boolParam("fill_holes_3d", "Fill holes (3D)", false)
                         .withHelp("Background the object encloses in three dimensions becomes object. A cavity no single plane "
                                   "closes is invisible to the per-plane fill, which is most of them in a stack"),
-                    intParam("hole_max_voxels", "Largest hole", 0).range(0, 1000000000).withHelp("3D fill: leave cavities larger than this open (0 = fill them all), so a real lumen survives").asAdvanced(),
+                    intParam("hole_max_voxels", "Largest hole", 0).range(0, 1000000000).withHelp("3D fill: leave cavities larger than this open (0 = fill them all), so a real lumen survives").asAdvanced().visibleWhen("fill_holes_3d", {"on"}),
                     choiceParam("post", "Instances", {"Watershed (distance)", "Watershed (gradient)", "Connected components"}, "Watershed (distance)")
                         .withHelp("How the mask becomes objects. The distance watershed splits at the waist between two "
                                   "objects; the gradient watershed splits where the image itself has an edge, which is what "
@@ -463,13 +464,16 @@ namespace sirius::app {
                         .withHelp("What splits touching objects. The peaks of the distance map; only the peaks that stand "
                                   "clear of their surroundings (fewer false splits); or the centres of the blobs the image "
                                   "itself shows, found over a range of sizes, which is the one that copes with objects of "
-                                  "different sizes"),
-                    doubleParam("seed_distance", "Seed distance", 8.0).range(1.0, 200.0, 0.5, 1).withUnit("px").withHelp("Distance maxima: minimum distance between seeds").asAdvanced(),
+                                  "different sizes")
+                        .visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"}),
+                    doubleParam("seed_distance", "Seed distance", 8.0).range(1.0, 200.0, 0.5, 1).withUnit("px").withHelp("Distance maxima: minimum distance between seeds").asAdvanced().visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"}).visibleWhen("seeds", {"Distance maxima"}),
                     doubleParam("seed_depth", "Seed depth", 2.0).range(0.1, 100.0, 0.5, 1).withUnit("px").withHelp("H-maxima: how far a peak must stand above its surroundings to be its own object; "
-                                                                                                                   "raise it when one object is split, lower it when two are merged"),
-                    doubleParam("blob_radius", "Object radius", 4.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the smallest object radius to look for, in x / y pixels"),
-                    doubleParam("blob_radius_max", "Object radius max", 12.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the largest radius; the detector answers to every size in between").asAdvanced(),
-                    intParam("blob_scales", "Blob scales", 5).range(1, 24).withHelp("Blob centres: how many sizes are tried between the two radii").asAdvanced(),
+                                                                                                                   "raise it when one object is split, lower it when two are merged")
+                        .visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"})
+                        .visibleWhen("seeds", {"H-maxima"}),
+                    doubleParam("blob_radius", "Object radius", 4.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the smallest object radius to look for, in x / y pixels").visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"}).visibleWhen("seeds", {"Blob centres (LoG)"}),
+                    doubleParam("blob_radius_max", "Object radius max", 12.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the largest radius; the detector answers to every size in between").asAdvanced().visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"}).visibleWhen("seeds", {"Blob centres (LoG)"}),
+                    intParam("blob_scales", "Blob scales", 5).range(1, 24).withHelp("Blob centres: how many sizes are tried between the two radii").asAdvanced().visibleWhen("post", {"Watershed (distance)", "Watershed (gradient)"}).visibleWhen("seeds", {"Blob centres (LoG)"}),
                     intParam("min_voxels", "Min. voxels", 20).range(0, 1000000000),
                     intParam("max_voxels", "Max. voxels", 0).range(0, 1000000000).withHelp("Drop objects larger than this (0 = off): the usual way to remove a merged clump").asAdvanced(),
                     doubleParam("min_fill", "Min. fill", 0.0).range(0.0, 1.0, 0.05, 2).withHelp("Drop objects that fill less than this fraction of their bounding box (0 = off): removes scattered debris").asAdvanced(),

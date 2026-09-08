@@ -33,6 +33,8 @@
 #include "core/pipeline.hpp"
 #include "core/rpc.hpp"
 
+#include <set>
+
 #include "temp_path.hpp"
 
 using namespace sirius;
@@ -1325,5 +1327,125 @@ TEST_CASE("Contrast window, Auto / Reset helpers and live preview", "[app][ops][
         const ParamSet initial = op.initialParams(op.defaults(), in);
         CHECK(initial.getDouble("max") > initial.getDouble("min"));
         CHECK(initial.getDouble("max") > 5.0);
+    }
+}
+
+TEST_CASE("A parameter can say which settings it applies to", "[app][ops][params]") {
+    // The rule is a display concern only: the value is still stored and still
+    // read, so switching the mode back finds it where it was left.
+    ParamSet p;
+    p.set("mode", std::string("From file"));
+    p.set("seeds", std::string("H-maxima"));
+    p.set("hysteresis", true);
+
+    CHECK(doubleParam("plain", "Plain", 0.0).visibleFor(p));
+    CHECK(doubleParam("a", "A", 0.0).visibleWhen("mode", {"From file"}).visibleFor(p));
+    CHECK_FALSE(doubleParam("b", "B", 0.0).visibleWhen("mode", {"Estimate"}).visibleFor(p));
+    CHECK(doubleParam("c", "C", 0.0).visibleWhen("mode", {"Estimate", "From file"}).visibleFor(p));
+    CHECK_FALSE(doubleParam("d", "D", 0.0).hiddenWhen("mode", {"From file"}).visibleFor(p));
+    CHECK(doubleParam("e", "E", 0.0).hiddenWhen("mode", {"Estimate"}).visibleFor(p));
+
+    SECTION("every rule has to hold") {
+        const ParamSpec both = doubleParam("f", "F", 0.0).visibleWhen("mode", {"From file"}).visibleWhen("seeds", {"H-maxima"});
+        CHECK(both.visibleFor(p));
+        ParamSet other = p;
+        other.set("seeds", std::string("Distance maxima"));
+        CHECK_FALSE(both.visibleFor(other));
+    }
+
+    SECTION("a bool reads as on / off") {
+        CHECK(doubleParam("g", "G", 0.0).visibleWhen("hysteresis", {"on"}).visibleFor(p));
+        ParamSet off = p;
+        off.set("hysteresis", false);
+        CHECK_FALSE(doubleParam("g", "G", 0.0).visibleWhen("hysteresis", {"on"}).visibleFor(off));
+    }
+
+    SECTION("a rule about a parameter that is not there decides nothing") {
+        CHECK(doubleParam("h", "H", 0.0).visibleWhen("no_such_key", {"whatever"}).visibleFor(p));
+    }
+}
+
+TEST_CASE("The operations hide the fields their mode ignores", "[app][ops][params]") {
+    registerBuiltinOperations();
+    auto shown = [](const Operation& op, const ParamSet& p) {
+        std::set<std::string> out;
+        for (const ParamSpec& s : op.info().params)
+            if (s.visibleFor(p)) out.insert(s.key);
+        return out;
+    };
+
+    SECTION("SIM in From file mode offers only what it still reads") {
+        const Operation& sim = requireOperation("sim");
+        ParamSet fromFile = sim.defaults();
+        fromFile.set("mode", std::string("From file"));
+        const std::set<std::string> keys = shown(sim, fromFile);
+        // buildParameters replaces the whole parameter set from the file, so
+        // everything it would have read from the form is ignored
+        CHECK(keys.count("params_file") == 1);
+        CHECK(keys.count("otf") == 1);
+        CHECK(keys.count("dz_psf") == 1);   // applied in every mode
+        for (const char* ignored : {"wiener", "angles", "phases", "na", "linespacing_um", "k0_angles", "zoomfact"})
+            CHECK(keys.count(ignored) == 0);
+
+        ParamSet estimate = sim.defaults();
+        estimate.set("mode", std::string("Estimate"));
+        const std::set<std::string> est = shown(sim, estimate);
+        CHECK(est.count("wiener") == 1);
+        CHECK(est.count("k0_start_angle") == 1);
+        CHECK(est.count("params_file") == 0);
+        CHECK(est.count("k0_angles") == 0);   // Manual only
+
+        ParamSet manual = sim.defaults();
+        manual.set("mode", std::string("Manual"));
+        CHECK(shown(sim, manual).count("k0_angles") == 1);
+    }
+
+    SECTION("Classical hides the settings of the threshold it is not using") {
+        const Operation& classic = requireOperation("classic");
+        ParamSet otsu = classic.defaults();
+        const std::set<std::string> plain = shown(classic, otsu);
+        for (const char* ignored : {"value", "percentile", "window", "contrast_k", "local_ratio"})
+            CHECK(plain.count(ignored) == 0);
+
+        ParamSet local = classic.defaults();
+        local.set("method", std::string("Local contrast"));
+        const std::set<std::string> localKeys = shown(classic, local);
+        CHECK(localKeys.count("window") == 1);
+        CHECK(localKeys.count("contrast_k") == 1);
+        CHECK(localKeys.count("local_ratio") == 0);   // Local mean only
+
+        // the seed settings need both a watershed and that kind of seed
+        ParamSet blobs = classic.defaults();
+        blobs.set("post", std::string("Watershed (distance)"));
+        blobs.set("seeds", std::string("Blob centres (LoG)"));
+        CHECK(shown(classic, blobs).count("blob_radius") == 1);
+        CHECK(shown(classic, blobs).count("seed_depth") == 0);
+        ParamSet components = blobs;
+        components.set("post", std::string("Connected components"));
+        CHECK(shown(classic, components).count("blob_radius") == 0);
+        CHECK(shown(classic, components).count("seeds") == 0);
+    }
+
+    SECTION("Track hides the other tracker's settings") {
+        const Operation& track = requireOperation("track");
+        ParamSet builtin = track.defaults();
+        CHECK(shown(track, builtin).count("overlap_weight") == 1);
+        CHECK(shown(track, builtin).count("config") == 0);
+        ParamSet btrack = track.defaults();
+        btrack.set("tracker", std::string("btrack (Bayesian)"));
+        CHECK(shown(track, btrack).count("config") == 1);
+        CHECK(shown(track, btrack).count("overlap_weight") == 0);
+    }
+
+    SECTION("the scikit-image step shows one method's settings at a time") {
+        const Operation& sk = requireOperation("skimage_seg");
+        ParamSet walker = sk.defaults();
+        CHECK(shown(sk, walker).count("beta") == 1);
+        CHECK(shown(sk, walker).count("n_segments") == 0);
+        ParamSet slic = sk.defaults();
+        slic.set("method", std::string("Superpixels (SLIC)"));
+        CHECK(shown(sk, slic).count("n_segments") == 1);
+        CHECK(shown(sk, slic).count("beta") == 0);
+        CHECK(shown(sk, slic).count("compactness") == 1);   // shared with the compact watershed
     }
 }

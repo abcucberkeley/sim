@@ -101,7 +101,9 @@ namespace sirius::app {
         if (const double* d = std::get_if<double>(v)) return static_cast<std::int64_t>(std::llround(*d));
         if (const bool* b = std::get_if<bool>(v)) return *b ? 1 : 0;
         if (const std::string* s = std::get_if<std::string>(v)) {
-            try { return std::stoll(*s); } catch (...) { return def; }
+            try {
+                return std::stoll(*s);
+            } catch (...) { return def; }
         }
         return def;
     }
@@ -113,7 +115,9 @@ namespace sirius::app {
         if (const auto* i = std::get_if<std::int64_t>(v)) return static_cast<double>(*i);
         if (const bool* b = std::get_if<bool>(v)) return *b ? 1.0 : 0.0;
         if (const std::string* s = std::get_if<std::string>(v)) {
-            try { return std::stod(*s); } catch (...) { return def; }
+            try {
+                return std::stod(*s);
+            } catch (...) { return def; }
         }
         return def;
     }
@@ -134,7 +138,9 @@ namespace sirius::app {
         if (const auto* sl = std::get_if<std::vector<std::string>>(v)) {
             std::vector<double> out;
             for (const std::string& s : *sl) {
-                try { out.push_back(std::stod(s)); } catch (...) {}
+                try {
+                    out.push_back(std::stod(s));
+                } catch (...) {}
             }
             return out;
         }
@@ -143,7 +149,9 @@ namespace sirius::app {
             std::string tok;
             std::istringstream in(*s);
             while (std::getline(in, tok, ',')) {
-                try { out.push_back(std::stod(tok)); } catch (...) {}
+                try {
+                    out.push_back(std::stod(tok));
+                } catch (...) {}
             }
             return out;
         }
@@ -229,6 +237,19 @@ namespace sirius::app {
         return j.dump();
     }
 
+    bool ParamSpec::visibleFor(const ParamSet& p) const {
+        for (const Visibility& rule : visibility) {
+            const ParamValue* v = p.find(rule.key);
+            // a rule about a parameter that is not there decides nothing: show
+            // the field rather than hide it on a technicality
+            if (v == nullptr) continue;
+            const std::string current = toDisplayString(*v);
+            const bool matches = std::find(rule.values.begin(), rule.values.end(), current) != rule.values.end();
+            if (matches == rule.negate) return false;
+        }
+        return true;
+    }
+
     std::string toDisplayString(const ParamValue& v) {
         struct Visitor {
             std::string operator()(bool b) const { return b ? "on" : "off"; }
@@ -280,7 +301,9 @@ namespace sirius::app {
                 double d;
                 if (j.is_number()) d = j.get<double>();
                 else if (j.is_string()) {
-                    try { d = std::stod(j.get<std::string>()); } catch (...) { throw bad("an integer"); }
+                    try {
+                        d = std::stod(j.get<std::string>());
+                    } catch (...) { throw bad("an integer"); }
                 } else throw bad("an integer");
                 return static_cast<std::int64_t>(std::llround(clampD(d)));
             }
@@ -288,7 +311,9 @@ namespace sirius::app {
                 double d;
                 if (j.is_number()) d = j.get<double>();
                 else if (j.is_string()) {
-                    try { d = std::stod(j.get<std::string>()); } catch (...) { throw bad("a number"); }
+                    try {
+                        d = std::stod(j.get<std::string>());
+                    } catch (...) { throw bad("a number"); }
                 } else throw bad("a number");
                 return clampD(d);
             }

@@ -35,6 +35,8 @@ namespace sirius::app {
         StringList,
     };
 
+    class ParamSet;   // ParamSpec::visibleFor asks it for the controlling value
+
     struct ParamSpec {
         std::string key;
         std::string label;
@@ -53,18 +55,70 @@ namespace sirius::app {
         bool readOnly = false;                 // shown, not editable (facts)
         std::string group;                     // optional section caption
 
+        // Shown only while other parameters have (or have not) certain values:
+        // a mode that reads its settings from a file has no use for the fields
+        // it overrides, and a panel that shows them anyway invites the user to
+        // change something that will be ignored. Every rule has to hold; no
+        // rules means always shown. Purely a display rule -- the value is still
+        // stored, still saved and still read, so turning the mode back reveals
+        // it unchanged.
+        struct Visibility {
+            std::string key;
+            std::vector<std::string> values;
+            bool negate = false;
+        };
+        std::vector<Visibility> visibility;
+
         // Fluent helpers so op tables read as one line per parameter.
         ParamSpec& range(double lo, double hi, double st = 0.0, int dec = -1) {
-            min = lo; max = hi; step = st; decimals = dec; return *this;
+            min = lo;
+            max = hi;
+            step = st;
+            decimals = dec;
+            return *this;
         }
-        ParamSpec& withUnit(std::string u) { unit = std::move(u); return *this; }
-        ParamSpec& withHelp(std::string h) { help = std::move(h); return *this; }
-        ParamSpec& withChoices(std::vector<std::string> c) { choices = std::move(c); return *this; }
-        ParamSpec& withFilter(std::string f) { fileFilter = std::move(f); return *this; }
-        ParamSpec& asDirectory() { directory = true; return *this; }
-        ParamSpec& asAdvanced() { advanced = true; return *this; }
-        ParamSpec& asReadOnly() { readOnly = true; return *this; }
-        ParamSpec& inGroup(std::string g) { group = std::move(g); return *this; }
+        ParamSpec& withUnit(std::string u) {
+            unit = std::move(u);
+            return *this;
+        }
+        ParamSpec& withHelp(std::string h) {
+            help = std::move(h);
+            return *this;
+        }
+        ParamSpec& withChoices(std::vector<std::string> c) {
+            choices = std::move(c);
+            return *this;
+        }
+        ParamSpec& withFilter(std::string f) {
+            fileFilter = std::move(f);
+            return *this;
+        }
+        ParamSpec& asDirectory() {
+            directory = true;
+            return *this;
+        }
+        ParamSpec& asAdvanced() {
+            advanced = true;
+            return *this;
+        }
+        ParamSpec& asReadOnly() {
+            readOnly = true;
+            return *this;
+        }
+        ParamSpec& inGroup(std::string g) {
+            group = std::move(g);
+            return *this;
+        }
+        ParamSpec& visibleWhen(std::string key, std::vector<std::string> values) {
+            visibility.push_back({std::move(key), std::move(values), false});
+            return *this;
+        }
+        ParamSpec& hiddenWhen(std::string key, std::vector<std::string> values) {
+            visibility.push_back({std::move(key), std::move(values), true});
+            return *this;
+        }
+        // Whether this parameter should be shown for the given settings.
+        bool visibleFor(const ParamSet& p) const;
     };
 
     ParamSpec boolParam(std::string key, std::string label, bool def);

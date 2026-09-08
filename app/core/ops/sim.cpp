@@ -148,39 +148,39 @@ namespace sirius::app {
                     choiceParam("mode", "Pattern", {kEstimate, kManual, kFromFile}, kEstimate)
                         .withHelp("Estimate fits the pattern vectors from a start angle; Manual starts from the "
                                   "given angles; From file takes every parameter from a TOML / cudasirecon file."),
-                    pathParam("params_file", "Parameter file")
-                        .withFilter("Parameters (*.toml *.txt *.cfg);;All files (*)")
-                        .withHelp("Used by the From file mode"),
-                    intParam("angles", "Angles", 3).range(1, 16),
-                    intParam("phases", "Phases", 5).range(2, 32),
-                    doubleParam("wiener", "Wiener", 0.001).range(1e-5, 1.0, 0.0005, 5).withHelp("Regularisation constant of the generalised Wiener filter"),
+                    pathParam("params_file", "Parameter file").visibleWhen("mode", {"From file"}).withFilter("Parameters (*.toml *.txt *.cfg);;All files (*)").withHelp("Used by the From file mode"),
+                    intParam("angles", "Angles", 3).range(1, 16).hiddenWhen("mode", {"From file"}),
+                    intParam("phases", "Phases", 5).range(2, 32).hiddenWhen("mode", {"From file"}),
+                    doubleParam("wiener", "Wiener", 0.001).range(1e-5, 1.0, 0.0005, 5).withHelp("Regularisation constant of the generalised Wiener filter").hiddenWhen("mode", {"From file"}),
                     choiceParam("apodization", "Apodization", {"Cosine", "Triangle", "None"}, "Cosine")
-                        .withHelp("Window applied to the extended support"),
+                        .withHelp("Window applied to the extended support")
+                        .hiddenWhen("mode", {"From file"}),
                     pathParam("otf", "OTF").withFilter("OTF (*.tif *.tiff);;All files (*)").withHelp("Radially averaged OTF TIFF; empty = theoretical OTF from NA / wavelength"),
-                    doubleParam("na", "NA", 1.4).range(0.1, 2.0, 0.01, 2),
-                    doubleParam("nimm", "Immersion index", 1.515).range(1.0, 2.0, 0.001, 3),
-                    doubleParam("wavelength_nm", "Emission λ", 510.0).range(300.0, 1000.0, 1.0, 0).withUnit("nm"),
-                    doubleParam("linespacing_um", "Line spacing", 0.2).range(0.01, 5.0, 0.001, 4).withUnit("µm"),
-                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("°").withHelp("Where the search starts for each direction (Manual mode), in the degrees the fit table reports; "
-                                                                                              "the fit refines them from there"),
-                    doubleParam("k0_start_angle", "Start angle", 0.0).range(-180.0, 180.0, 1.0, 2).withUnit("°").withHelp("Angle of direction 0 (Estimate mode); the others follow at 180° / angles").asAdvanced(),
+                    doubleParam("na", "NA", 1.4).range(0.1, 2.0, 0.01, 2).hiddenWhen("mode", {"From file"}),
+                    doubleParam("nimm", "Immersion index", 1.515).range(1.0, 2.0, 0.001, 3).hiddenWhen("mode", {"From file"}),
+                    doubleParam("wavelength_nm", "Emission λ", 510.0).range(300.0, 1000.0, 1.0, 0).withUnit("nm").hiddenWhen("mode", {"From file"}),
+                    doubleParam("linespacing_um", "Line spacing", 0.2).range(0.01, 5.0, 0.001, 4).withUnit("µm").hiddenWhen("mode", {"From file"}),
+                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("°").visibleWhen("mode", {"Manual"}).withHelp("Where the search starts for each direction (Manual mode), in the degrees the fit table reports; "
+                                                                                                                              "the fit refines them from there"),
+                    doubleParam("k0_start_angle", "Start angle", 0.0).range(-180.0, 180.0, 1.0, 2).withUnit("°").visibleWhen("mode", {"Estimate"}).withHelp("Angle of direction 0 (Estimate mode); the others follow at 180° / angles").asAdvanced(),
                     boolParam("suppress_zero_order", "Suppress zero-order", true)
-                        .withHelp("Dampen the order-0 band where the side bands overlap it"),
-                    boolParam("bleach_correction", "Bleach correction across phases", true),
-                    doubleParam("zoomfact", "Lateral zoom", 2.0).range(1.0, 4.0, 0.5, 1).withHelp("Output grid enlargement in x and y").asAdvanced(),
-                    intParam("z_zoom", "Axial zoom", 1).range(1, 4).asAdvanced(),
-                    intParam("orders", "Orders", 0).range(0, 8).withHelp("0 = phases / 2 + 1").asAdvanced(),
+                        .withHelp("Dampen the order-0 band where the side bands overlap it")
+                        .hiddenWhen("mode", {"From file"}),
+                    boolParam("bleach_correction", "Bleach correction across phases", true).hiddenWhen("mode", {"From file"}),
+                    doubleParam("zoomfact", "Lateral zoom", 2.0).range(1.0, 4.0, 0.5, 1).withHelp("Output grid enlargement in x and y").asAdvanced().hiddenWhen("mode", {"From file"}),
+                    intParam("z_zoom", "Axial zoom", 1).range(1, 4).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    intParam("orders", "Orders", 0).range(0, 8).withHelp("0 = phases / 2 + 1").asAdvanced().hiddenWhen("mode", {"From file"}),
                     doubleParam("dz_psf", "OTF axial step", 0.0).range(0.0, 10.0, 0.005, 4).withUnit("µm").withHelp("Axial step of the OTF file (0 = the stack's dz)").asAdvanced(),
-                    doubleParam("otfcutoff", "OTF cutoff", 0.006).range(0.0, 1.0, 0.001, 4).asAdvanced(),
-                    doubleParam("background", "Camera background", 0.0).range(0.0, 1e6, 1.0, 1).asAdvanced(),
-                    choiceParam("apodize_input", "Input apodization", {"Triangle", "Cosine", "None"}, "Triangle").asAdvanced(),
-                    intParam("napodize", "Input border", 10).range(0, 512).withUnit("px").asAdvanced(),
-                    intParam("suppression_radius", "Suppression radius", 10).range(0, 512).withUnit("px").asAdvanced(),
-                    boolParam("suppress_singularities", "Suppress singularities", true).asAdvanced(),
-                    boolParam("no_kz0", "Skip kz = 0 plane", true).asAdvanced(),
-                    boolParam("filter_overlaps", "Filter overlaps", true).asAdvanced(),
-                    doubleParam("explodefact", "Explode factor", 1.0).range(0.5, 4.0, 0.1, 2).asAdvanced(),
-                    boolParam("equalizez", "Equalize z", false).asAdvanced(),
+                    doubleParam("otfcutoff", "OTF cutoff", 0.006).range(0.0, 1.0, 0.001, 4).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    doubleParam("background", "Camera background", 0.0).range(0.0, 1e6, 1.0, 1).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    choiceParam("apodize_input", "Input apodization", {"Triangle", "Cosine", "None"}, "Triangle").asAdvanced().hiddenWhen("mode", {"From file"}),
+                    intParam("napodize", "Input border", 10).range(0, 512).withUnit("px").asAdvanced().hiddenWhen("mode", {"From file"}),
+                    intParam("suppression_radius", "Suppression radius", 10).range(0, 512).withUnit("px").asAdvanced().hiddenWhen("mode", {"From file"}),
+                    boolParam("suppress_singularities", "Suppress singularities", true).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    boolParam("no_kz0", "Skip kz = 0 plane", true).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    boolParam("filter_overlaps", "Filter overlaps", true).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    doubleParam("explodefact", "Explode factor", 1.0).range(0.5, 4.0, 0.1, 2).asAdvanced().hiddenWhen("mode", {"From file"}),
+                    boolParam("equalizez", "Equalize z", false).asAdvanced().hiddenWhen("mode", {"From file"}),
                 };
             }
 

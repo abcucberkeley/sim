@@ -40,26 +40,30 @@ namespace sirius::app {
                                   "driven by edges, where the Classical step's Chan-Vese is driven by regions. The "
                                   "superpixels over-segment into pieces to merge or measure. The compact watershed pulls "
                                   "its regions towards round shapes"),
-                    doubleParam("threshold", "Threshold", 0.0).range(-1e9, 1e9, 0.01, 4).withHelp("The rough foreground the seeded methods start from; 0 asks the worker for an Otsu cut"),
+                    doubleParam("threshold", "Threshold", 0.0).range(-1e9, 1e9, 0.01, 4).withHelp("The rough foreground the seeded methods start from; 0 asks the worker for an Otsu cut").visibleWhen("method", {"Random walker", "Active contour (geodesic)", "Watershed (compact)"}),
                     doubleParam("seed_depth", "Seed depth", 2.0).range(0.1, 100.0, 0.5, 1).withUnit("px").withHelp("Random walker and compact watershed: how far a peak of the distance map must stand above "
-                                                                                                                   "its surroundings to seed its own object"),
+                                                                                                                   "its surroundings to seed its own object")
+                        .visibleWhen("method", {"Random walker", "Watershed (compact)"}),
                     doubleParam("beta", "Diffusion stiffness", 130.0).range(1.0, 10000.0, 5.0, 1).withHelp("Random walker: how strongly an intensity step stops the walk. Higher follows faint "
                                                                                                            "boundaries, lower lets the regions spread past them")
-                        .asAdvanced(),
-                    doubleParam("tolerance", "Solver tolerance", 0.001).range(1e-8, 1.0, 0.0005, 6).asAdvanced(),
-                    intParam("iterations", "Contour steps", 30).range(1, 2000).withHelp("Geodesic active contour: how many times the contour is moved"),
-                    intParam("smoothing", "Contour smoothing", 1).range(0, 5).asAdvanced(),
+                        .asAdvanced()
+                        .visibleWhen("method", {"Random walker"}),
+                    doubleParam("tolerance", "Solver tolerance", 0.001).range(1e-8, 1.0, 0.0005, 6).asAdvanced().visibleWhen("method", {"Random walker"}),
+                    intParam("iterations", "Contour steps", 30).range(1, 2000).withHelp("Geodesic active contour: how many times the contour is moved").visibleWhen("method", {"Active contour (geodesic)"}),
+                    intParam("smoothing", "Contour smoothing", 1).range(0, 5).asAdvanced().visibleWhen("method", {"Active contour (geodesic)"}),
                     doubleParam("balloon", "Balloon", 0.0).range(-3.0, 3.0, 0.5, 2).withHelp("Geodesic active contour: positive inflates the contour, negative deflates it, 0 lets the "
                                                                                              "edges alone decide")
-                        .asAdvanced(),
-                    doubleParam("alpha", "Edge sharpness", 100.0).range(1.0, 10000.0, 5.0, 1).withHelp("Geodesic active contour: how sharply the edge map falls off at a gradient").asAdvanced(),
-                    doubleParam("edge_sigma", "Edge σ", 2.0).range(0.0, 50.0, 0.5, 2).withUnit("px").withHelp("Smoothing before the gradient (also Felzenszwalb's own smoothing)").asAdvanced(),
-                    doubleParam("edge_threshold", "Edge threshold", 0.69).range(0.0, 1.0, 0.01, 3).asAdvanced(),
-                    intParam("n_segments", "Superpixels", 200).range(2, 1000000).withHelp("SLIC: roughly how many pieces to cut the volume into"),
+                        .asAdvanced()
+                        .visibleWhen("method", {"Active contour (geodesic)"}),
+                    doubleParam("alpha", "Edge sharpness", 100.0).range(1.0, 10000.0, 5.0, 1).withHelp("Geodesic active contour: how sharply the edge map falls off at a gradient").asAdvanced().visibleWhen("method", {"Active contour (geodesic)"}),
+                    doubleParam("edge_sigma", "Edge σ", 2.0).range(0.0, 50.0, 0.5, 2).withUnit("px").withHelp("Smoothing before the gradient (also Felzenszwalb's own smoothing)").asAdvanced().visibleWhen("method", {"Active contour (geodesic)", "Superpixels (Felzenszwalb)"}),
+                    doubleParam("edge_threshold", "Edge threshold", 0.69).range(0.0, 1.0, 0.01, 3).asAdvanced().visibleWhen("method", {"Active contour (geodesic)"}),
+                    intParam("n_segments", "Superpixels", 200).range(2, 1000000).withHelp("SLIC: roughly how many pieces to cut the volume into").visibleWhen("method", {"Superpixels (SLIC)"}),
                     doubleParam("compactness", "Compactness", 0.1).range(0.0001, 10000.0, 0.05, 4).withHelp("SLIC and the compact watershed: how much the pieces are pulled towards round shapes "
-                                                                                                            "rather than following the intensity"),
-                    doubleParam("scale", "Merge scale", 100.0).range(0.1, 100000.0, 5.0, 1).withHelp("Felzenszwalb: larger merges more, so the pieces come out bigger"),
-                    intParam("min_size", "Smallest piece", 20).range(1, 1000000).withUnit("px").withHelp("Felzenszwalb: pieces smaller than this are merged into a neighbour").asAdvanced(),
+                                                                                                            "rather than following the intensity")
+                        .visibleWhen("method", {"Superpixels (SLIC)", "Watershed (compact)"}),
+                    doubleParam("scale", "Merge scale", 100.0).range(0.1, 100000.0, 5.0, 1).withHelp("Felzenszwalb: larger merges more, so the pieces come out bigger").visibleWhen("method", {"Superpixels (Felzenszwalb)"}),
+                    intParam("min_size", "Smallest piece", 20).range(1, 1000000).withUnit("px").withHelp("Felzenszwalb: pieces smaller than this are merged into a neighbour").asAdvanced().visibleWhen("method", {"Superpixels (Felzenszwalb)"}),
                     intParam("min_voxels", "Min. voxels", 20).range(0, 1000000000),
                     stringParam("class_name", "Class", "object").asAdvanced(),
                 };

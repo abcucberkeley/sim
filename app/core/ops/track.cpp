@@ -43,18 +43,15 @@ namespace sirius::app {
                                   "overlap. btrack adds a motion model, so it holds identities through a crossing, "
                                   "and reconstructs lineages when cells divide; it runs in the Python worker"),
                     doubleParam("max_distance", "Max. step", 10.0).range(0.0, 100000.0, 0.5, 2).withUnit("µm").withHelp("How far an object may move between frames; the gate that keeps distant objects apart"),
-                    doubleParam("overlap_weight", "Overlap weight", 0.5).range(0.0, 1.0, 0.05, 2).withHelp("0 matches on centroid distance alone, 1 on shared voxels alone; in between mixes them"),
-                    intParam("max_gap", "Close gaps", 1).range(0, 100).withUnit("frames").withHelp("Frames an object may be missed for and still continue the same track (0 = never)"),
+                    doubleParam("overlap_weight", "Overlap weight", 0.5).range(0.0, 1.0, 0.05, 2).visibleWhen("tracker", {"Built-in (assignment)"}).withHelp("0 matches on centroid distance alone, 1 on shared voxels alone; in between mixes them"),
+                    intParam("max_gap", "Close gaps", 1).range(0, 100).withUnit("frames").visibleWhen("tracker", {"Built-in (assignment)"}).withHelp("Frames an object may be missed for and still continue the same track (0 = never)"),
                     intParam("min_length", "Min. track length", 2).range(1, 1000000).withUnit("frames").withHelp("Tracks seen in fewer frames than this are dropped"),
-                    boolParam("relabel", "Relabel by track", true)
-                        .withHelp("Give every object of a track the track's id, so one object keeps one colour over time"),
-                    stringParam("config", "btrack config", "")
-                        .withHelp("btrack only: a tracker configuration JSON; empty uses btrack's packaged cell "
-                                  "configuration, which is fetched and cached on first use")
+                    boolParam("relabel", "Relabel by track", true).visibleWhen("tracker", {"Built-in (assignment)"}).withHelp("Give every object of a track the track's id, so one object keeps one colour over time"),
+                    stringParam("config", "btrack config", "").visibleWhen("tracker", {"btrack (Bayesian)"}).withHelp("btrack only: a tracker configuration JSON; empty uses btrack's packaged cell "
+                                                                                                                      "configuration, which is fetched and cached on first use")
                         .asAdvanced(),
-                    boolParam("optimise", "Reconstruct lineages", true)
-                        .withHelp("btrack only: run the global hypothesis optimisation, which is what links a mother "
-                                  "to its daughters")
+                    boolParam("optimise", "Reconstruct lineages", true).visibleWhen("tracker", {"btrack (Bayesian)"}).withHelp("btrack only: run the global hypothesis optimisation, which is what links a mother "
+                                                                                                                               "to its daughters")
                         .asAdvanced(),
                 };
             }
