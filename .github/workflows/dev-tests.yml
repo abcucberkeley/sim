@@ -245,8 +245,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # libomp-dev: the library needs OpenMP, and clang's runtime is not
+          # part of the clang package the way libgomp is part of gcc's.
+          # Without it find_package(OpenMP REQUIRED) aborts the configure.
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build clang llvm
+            build-essential cmake ninja-build clang llvm libomp-dev
 
       - uses: hendrikmuhs/ccache-action@v1
         with:
