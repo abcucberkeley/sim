@@ -14,6 +14,7 @@ Requests (see protocol.py for the framing):
     hub_download {repo, file}               -> "progress"* then {path, bytes, spec} (cancellable like a run)
                                                (hub_* take an optional `token` for gated / private repositories)
     models_list {}                          -> {cache, models: [{spec, path, bytes}]}
+    models_delete {path}                    -> {path, bytes, removed_directories}  (cache only)
     install     {family, dry_run?}          -> "progress"* (one frame per output line) then
                                                {ok, returncode, available, command, tail}: pip / conda installs
                                                the family's package into the worker's Python
@@ -166,7 +167,8 @@ class WorkerServer:
     def capabilities(self) -> Dict[str, Any]:
         wb = workbench()
         methods = ["hello", "ping", "model_info", "run", "cancel", "shutdown", "list_plugins", "reload_plugins",
-                   "hub_search", "hub_files", "hub_download", "models_list", "install", "model_prepare"]
+                   "hub_search", "hub_files", "hub_download", "models_list", "models_delete", "install",
+                   "model_prepare"]
         kinds = list(_SPECIAL_KINDS) + [k for k in wb.step_kinds() if k not in _SPECIAL_KINDS] + ["plugin"]
         methods += [f"run:{k}" for k in kinds]
         cuda = False
@@ -332,6 +334,8 @@ class WorkerServer:
                                         (model_hub.prepare(spec, progress, cancelled=cancel.is_set), None))
                 elif method == "models_list":
                     reply(rid, {"cache": str(model_hub.cache_dir()), "models": model_hub.list_cached_models()})
+                elif method == "models_delete":
+                    reply(rid, model_hub.delete_cached_model(str(params.get("path", ""))))
                 elif method in ("list_plugins", "reload_plugins"):
                     reply(rid, self.plugin_list(reload=method == "reload_plugins", extra=params.get("dirs")))
                 elif method == "cancel":

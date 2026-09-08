@@ -242,7 +242,9 @@ namespace sirius::app {
                     int decimals = s.decimals;
                     if (decimals < 0) {
                         const double mag = std::abs(def) > 0 ? std::abs(def) : (s.step > 0 ? s.step : 1.0);
-                        decimals = mag >= 100 ? 1 : mag >= 1 ? 2 : mag >= 0.01 ? 4 : 6;
+                        decimals = mag >= 100 ? 1 : mag >= 1  ? 2
+                                                : mag >= 0.01 ? 4
+                                                              : 6;
                     }
                     spin->setDecimals(decimals);
                     widgets::useTabularNumbers(spin);
@@ -640,7 +642,7 @@ namespace sirius::app {
             for (const ParamSpec& s : info.params)
                 if (s.type == ParamType::Path && !s.advanced) {
                     // the path editor (file + Browse) plus "Hub…": Hugging Face
-                    // downloads, model families and the local cache in one dialog
+                    // downloads and the local model cache in one dialog
                     auto* row = new QWidget(body);
                     auto* rl = new QHBoxLayout(row);
                     rl->setContentsMargins(0, 0, 0, 0);
@@ -711,7 +713,8 @@ namespace sirius::app {
                 grid->setColumnStretch(1, 1);
                 grid->setColumnMinimumWidth(2, 90);
                 grid->addWidget(widgets::label(ch.wavelengthNm > 0 ? QString::number(static_cast<int>(std::lround(ch.wavelengthNm))) : QStringLiteral("—"),
-                                               12, theme::kText, -1, row), 0, 0);
+                                               12, theme::kText, -1, row),
+                                0, 0);
                 grid->addWidget(widgets::label(fromStd(ch.label), 12, theme::kText, -1, row), 0, 1);
                 auto* chips = new QWidget(row);
                 auto* cl = new QHBoxLayout(chips);
@@ -778,7 +781,9 @@ namespace sirius::app {
                 }
             }
             const double span = dataMax - dataMin;
-            const int decimals = span >= 100.0 ? 1 : span >= 10.0 ? 2 : span >= 1.0 ? 3 : 4;
+            const int decimals = span >= 100.0 ? 1 : span >= 10.0 ? 2
+                                                 : span >= 1.0    ? 3
+                                                                  : 4;
 
             // manual min / max: slider + spin box over the data range
             auto* manualBox = new QWidget(body);   // min / max sliders over the data range

@@ -403,22 +403,19 @@ step's Tile parameter pick the tile; Stitch with no tile files fuses all of them
 registering on one channel and time point and applying that layout to every other.
 
 **Segmentation models**: Segment ▸ Download model… (or Hub… next to the model field)
-opens on the model families — Cellpose and micro-SAM, which return instance labels
-directly and fetch their weights from the authors, no account needed. Both are object
-models, for compact things: cells, nuclei, organelles. Filaments, vessels and networks
-are not what they are trained on, and on a dense filament network they return
-cell-shaped pieces that ignore the filaments; use Classical segmentation with the Tubes
-enhancement there, which traces the structure (`app/help/seg.md` gives the measurement
-on the bundled SIM reconstruction). A family whose
-package is missing on the worker is installed after a confirmation (`pip install
-cellpose`; `conda install -c conda-forge micro_sam` in a conda environment), with the
-installer's output streamed into the dialog, and the weights can be fetched right away.
-The Hugging Face tab searches the Hub, marks gated repositories (an accepted licence
-plus an access token — Token… or Preferences — as for SAM 3), downloads a TorchScript /
-ONNX file with progress into `$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points
-the step at it. The model field also takes `hf:<repo>[:<file>]`, `cellpose:<model>`
-and `microsam:<model_type>` specs
-directly, which the HPC worker resolves on its own host.
+opens on Local, the model cache: every file the hub has downloaded, with its size, to
+pick from or to delete (only paths inside the cache — a model of your own from elsewhere
+on the machine is not the hub's to remove). The Hugging Face tab searches the Hub, marks
+gated repositories (an accepted licence plus an access token — Token… or Preferences —
+as for SAM 3), downloads a TorchScript / ONNX file with progress into
+`$SIRIUS_MODEL_CACHE` or `~/.sirius/models`, and points the step at it. The model field
+also takes `hf:<repo>[:<file>]`, `cellpose:<model>` and `microsam:<model_type>` specs
+directly, which the HPC worker resolves on its own host; the worker installs a missing
+package on request. Cellpose and micro-SAM are object models, for compact things: cells,
+nuclei, organelles. Filaments, vessels and networks are not what they are trained on,
+and on a dense filament network they return cell-shaped pieces that ignore the
+filaments; use Classical segmentation with the Tubes enhancement there, which traces the
+structure (`app/help/seg.md` gives the measurement on the bundled SIM reconstruction).
 
 **Backends**: CUDA (when the build has it and a device is present), CPU, or HPC — a
 Python worker on a cluster node reached over TCP (see "Python worker and HPC backend").

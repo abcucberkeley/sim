@@ -5,9 +5,9 @@ A model *spec* is the string the application's Torch segmentation step holds:
     /path/to/model.pt            TorchScript (.pt / .pts / .pth) or ONNX (.onnx) file
     hf:<repo_id>[:<filename>]    a file from a Hugging Face repository, downloaded once
                                  into the cache ($SIRIUS_MODEL_CACHE or ~/.sirius/models)
-    cellpose:<model>             the `cellpose` package: `default` (the installed version's
-                                 built-in model: cpsam on Cellpose 4, cyto3 on Cellpose 3), one
-                                 of its model names, or a path / hf: spec of a custom model file
+    cellpose:<model>             the `cellpose` package: one of its model names (cpsam on
+                                 Cellpose 4, cyto3 / nuclei on Cellpose 3), or a path / hf:
+                                 spec of a custom model file. The model has to be named.
     microsam:<model_type>        the `micro_sam` package's automatic instance
                                  segmentation: vit_b_lm, vit_l_lm, vit_t_lm, vit_b_em_organelles, ...
 
@@ -178,6 +178,49 @@ def list_cached_models() -> List[Dict[str, Any]]:
             if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS:
                 out.append({"spec": str(f), "path": str(f), "bytes": f.stat().st_size, "repo": "", "file": f.name})
     return out
+
+
+def delete_cached_model(path: str) -> Dict[str, Any]:
+    """Remove one model from the cache and report what that freed.
+
+    Only paths inside the cache are touched -- a spec can name a file anywhere
+    on the machine, and a model chosen from outside the cache is the user's
+    file, not ours to delete. An empty repository directory goes with the last
+    file in it, so the Local list does not fill up with empty rows.
+    """
+    if not path:
+        raise ModelError("no model given to delete")
+    root = cache_dir().resolve()
+    target = Path(path).expanduser()
+    try:
+        resolved = target.resolve()
+    except OSError as e:
+        raise ModelError(f"cannot resolve {path}: {e}") from e
+    if not resolved.is_relative_to(root):
+        raise ModelError(f"{path} is not in the model cache ({root}); delete it yourself if you meant to")
+    if not resolved.exists():
+        raise ModelError(f"{path} is already gone")
+
+    freed = 0
+    if resolved.is_dir():
+        for f in resolved.rglob("*"):
+            if f.is_file():
+                freed += f.stat().st_size
+        shutil.rmtree(resolved)
+    else:
+        freed = resolved.stat().st_size
+        resolved.unlink()
+
+    # prune the directories the file left behind, but never the cache itself
+    removed_dirs = []
+    parent = resolved.parent
+    while parent != root and parent.is_relative_to(root):
+        if any(parent.iterdir()):
+            break
+        parent.rmdir()
+        removed_dirs.append(str(parent))
+        parent = parent.parent
+    return {"path": str(resolved), "bytes": freed, "removed_directories": removed_dirs}
 
 
 # --- Hugging Face ------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 """Tests of the worker's model hub: spec parsing, the download cache layout,
-model families reporting their availability, and the hub_* RPC methods.
+model families reporting their availability, cache deletion, and the hub_* RPC methods.
 
 Hub calls go to a tiny public repository (hf-internal-testing/tiny-random-bert)
 and are skipped when huggingface_hub is missing or the Hub is unreachable;
@@ -130,6 +130,51 @@ class TestCache(_CacheCase):
         self.assertEqual([m["spec"] for m in listed], ["hf:owner/repo:model.pt"])
         self.assertEqual(listed[0]["bytes"], 10)
         self.assertEqual(listed[0]["repo"], "owner/repo")
+
+    def test_deleting_a_cached_model_frees_it_and_prunes_the_directory(self):
+        d = models.repo_dir("owner/repo")
+        d.mkdir(parents=True)
+        (d / "model.pt").write_bytes(b"\x00" * 32)
+        (d / "other.pt").write_bytes(b"\x00" * 8)
+
+        result = models.delete_cached_model(str(d / "model.pt"))
+        self.assertEqual(result["bytes"], 32)
+        self.assertFalse((d / "model.pt").exists())
+        # the repository still holds a model, so its directory stays
+        self.assertTrue(d.is_dir())
+        self.assertEqual(result["removed_directories"], [])
+        self.assertEqual([m["file"] for m in models.list_cached_models()], ["other.pt"])
+
+        # the last file takes the empty directories with it, but not the cache
+        result = models.delete_cached_model(str(d / "other.pt"))
+        self.assertFalse(d.exists())
+        self.assertIn(str(d), result["removed_directories"])
+        self.assertTrue(models.cache_dir().is_dir())
+        self.assertEqual(models.list_cached_models(), [])
+
+    def test_a_whole_repository_can_go_at_once(self):
+        d = models.repo_dir("owner/repo")
+        (d / "nested").mkdir(parents=True)
+        (d / "nested" / "a.pt").write_bytes(b"\x00" * 4)
+        (d / "b.onnx").write_bytes(b"\x00" * 6)
+        result = models.delete_cached_model(str(d))
+        self.assertEqual(result["bytes"], 10)
+        self.assertFalse(d.exists())
+        self.assertEqual(models.list_cached_models(), [])
+
+    def test_delete_refuses_anything_outside_the_cache(self):
+        with tempfile.TemporaryDirectory() as outside:
+            mine = os.path.join(outside, "my_own_model.pt")
+            with open(mine, "wb") as f:
+                f.write(b"\x00")
+            with self.assertRaises(models.ModelError) as caught:
+                models.delete_cached_model(mine)
+            self.assertIn("not in the model cache", str(caught.exception))
+            self.assertTrue(os.path.exists(mine))   # a file of the user's own is left alone
+        with self.assertRaises(models.ModelError):
+            models.delete_cached_model("")
+        with self.assertRaises(models.ModelError):
+            models.delete_cached_model(str(models.cache_dir() / "hf" / "nothing--here" / "gone.pt"))
 
     def test_default_cache_is_under_home(self):
         os.environ.pop("SIRIUS_MODEL_CACHE")
@@ -305,6 +350,30 @@ class TestHubMethods(ServerTestCase, _CacheCase):
             _, header, _ = c.call("model_prepare", {"spec": "microsam:vit_b_lm"})
             self.assertEqual(header["type"], "error", header)
             self.assertIn("micro_sam", header["message"])
+        finally:
+            c.close()
+
+    def test_models_delete_removes_the_file_and_guards_the_rest_of_the_disk(self):
+        d = models.repo_dir("owner/repo")
+        d.mkdir(parents=True)
+        (d / "net.onnx").write_bytes(b"\x00" * 5)
+        c = _Client(self.port, self.token)
+        try:
+            c.hello()
+            _, header, _ = c.call("models_delete", {"path": str(d / "net.onnx")})
+            self.assertEqual(header["type"], "result", header)
+            self.assertEqual(header["result"]["bytes"], 5)
+            self.assertFalse((d / "net.onnx").exists())
+            _, header, _ = c.call("models_list")
+            self.assertEqual(header["result"]["models"], [])
+            # a path outside the cache is an error, not a deletion
+            with tempfile.TemporaryDirectory() as outside:
+                mine = os.path.join(outside, "mine.pt")
+                with open(mine, "wb") as f:
+                    f.write(b"\x00")
+                _, header, _ = c.call("models_delete", {"path": mine})
+                self.assertEqual(header["type"], "error", header)
+                self.assertTrue(os.path.exists(mine))
         finally:
             c.close()
 
