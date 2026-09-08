@@ -1499,6 +1499,21 @@ TEST_CASE("Applying a preset is an ordinary undoable parameter change", "[app][w
         CHECK_FALSE(wb.pipeline().at(step).params.getBool("hysteresis"));
         CHECK(wb.pipeline().at(step).params.getString("post") == "Watershed (distance)");
     }
+    SECTION("it refuses while a run is in progress, rather than reporting a change it did not make") {
+        // setStepParams bails out there silently; a preset that still said yes
+        // would leave the caller with an undo entry for nothing
+        wb.addStep("test_slow");
+        auto job = wb.createRun();
+        REQUIRE(job);
+        CHECK_FALSE(wb.canEdit());
+        std::thread worker([&] { job->execute(); });
+        const ParamSet held = wb.pipeline().at(step).params;
+        CHECK_FALSE(wb.applyPreset(step, "Nuclei"));
+        CHECK(wb.pipeline().at(step).params == held);
+        job->cancel();
+        worker.join();
+    }
+
     SECTION("an unknown preset changes nothing") {
         const ParamSet held = wb.pipeline().at(step).params;
         CHECK_FALSE(wb.applyPreset(step, "Nothing like it"));
