@@ -476,7 +476,11 @@ Command line: `--dataset`, `--pipeline`, `--run`, and for scripting and smoke te
 `--screenshot out.png` (grab the window, and any dialog, after the run and quit),
 `--wheel x,y,steps` and `--stroke x0,y0,x1,y1,moves` (real mouse events on the XY pane,
 in voxels, for zoom / paint timing), `--drop <path>` (as though the path were dropped on
-the window), `--record out.jsonl` (record the session, below) and `--quit-after ms`. `SIRIUS_TRACE_VIEW=1` prints
+the window), `--record out.jsonl` (record the session, below) and `--quit-after ms`. Scripted
+steps run in the order they are written, so a `--tool get_state` after an `--action` sees what
+the action did. `tools/gui_tests.py --app <binary>` drives the widgets through these hooks —
+the view modes, the compare panes, painting, the wheel, drag and drop, menu actions — and
+asserts on what comes back; CI runs it. `SIRIUS_TRACE_VIEW=1` prints
 what every pane render, label overlay, paint and stroke costs. `QT_QPA_PLATFORM=offscreen`
 runs without a display (the 3D view then shows a notice: Qt's offscreen platform has no
 OpenGL widgets).

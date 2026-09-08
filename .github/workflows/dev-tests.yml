@@ -185,6 +185,11 @@ jobs:
             --pipeline examples/sim_bundled.sirius.toml --run --screenshot smoke.png
           test -s smoke.png
 
+      # The widgets, driven through the scripting hooks: the view modes, the
+      # compare panes, painting, the wheel, drag and drop, menu actions.
+      - name: GUI tests
+        run: python3 tools/gui_tests.py --app build/linux-gcc-app-dev/app/sirius-app
+
       - uses: actions/upload-artifact@v4
         with:
           name: workbench-smoke

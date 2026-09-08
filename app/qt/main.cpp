@@ -132,39 +132,69 @@ int main(int argc, char** argv) {
         loop.exec();
         return nlohmann::json{{"ok", ok}, {"error", sirius::app::toStd(error)}};
     });
+    // Scripted steps run in the order they were written on the command line.
+    // Grouping them by kind -- every tool, then every action -- meant a
+    // get_state after an --action reported the state before it, which is not
+    // what anyone writing the line intends and made the widgets hard to test.
+    // QCommandLineParser does not keep the order, so it is read back off argv.
+    auto letTheWindowCatchUp = [] {
+        // let the window react (repaint, refresh) between steps, as it would
+        // between a user's actions
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+    };
+    auto runTool = [&](const QString& call) {
+        const QJsonObject j = QJsonDocument::fromJson(call.toUtf8()).object();
+        const nlohmann::json args = nlohmann::json::parse(QJsonDocument(j.value(QStringLiteral("args")).toObject()).toJson().constData());
+        const nlohmann::json r = tools.call(sirius::app::toStd(j.value(QStringLiteral("name")).toString()), args);
+        workbench.logLine("tool " + sirius::app::toStd(j.value(QStringLiteral("name")).toString()) + " → " + r.dump().substr(0, 200));
+        qInfo("tool %s -> %s", qPrintable(j.value(QStringLiteral("name")).toString()), r.dump(2).c_str());
+        letTheWindowCatchUp();
+    };
+    auto runAction = [&](const QString& text) {
+        for (QAction* a : window.findChildren<QAction*>())
+            if (a->text().remove(QLatin1Char('&')) == text || a->text().remove(QLatin1Char('&')).startsWith(text + QChar(0x2026))) {
+                a->trigger();
+                letTheWindowCatchUp();
+                return;
+            }
+        workbench.logLine("no action named " + sirius::app::toStd(text));
+        qWarning("no action named %s", qPrintable(text));
+    };
     auto script = [&] {
-        for (const QString& call : toolCalls) {
-            const QJsonObject j = QJsonDocument::fromJson(call.toUtf8()).object();
-            const nlohmann::json args = nlohmann::json::parse(QJsonDocument(j.value(QStringLiteral("args")).toObject()).toJson().constData());
-            const nlohmann::json r = tools.call(sirius::app::toStd(j.value(QStringLiteral("name")).toString()), args);
-            workbench.logLine("tool " + sirius::app::toStd(j.value(QStringLiteral("name")).toString()) + " → " + r.dump().substr(0, 200));
-            qInfo("tool %s -> %s", qPrintable(j.value(QStringLiteral("name")).toString()), r.dump(2).c_str());
-            // let the window react (repaint, refresh) before the next call, as it would between a user's actions
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
-            QCoreApplication::sendPostedEvents();
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        const QStringList argv = QCoreApplication::arguments();
+        for (int i = 1; i < argv.size(); ++i) {
+            QString name = argv[i];
+            if (!name.startsWith(QLatin1String("--"))) continue;
+            name.remove(0, 2);
+            QString value;
+            const int eq = name.indexOf(QLatin1Char('='));
+            if (eq >= 0) {
+                value = name.mid(eq + 1);
+                name.truncate(eq);
+            } else if (i + 1 < argv.size()) {
+                value = argv[i + 1];
+            }
+            if (name == QLatin1String("tool")) runTool(value);
+            else if (name == QLatin1String("action")) runAction(value);
+            else if (name == QLatin1String("drop")) {
+                window.dropPaths({value});
+                letTheWindowCatchUp();
+            } else if (name == QLatin1String("wheel")) {
+                const QStringList v = value.split(QLatin1Char(','));
+                if (v.size() == 3) window.viewer().syntheticWheel(QPointF(v[0].toDouble(), v[1].toDouble()), v[2].toDouble());
+                letTheWindowCatchUp();
+            } else if (name == QLatin1String("stroke")) {
+                const QStringList v = value.split(QLatin1Char(','));
+                if (v.size() == 5)
+                    window.viewer().syntheticStroke(QPointF(v[0].toDouble(), v[1].toDouble()), QPointF(v[2].toDouble(), v[3].toDouble()),
+                                                    v[4].toInt());
+                letTheWindowCatchUp();
+            } else if (name == QLatin1String("ask")) {
+                window.askAssistant(value);
+            }
         }
-        for (const QString& text : actions) {
-            bool found = false;
-            for (QAction* a : window.findChildren<QAction*>())
-                if (a->text().remove(QLatin1Char('&')) == text || a->text().remove(QLatin1Char('&')).startsWith(text + QChar(0x2026))) {
-                    a->trigger();
-                    found = true;
-                    break;
-                }
-            if (!found) workbench.logLine("no action named " + sirius::app::toStd(text));
-        }
-        if (parser.isSet(dropOpt)) window.dropPaths(parser.values(dropOpt));
-        for (const QString& spec : parser.values(wheelOpt)) {
-            const QStringList v = spec.split(QLatin1Char(','));
-            if (v.size() == 3) window.viewer().syntheticWheel(QPointF(v[0].toDouble(), v[1].toDouble()), v[2].toDouble());
-        }
-        for (const QString& spec : parser.values(strokeOpt)) {
-            const QStringList v = spec.split(QLatin1Char(','));
-            if (v.size() == 5)
-                window.viewer().syntheticStroke(QPointF(v[0].toDouble(), v[1].toDouble()), QPointF(v[2].toDouble(), v[3].toDouble()), v[4].toInt());
-        }
-        if (parser.isSet(askOpt)) window.askAssistant(parser.value(askOpt));
     };
     const bool scripted = !toolCalls.isEmpty() || !actions.isEmpty() || parser.isSet(askOpt) || parser.isSet(strokeOpt) || parser.isSet(wheelOpt) || parser.isSet(dropOpt);
     // Nobody is at the keyboard in any of these modes, so the window must not
