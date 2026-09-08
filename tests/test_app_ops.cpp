@@ -263,10 +263,14 @@ TEST_CASE("SIM reconstructs the bundled stack from a parameter file and reports 
         m.set("k0_angles", std::vector<double>{46.08, 106.31, -13.68});
         m.set("otf", (kData / "otf.tif").string());
         REQUIRE(sim.validate(m, loaded.meta).ok());
-        // Manual mode takes the angles as given, so the fit table reports them
-        // straight back: the one place the degrees the form asks for and the
-        // radians the library wants have to meet. Feeding radians here (0.8043
-        // and the rest) reports 18°, 6°, -14° instead.
+        // What the units have to be right for. Manual mode does not fix the
+        // angles: it seeds the k0 fit, which then refines them -- 40, 100, -20
+        // converges to the same 46, 106, -14. What the assertion pins is that
+        // the seed lands inside the fit's basin, which it only does when the
+        // numbers are read as the degrees the form asks for. Read as radians,
+        // 46.08 is some 2600 degrees; the old radian values (0.8043 and the
+        // rest) seed 0.8 degrees and the table comes out 18, 6, -14. A seed far
+        // enough out is not rescued either: 10, 70, -50 reports 18, 67, -38.
         const StepOutput manual = sim.run(loaded.asInput(), m, prog.ctx);
         REQUIRE(manual.diagnostics.table.has_value());
         const std::vector<std::vector<std::string>>& rows = manual.diagnostics.table->rows;

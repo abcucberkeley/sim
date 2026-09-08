@@ -293,7 +293,7 @@
         {
           "advanced": false,
           "default": [],
-          "help": "One angle per direction (Manual mode), in the same degrees the fit table reports",
+          "help": "Where the search starts for each direction (Manual mode), in the same degrees the fit table\n                                  reports; the fit refines them from there",
           "key": "k0_angles",
           "label": "Pattern angles",
           "read_only": false,
