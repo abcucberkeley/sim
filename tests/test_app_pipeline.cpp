@@ -1136,6 +1136,39 @@ TEST_CASE("A recorded session holds what the user did, in order", "[app][workben
         previous = t;
     }
 
+    SECTION("a label correction is written down with the voxels it moved") {
+        // what a model imitating a label generator has to learn from: not
+        // that the user edited something, but which edit and how large
+        Workbench w2(scratch.dir);
+        w2.setDataset(syntheticSource(1, 1, 4, 8, 8));
+        w2.setBackend(Backend::Cpu);
+        while (w2.pipeline().size() > 1) w2.removeStep(1);
+        w2.addStep("test_labels");
+        auto ran = runSync(w2);
+        REQUIRE(ran->succeeded());
+        const std::filesystem::path second = scratch.dir / "edits.jsonl";
+        w2.startRecording(second.string());
+        w2.paintLabels(1, 3, 3, false);
+        w2.endPaintStroke();
+        const std::shared_ptr<const LabelVolume> made = w2.output(1)->labels;
+        REQUIRE(made != nullptr);
+        std::uint32_t victim = 0;
+        for (const LabelStats& st : made->stats())
+            if (st.voxels > 0) {
+                victim = st.id;
+                break;
+            }
+        if (victim != 0) w2.deleteLabel(victim);
+        w2.stopRecording();
+
+        std::ifstream in2(second);
+        std::vector<std::string> seen;
+        for (std::string line; std::getline(in2, line);)
+            if (!line.empty()) seen.push_back(nlohmann::json::parse(line).value("event", std::string()));
+        CHECK(std::find(seen.begin(), seen.end(), "paint") != seen.end());
+        if (victim != 0) CHECK(std::find(seen.begin(), seen.end(), "label_edit") != seen.end());
+    }
+
     SECTION("nothing is written once recording stops") {
         const std::uintmax_t before = std::filesystem::file_size(log);
         wb.addStep("test_scale");
