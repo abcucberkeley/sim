@@ -143,11 +143,17 @@ namespace sirius::app {
                     if (!got) throw std::runtime_error("scikit-image segmentation: the worker returned no 'labels' tensor");
                     if (got->shape.size() != 3 || got->shape[0] != d.z || got->shape[1] != d.y || got->shape[2] != d.x)
                         throw std::runtime_error("scikit-image segmentation: the worker's labels do not match the volume");
-                    std::copy_n(got->asUInt32(), volume, labels->volume(t));
+                    std::uint32_t* into = labels->volume(t);
+                    std::copy_n(got->asUInt32(), volume, into);
                     labels->recomputeStats(t);
                     for (LabelStats& s : labels->stats()) s.cls = className;
-                    total = std::max(total, labels->stats().empty() ? 0u : labels->stats().back().id);
-                    if (t == 0 && r.result.contains("note")) note = r.result["note"].get<std::string>();
+                    // each frame is segmented on its own, so the count is the
+                    // sum over frames, as the classical step reports it
+                    std::uint32_t highest = 0;
+                    for (Index i = 0; i < volume; ++i) highest = std::max(highest, into[i]);
+                    total += highest;
+                    if (t == 0 && r.result.contains("note") && r.result["note"].is_string())
+                        note = r.result["note"].get<std::string>();
                 }
                 labels->resetMaxLabel();
                 LabelFlagRules rules;
