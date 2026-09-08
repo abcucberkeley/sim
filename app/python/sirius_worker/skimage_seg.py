@@ -97,6 +97,15 @@ def run(volume: np.ndarray,
         progress: Optional[Callable[[float, str], None]] = None,
         cancelled: Optional[Callable[[], bool]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Run one method; returns (labels, info)."""
+    # what the caller got wrong is worth saying before what the machine is
+    # missing: an unknown method is an unknown method whether or not
+    # scikit-image is installed here
+    method = str(params.get("method", METHODS[0]))
+    if method not in METHODS:
+        raise SkimageError(f"unknown method '{method}'; expected one of {', '.join(METHODS)}")
+    volume = np.ascontiguousarray(np.asarray(volume, dtype=np.float32))
+    if volume.ndim != 3:
+        raise SkimageError(f"expected a (z, y, x) volume, got {volume.ndim} dimensions")
     _require()
 
     def report(fraction: float, message: str) -> None:
@@ -107,12 +116,6 @@ def run(volume: np.ndarray,
         if cancelled and cancelled():
             raise SkimageError("cancelled")
 
-    method = str(params.get("method", METHODS[0]))
-    if method not in METHODS:
-        raise SkimageError(f"unknown method '{method}'; expected one of {', '.join(METHODS)}")
-    volume = np.ascontiguousarray(np.asarray(volume, dtype=np.float32))
-    if volume.ndim != 3:
-        raise SkimageError(f"expected a (z, y, x) volume, got {volume.ndim} dimensions")
     min_voxels = int(params.get("min_voxels", 20) or 0)
     info: Dict[str, Any] = {"method": method}
 

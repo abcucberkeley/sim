@@ -88,12 +88,14 @@ class TestMethods(unittest.TestCase):
 
 
 class TestGuards(unittest.TestCase):
+    """These hold whether or not scikit-image is installed: the caller's own
+    mistakes are reported before the machine's missing package."""
+
     def test_an_unknown_method_is_refused(self):
         with self.assertRaises(skimage_seg.SkimageError) as caught:
             skimage_seg.run(np.zeros((2, 4, 4), np.float32), {"method": "Magic"})
         self.assertIn("unknown method", str(caught.exception))
 
-    @unittest.skipUnless(AVAILABLE, WHY)
     def test_a_volume_has_to_be_three_dimensional(self):
         with self.assertRaises(skimage_seg.SkimageError) as caught:
             skimage_seg.run(np.zeros((4, 4), np.float32), {"method": "Superpixels (SLIC)"})
