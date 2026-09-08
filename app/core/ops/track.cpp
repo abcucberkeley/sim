@@ -11,6 +11,7 @@
 #include "core/ops/builtin.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -33,14 +34,28 @@ namespace sirius::app {
                 info_.defaultCache = CachePolicy::Memory;
                 info_.needsLabels = true;
                 info_.producesLabels = true;
+                info_.remoteCapable = true;   // the btrack backend runs in the Python worker
                 info_.helpPage = "track";
                 info_.params = {
+                    choiceParam("tracker", "Tracker", {"Built-in (assignment)", "btrack (Bayesian)"},
+                                "Built-in (assignment)")
+                        .withHelp("Built-in matches each frame to the next by optimal assignment on distance and "
+                                  "overlap. btrack adds a motion model, so it holds identities through a crossing, "
+                                  "and reconstructs lineages when cells divide; it runs in the Python worker"),
                     doubleParam("max_distance", "Max. step", 10.0).range(0.0, 100000.0, 0.5, 2).withUnit("µm").withHelp("How far an object may move between frames; the gate that keeps distant objects apart"),
                     doubleParam("overlap_weight", "Overlap weight", 0.5).range(0.0, 1.0, 0.05, 2).withHelp("0 matches on centroid distance alone, 1 on shared voxels alone; in between mixes them"),
                     intParam("max_gap", "Close gaps", 1).range(0, 100).withUnit("frames").withHelp("Frames an object may be missed for and still continue the same track (0 = never)"),
                     intParam("min_length", "Min. track length", 2).range(1, 1000000).withUnit("frames").withHelp("Tracks seen in fewer frames than this are dropped"),
                     boolParam("relabel", "Relabel by track", true)
                         .withHelp("Give every object of a track the track's id, so one object keeps one colour over time"),
+                    stringParam("config", "btrack config", "")
+                        .withHelp("btrack only: a tracker configuration JSON; empty uses btrack's packaged cell "
+                                  "configuration, which is fetched and cached on first use")
+                        .asAdvanced(),
+                    boolParam("optimise", "Reconstruct lineages", true)
+                        .withHelp("btrack only: run the global hypothesis optimisation, which is what links a mother "
+                                  "to its daughters")
+                        .asAdvanced(),
                 };
             }
 
@@ -48,6 +63,11 @@ namespace sirius::app {
 
             std::string summary(const ParamSet& p, const DatasetMeta& meta) const override {
                 const Index gap = p.getInt("max_gap", 1);
+                const bool bayes = p.getString("tracker", "Built-in (assignment)").rfind("btrack", 0) == 0;
+                if (bayes)
+                    return joinSummary({"btrack", "≤ " + formatNumber(p.getDouble("max_distance", 10.0), 1) + " µm",
+                                        p.getBool("optimise", true) ? "lineages" : "no lineages",
+                                        meta.dims.t > 1 ? std::to_string(meta.dims.t) + " frames" : "one frame only"});
                 return joinSummary({"≤ " + formatNumber(p.getDouble("max_distance", 10.0), 1) + " µm",
                                     "overlap " + formatNumber(p.getDouble("overlap_weight", 0.5), 2),
                                     gap > 0 ? "gaps ≤ " + std::to_string(gap) : "no gaps",
@@ -77,6 +97,8 @@ namespace sirius::app {
 
                 const LabelVolume& in = *input.labels;
                 const Index frames = in.t();
+                if (p.getString("tracker", "Built-in (assignment)").rfind("btrack", 0) == 0)
+                    return runBtrack(input, p, ctx, std::move(out));
                 TrackOptions options;
                 options.maxDistanceUm = p.getDouble("max_distance", 10.0);
                 options.overlapWeight = p.getDouble("overlap_weight", 0.5);
@@ -137,6 +159,76 @@ namespace sirius::app {
             }
 
         private:
+            // btrack in the Python worker: the labels go over as they are and
+            // come back renumbered by track, so nothing about btrack leaks
+            // into the application.
+            StepOutput runBtrack(const StepInput& input, const ParamSet& p, const StepContext& ctx, StepOutput out) const {
+                if (!ctx.remote)
+                    throw std::runtime_error("btrack tracking needs the Python worker: start it in Preferences ▸ Python");
+                const LabelVolume& in = *input.labels;
+                const Index frames = in.t(), volume = in.z() * in.y() * in.x();
+                std::vector<std::uint32_t> flat(static_cast<std::size_t>(frames * volume));
+                for (Index t = 0; t < frames; ++t) std::copy_n(in.volume(t), volume, flat.data() + t * volume);
+
+                nlohmann::json params = {
+                    {"max_distance", p.getDouble("max_distance", 10.0)},
+                    {"min_length", p.getInt("min_length", 2)},
+                    {"config", p.getString("config")},
+                    {"optimise", p.getBool("optimise", true)},
+                    {"voxel_um", {input.meta.voxelUm[0], input.meta.voxelUm[1], input.meta.voxelUm[2]}},
+                };
+                rpc::TensorRef marks;
+                marks.name = "labels";
+                marks.dtype = "uint32";
+                marks.shape = {frames, in.z(), in.y(), in.x()};
+                marks.data = flat.data();
+                marks.nbytes = flat.size() * sizeof(std::uint32_t);
+                ctx.report(0.1, "btrack");
+                const auto t0 = std::chrono::steady_clock::now();
+                WorkerResult r = ctx.remote->call(
+                    "run", {{"kind", "btrack"}, {"params", params}}, {marks},
+                    [&](double f, const std::string& m) { ctx.report(0.1 + 0.8 * f, m); },
+                    [&] { return ctx.isCancelled(); });
+                ctx.throwIfCancelled();
+                const rpc::Tensor* got = nullptr;
+                for (const rpc::Tensor& tensor : r.tensors)
+                    if (tensor.name == "labels") got = &tensor;
+                if (!got) throw std::runtime_error("btrack tracking: the worker returned no 'labels' tensor");
+                if (got->shape.size() != 4 || got->shape[0] != frames || got->shape[1] != in.z() ||
+                    got->shape[2] != in.y() || got->shape[3] != in.x())
+                    throw std::runtime_error("btrack tracking: the worker's labels do not match the volume");
+
+                auto labels = std::make_shared<LabelVolume>(in.t(), in.z(), in.y(), in.x());
+                const std::uint32_t* src = got->asUInt32();
+                for (Index t = 0; t < frames; ++t) {
+                    std::copy_n(src + t * volume, volume, labels->volume(t));
+                    labels->recomputeStats(t);
+                }
+                for (LabelStats& s : labels->stats()) s.cls = "track";
+                out.labels = labels;
+                out.ranOn = ctx.backend;
+                out.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+                Diagnostics d;
+                d.kind = DiagnosticsKind::Segment;
+                const long long tracks = r.result.value("tracks", 0LL);
+                d.summary = summary(p, input.meta) + " · " + std::to_string(tracks) + " tracks";
+                d.facts.push_back({"Tracker", "btrack"});
+                d.facts.push_back({"Tracks", std::to_string(tracks)});
+                d.facts.push_back({"Objects", std::to_string(r.result.value("objects", 0LL))});
+                d.facts.push_back({"Mean length", formatNumber(r.result.value("mean_length", 0.0), 1) + " / " +
+                                                      std::to_string(input.meta.dims.t) + " frames"});
+                d.facts.push_back({"Longest", std::to_string(r.result.value("longest", 0LL)) + " frames"});
+                d.facts.push_back({"Divisions", std::to_string(r.result.value("divisions", 0LL))});
+                out.diagnostics = std::move(d);
+                char note[200];
+                std::snprintf(note, sizeof note, "btrack · %lld tracks · %lld divisions · %.1f s", tracks,
+                              r.result.value("divisions", 0LL), out.seconds);
+                out.note = note;
+                ctx.report(1.0, "");
+                return out;
+            }
+
             // Track table plus the facts that say whether the linking is sane:
             // a mean length near the frame count means objects were followed,
             // a mean near one means the gate is too tight.

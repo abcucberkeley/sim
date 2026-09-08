@@ -77,7 +77,7 @@ from .steps import workbench
 log = logging.getLogger("sirius_worker")
 
 # kinds served through run_step plus the two with their own tensor contracts
-_SPECIAL_KINDS = ("torch_segment", "sim")
+_SPECIAL_KINDS = ("torch_segment", "sim", "btrack")
 
 
 class _Cancelled(Exception):
@@ -538,6 +538,22 @@ class WorkerServer:
                                       progress=progress, cancelled=cancelled)
             check()
             return {"channels": int(prob.shape[0]), "device": device}, {"prob": prob}
+
+        if kind == "btrack":
+            # Bayesian tracking: the labels go over as they are and come back
+            # renumbered by track, so every btrack specific stays on this side.
+            from . import tracking as tracking_backends
+
+            marks = tensors.get("labels")
+            if marks is None:
+                raise ValueError("run btrack: missing tensor 'labels'")
+            shape = marks.shape
+            if marks.ndim == 3:
+                marks = marks[:, np.newaxis]   # (t, y, x) -> (t, 1, y, x)
+            voxel = p.get("voxel_um") or (params.get("meta") or {}).get("voxel_um") or (1.0, 1.0, 1.0)
+            out, info = tracking_backends.run_btrack(marks, tuple(float(v) for v in voxel), p, progress=progress)
+            check()
+            return info, {"labels": np.ascontiguousarray(out.reshape(shape), dtype=np.uint32)}
 
         if kind == "sim":
             raw = tensors.get("input")

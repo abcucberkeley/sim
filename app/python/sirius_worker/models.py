@@ -46,6 +46,7 @@ MICROSAM_MODELS = ("vit_b_lm", "vit_l_lm", "vit_t_lm", "vit_b_em_organelles", "v
                    "vit_t_em_organelles", "vit_b", "vit_l", "vit_h")
 
 INSTALL_HINTS = {
+    "btrack": "pip install btrack",
     "cellpose": "pip install cellpose",
     "microsam": "conda install -c conda-forge micro_sam   (or: pip install micro-sam)",
     "hf": "pip install huggingface_hub",
@@ -58,6 +59,7 @@ PACKAGES = {
     "microsam": {"pip": ["micro-sam"], "conda": ["micro_sam"]},
     "hf": {"pip": ["huggingface_hub"], "conda": None},
     "onnx": {"pip": ["onnxruntime"], "conda": None},
+    "btrack": {"pip": ["btrack"], "conda": None},
 }
 
 
@@ -374,6 +376,10 @@ def family_available(family: str) -> Tuple[bool, str]:
             return True, ""
         except ImportError:
             return False, INSTALL_HINTS["microsam"]
+    if family == "btrack":
+        from . import tracking as tracking_backends
+
+        return tracking_backends.available()
     if family == "hf":
         try:
             import huggingface_hub  # type: ignore  # noqa: F401

@@ -352,7 +352,8 @@ returns labels itself) · Classical segmentation (blob / tube enhancement, white
 top-hat, Gaussian, Otsu / multi-Otsu / percentile / manual / local-mean /
 local-contrast threshold, binary opening, hole filling, watershed on distance,
 h-maxima or scale-space blob-centre seeds) · Track objects (frame-to-frame optimal
-assignment on distance and overlap, gap closing) · Threshold · Label cleanup. Labels are painted,
+assignment on distance and overlap, gap closing; or btrack's Bayesian tracker with a
+motion model and lineages, in the worker) · Threshold · Label cleanup. Labels are painted,
 filled, merged, split and deleted in the viewer; every edit, parameter change and
 assistant action is one undo entry.
 

@@ -1,0 +1,141 @@
+"""Tracking backends the worker can offer beyond the application's own.
+
+The application always has its optimal-assignment tracker in C++. This module
+adds btrack (Bayesian multi-object tracking, MIT), which is worth reaching for
+when objects cross, because it carries a motion model, and when cells divide,
+because it reconstructs lineages.
+
+btrack ships its tracking core as a compiled C++ library inside the wheel and
+solves the global hypothesis optimisation in Python with cvxopt / GLPK, so the
+whole of it is a `pip install btrack` away and none of it has to be built here.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+
+INSTALL_HINT = "pip install btrack"
+
+
+class NotAvailable(RuntimeError):
+    """btrack is missing, or its compiled core will not load."""
+
+
+def available() -> Tuple[bool, str]:
+    """(usable, why not). Importing is not enough: the wheel's libtracker.so is
+    built against a newer libstdc++ than some conda environments carry, and
+    that only shows up when the library is actually loaded."""
+    import importlib.util
+
+    if importlib.util.find_spec("btrack") is None:
+        return False, INSTALL_HINT
+    try:
+        from btrack import libwrapper  # type: ignore
+
+        libwrapper.get_library()
+    except Exception as e:  # noqa: BLE001 - any loader failure means unusable
+        # btrack re-raises a bare Exception, so the reason is on the cause
+        text = str(e)
+        cause: Optional[BaseException] = e
+        while not text and cause is not None:
+            cause = cause.__cause__ or cause.__context__
+            text = str(cause) if cause is not None else ""
+        if "GLIBCXX" in text or "libstdc++" in text:
+            return False, ("btrack's compiled core needs a newer libstdc++ than this Python has; "
+                           "conda install -c conda-forge libstdcxx-ng, or run the worker on a system Python")
+        return False, f"btrack will not load: {text.splitlines()[0][:160]}" if text else "btrack will not load"
+    return True, ""
+
+
+def _config(path: str):
+    """btrack's tracker configuration: the file the caller named, else the
+    packaged cell configuration (downloaded and cached on first use)."""
+    if path:
+        if not os.path.exists(path):
+            raise NotAvailable(f"btrack configuration not found: {path}")
+        return path
+    try:
+        from btrack import datasets  # type: ignore
+
+        return datasets.cell_config()
+    except Exception as e:  # noqa: BLE001 - offline, or the download failed
+        raise NotAvailable("btrack needs a tracker configuration: give one in the step's Config parameter "
+                           "(btrack's cell_config.json), or connect once so it can be fetched and cached") from e
+
+
+def run_btrack(labels: np.ndarray, voxel_um: Tuple[float, float, float], params: Dict[str, Any],
+               progress=None) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Track the objects of a (t, z, y, x) label volume with btrack.
+
+    Returns the volume relabelled by track id (0 where an object was dropped)
+    and a summary. Coordinates are voxels, as btrack takes them from the
+    segmentation; the caller's max_distance is in micrometres, so it is
+    converted with the x voxel size."""
+    ok, why = available()
+    if not ok:
+        raise NotAvailable(why)
+    import btrack  # type: ignore
+
+    labels = np.ascontiguousarray(labels, dtype=np.uint32)
+    if labels.ndim != 4:
+        raise ValueError(f"btrack tracking wants a (t, z, y, x) label volume, got shape {labels.shape}")
+    t_, z_, y_, x_ = labels.shape
+    if progress:
+        progress(0.05, "objects")
+    objects = btrack.utils.segmentation_to_objects(labels)
+    if not objects:
+        return np.zeros_like(labels), {"tracks": 0, "objects": 0}
+
+    dx = float(voxel_um[0]) if voxel_um and voxel_um[0] > 0 else 1.0
+    search_px = max(1.0, float(params.get("max_distance", 10.0)) / dx)
+    config = _config(str(params.get("config", "") or ""))
+    if progress:
+        progress(0.2, "btrack")
+    with btrack.BayesianTracker() as tracker:
+        tracker.configure(config)
+        tracker.max_search_radius = search_px
+        tracker.append(objects)
+        tracker.volume = ((0, x_), (0, y_), (0, z_)) if z_ > 1 else ((0, x_), (0, y_))
+        tracker.track(step_size=100)
+        if bool(params.get("optimise", True)):
+            # the hypothesis optimisation is what reconstructs lineages
+            tracker.optimize()
+        tracks = tracker.tracks
+    if progress:
+        progress(0.8, "relabelling")
+
+    min_length = max(1, int(params.get("min_length", 2)))
+    out = np.zeros_like(labels)
+    kept = 0
+    lengths = []
+    divisions = 0
+    for track in tracks:
+        frames = list(track.t)
+        if len(frames) < min_length:
+            continue
+        kept += 1
+        lengths.append(len(frames))
+        parent = getattr(track, "parent", None)
+        if parent is not None and parent != track.ID:
+            divisions += 1
+        # btrack keeps the source object's centroid; the label under it names
+        # the object to repaint
+        for t, zc, yc, xc in zip(frames, track.z, track.y, track.x):
+            if not (0 <= t < t_):
+                continue
+            zi = int(round(zc)) if z_ > 1 else 0
+            yi, xi = int(round(yc)), int(round(xc))
+            zi = min(max(zi, 0), z_ - 1)
+            yi = min(max(yi, 0), y_ - 1)
+            xi = min(max(xi, 0), x_ - 1)
+            src = labels[t, zi, yi, xi]
+            if src:
+                out[t][labels[t] == src] = kept
+    if progress:
+        progress(1.0, f"{kept} tracks")
+    return out, {"tracks": kept, "objects": len(objects), "divisions": divisions,
+                 "mean_length": float(np.mean(lengths)) if lengths else 0.0,
+                 "longest": int(max(lengths)) if lengths else 0}

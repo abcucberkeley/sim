@@ -1949,6 +1949,19 @@
       "params": [
         {
           "advanced": false,
+          "choices": [
+            "Built-in (assignment)",
+            "btrack (Bayesian)"
+          ],
+          "default": "Built-in (assignment)",
+          "help": "Built-in matches each frame to the next by optimal assignment on distance and overlap. btrack adds a motion model, so it holds identities through a crossing, and reconstructs lineages when cells divide; it runs in the Python worker",
+          "key": "tracker",
+          "label": "Tracker",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
           "default": 10.0,
           "help": "How far an object may move between frames; the gate that keeps distant objects apart",
           "key": "max_distance",
@@ -2002,11 +2015,29 @@
           "label": "Relabel by track",
           "read_only": false,
           "type": "bool"
+        },
+        {
+          "advanced": true,
+          "default": "",
+          "help": "btrack only: a tracker configuration JSON; empty uses btrack's packaged cell configuration, which is fetched and cached on first use",
+          "key": "config",
+          "label": "btrack config",
+          "read_only": false,
+          "type": "string"
+        },
+        {
+          "advanced": true,
+          "default": true,
+          "help": "btrack only: run the global hypothesis optimisation, which is what links a mother to its daughters",
+          "key": "optimise",
+          "label": "Reconstruct lineages",
+          "read_only": false,
+          "type": "bool"
         }
       ],
       "plugin": false,
       "produces_labels": true,
-      "remote_capable": false
+      "remote_capable": true
     }
   ],
   "version": 1

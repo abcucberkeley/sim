@@ -183,6 +183,17 @@ cannot do (a watershed without `scikit-image`, SIM without the `sirius`
 extension) raises `NotAvailable` naming the missing package rather than
 silently computing something else.
 
+## Tracking
+
+`run {kind: "btrack"}` takes a `labels` tensor of shape (t, z, y, x) uint32 and
+returns it renumbered by track, with `{tracks, objects, divisions, mean_length,
+longest}`. It needs [btrack](https://github.com/quantumjot/btrack) (MIT,
+`pip install btrack`), whose tracking core is a compiled C++ library shipped in
+the wheel and whose lineage step is an integer program solved with cvxopt /
+GLPK. `sirius_worker.tracking.available()` reports whether it is installed *and*
+whether its library loads: the wheel is built against a newer libstdc++ than
+some conda environments carry, and that only shows up on load.
+
 ## Segmentation models
 
 The `model` of `torch_segment` / `seg` (the application's Torch

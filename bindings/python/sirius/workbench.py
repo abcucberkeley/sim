@@ -1685,7 +1685,9 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
 
 _TRACK = StepSpec(
     "track",
-    {"max_distance": 10.0, "overlap_weight": 0.5, "max_gap": 1, "min_length": 2, "relabel": True},
+    {"tracker": "Built-in (assignment)", "max_distance": 10.0, "overlap_weight": 0.5, "max_gap": 1,
+     "min_length": 2, "relabel": True, "config": "", "optimise": True},
+    choices={"tracker": ("Built-in (assignment)", "btrack (Bayesian)")},
     needs_labels=True)
 
 
@@ -1745,6 +1747,17 @@ def step_track(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any],
     track the track's id. The intensities pass through."""
     if labels is None or not labels.size:
         raise ValueError("Track objects needs labels: add a segmentation step before it")
+    tracker = _choice(params.get("tracker"), _TRACK.choices["tracker"], "Built-in (assignment)")
+    if tracker.startswith("btrack"):
+        # the same backend the application drives through the worker
+        try:
+            from sirius_worker import tracking as backends  # type: ignore
+        except ImportError as e:
+            raise NotAvailable("btrack tracking runs in the Python worker (sirius_worker); "
+                               "use the built-in tracker, or run this where the worker package is importable") from e
+        volume = labels if labels.ndim == 4 else labels[:, np.newaxis]
+        out, info = backends.run_btrack(volume, _voxel_um(meta), dict(params))
+        return StepResult(a, dict(meta), labels=out.reshape(labels.shape).astype(np.uint32), info=info)
     max_distance = max(1e-9, _float(params, "max_distance", 10.0))
     weight = min(1.0, max(0.0, _float(params, "overlap_weight", 0.5)))
     max_gap = _int(params, "max_gap", 1)
