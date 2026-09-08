@@ -15,6 +15,7 @@
 #include <deque>
 #include <vector>
 
+#include <sirius/constants.hpp>
 #include <sirius/image_ops.hpp>
 
 namespace sirius::app {
@@ -255,7 +256,7 @@ namespace sirius::app {
                 const double r = std::clamp(det / 2.0, -1.0, 1.0);
                 const double phi = std::acos(r) / 3.0;
                 const double e1 = q + 2.0 * p * std::cos(phi);
-                const double e3 = q + 2.0 * p * std::cos(phi + 2.0 * M_PI / 3.0);
+                const double e3 = q + 2.0 * p * std::cos(phi + 2.0 * kPi / 3.0);
                 e = {e1, 3.0 * q - e1 - e3, e3};
             }
             std::sort(e.begin(), e.end(), [](double a, double b) { return std::abs(a) < std::abs(b); });
