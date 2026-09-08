@@ -194,6 +194,10 @@ namespace sirius::app {
                  const int i = resolveStep(a);
                  const std::string name = a.value("preset", std::string());
                  const Step& s = wb_.pipeline().at(i);
+                 // told apart here, because applyPreset answers false to both
+                 // and "Nuclei does not exist" would be a lie during a run
+                 if (!wb_.canEdit())
+                     throw std::runtime_error("A run is in progress: cancel it or wait before applying a preset.");
                  if (!wb_.applyPreset(i, name)) {
                      std::string known;
                      for (const ParamPreset& p : s.op().info().presets) known += (known.empty() ? "" : ", ") + p.name;

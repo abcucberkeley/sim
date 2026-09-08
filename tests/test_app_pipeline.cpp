@@ -1233,6 +1233,44 @@ TEST_CASE("Workbench loads pipelines and the example without losing the dataset"
 
 // --- Tool API -----------------------------------------------------------------------
 
+TEST_CASE("apply_preset says which of its failures happened", "[app][tools][params]") {
+    // applyPreset answers false to "no such preset" and to "a run is in
+    // progress" alike, so the tool has to tell them apart: reporting the
+    // second as the first tells the assistant a preset does not exist when it
+    // does, and it would stop asking for it.
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 8, 8));
+    wb.setBackend(Backend::Cpu);
+    wb.addStep("classic");
+    const int step = wb.pipeline().size() - 1;
+    ToolApi api(wb);
+
+    // call() turns a throw into {"error": ...}, which is what the caller reads
+    auto errorOf = [&api](const json& args) {
+        const json r = api.call("apply_preset", args);
+        return r.contains("error") ? r["error"].get<std::string>() : std::string();
+    };
+
+    SECTION("an unknown preset names the ones there are") {
+        const std::string message = errorOf(json{{"step", step + 1}, {"preset", "Nothing like it"}});
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("no preset"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("Filaments"));
+    }
+    SECTION("a run in progress says so, and does not deny the preset") {
+        wb.addStep("test_slow");
+        auto job = wb.createRun();
+        REQUIRE(job);
+        std::thread worker([&] { job->execute(); });
+        const std::string message = errorOf(json{{"step", step + 1}, {"preset", "Nuclei"}});
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("run is in progress"));
+        CHECK_THAT(message, !Catch::Matchers::ContainsSubstring("no preset"));
+        job->cancel();
+        worker.join();
+    }
+}
+
 TEST_CASE("ToolApi drives the workbench through JSON", "[app][tools]") {
     registerTestOps();
     Scratch scratch;
@@ -1508,8 +1546,13 @@ TEST_CASE("Applying a preset is an ordinary undoable parameter change", "[app][w
         CHECK_FALSE(wb.canEdit());
         std::thread worker([&] { job->execute(); });
         const ParamSet held = wb.pipeline().at(step).params;
+        const std::size_t lines = wb.log().size();
         CHECK_FALSE(wb.applyPreset(step, "Nuclei"));
         CHECK(wb.pipeline().at(step).params == held);
+        // and it says why, as every other refused edit does, so a false that
+        // means "busy" is not mistaken for one that means "no such preset"
+        CHECK(wb.log().size() > lines);
+        CHECK(logContains(wb, "while a run is in progress"));
         job->cancel();
         worker.join();
     }

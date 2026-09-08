@@ -261,7 +261,9 @@ namespace sirius::app {
         void setStepEnabled(int index, bool on);
         // Write a named preset of the step's operation into it: an ordinary
         // undoable parameter change, so everything stays editable afterwards.
-        // Returns false when the step or the preset does not exist.
+        // False when the step or the preset does not exist, and also when a
+        // run is in progress -- which is logged, as every other refused edit
+        // is. A caller that needs to tell those apart asks canEdit() first.
         bool applyPreset(int index, const std::string& presetName);
 
         void setStepParams(int index, const ParamSet& params, const std::string& label = {},

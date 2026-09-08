@@ -621,9 +621,11 @@ namespace sirius::app {
             if (p.name == presetName) preset = &p;
         if (preset == nullptr) return false;
         // setStepParams refuses while a run is in progress, and silently: a
-        // preset that reports success there would leave the caller with an
-        // undo entry for a change that never happened.
-        if (!canEdit()) return false;
+        // preset that reported success there would leave the caller with an
+        // undo entry for a change that never happened. Going through
+        // refuseIfRunning puts the reason in the log, as every other refused
+        // edit does.
+        if (refuseIfRunning("apply a preset")) return false;
         ParamSet params = step.params;
         for (const auto& [key, value] : preset->values) params.set(key, value);
         // the values are coerced against the specs the way any edit is
