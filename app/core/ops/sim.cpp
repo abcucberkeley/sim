@@ -161,7 +161,8 @@ namespace sirius::app {
                     doubleParam("nimm", "Immersion index", 1.515).range(1.0, 2.0, 0.001, 3),
                     doubleParam("wavelength_nm", "Emission λ", 510.0).range(300.0, 1000.0, 1.0, 0).withUnit("nm"),
                     doubleParam("linespacing_um", "Line spacing", 0.2).range(0.01, 5.0, 0.001, 4).withUnit("µm"),
-                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("°").withHelp("Where the search starts for each direction (Manual mode), in the same degrees the fit table\n                                  reports; the fit refines them from there"),
+                    doubleListParam("k0_angles", "Pattern angles", {}).withUnit("°").withHelp("Where the search starts for each direction (Manual mode), in the degrees the fit table reports; "
+                                                                                              "the fit refines them from there"),
                     doubleParam("k0_start_angle", "Start angle", 0.0).range(-180.0, 180.0, 1.0, 2).withUnit("°").withHelp("Angle of direction 0 (Estimate mode); the others follow at 180° / angles").asAdvanced(),
                     boolParam("suppress_zero_order", "Suppress zero-order", true)
                         .withHelp("Dampen the order-0 band where the side bands overlap it"),

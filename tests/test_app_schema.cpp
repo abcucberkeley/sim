@@ -67,3 +67,31 @@ TEST_CASE("operation schemas list every built-in kind with typed parameters", "[
         REQUIRE(f.good());
     }
 }
+
+TEST_CASE("no parameter label or help carries a line break or a run of spaces", "[app][schema]") {
+    // These strings go straight into a tooltip and into op_schema.json. A
+    // help text split across two source lines picks up the continuation's
+    // indentation as content unless the literals are simply adjacent, and
+    // the result is a newline and thirty spaces in the middle of a sentence
+    // -- which is exactly what happened to the SIM pattern-angle help. The
+    // compiler cannot see the difference, so the tests do.
+    registerBuiltinOperations();
+    const nlohmann::json schema = operationSchemas();
+    int checked = 0;
+    for (const nlohmann::json& op : schema.at("operations")) {
+        const std::string kind = op.value("kind", std::string());
+        for (const nlohmann::json& p : op.value("params", nlohmann::json::array())) {
+            const std::string key = p.value("key", std::string());
+            for (const char* field : {"label", "help", "unit"}) {
+                if (!p.contains(field) || !p[field].is_string()) continue;
+                const std::string text = p[field].get<std::string>();
+                INFO(kind << '.' << key << '.' << field << " = " << text);
+                CHECK(text.find('\n') == std::string::npos);
+                CHECK(text.find('\t') == std::string::npos);
+                CHECK(text.find("  ") == std::string::npos);
+                ++checked;
+            }
+        }
+    }
+    CHECK(checked > 100);   // the sweep actually looked at something
+}
