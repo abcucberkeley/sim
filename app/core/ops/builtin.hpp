@@ -104,6 +104,11 @@ namespace sirius::app {
         double threshold = 0.5;
         Index minVoxels = 0;
         double seedMinDistance = 5.0;                // voxels between watershed seeds
+        // "Distance maxima" (the peaks of the distance map, kept apart by
+        // seedMinDistance) or "H-maxima" (peaks that stand seedDepth above
+        // their surroundings, which does not split a lumpy object).
+        std::string seeds = "Distance maxima";
+        double seedDepth = 2.0;
         LabelFlagRules flags;
         std::string className = "object";
     };

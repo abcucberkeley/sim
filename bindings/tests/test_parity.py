@@ -90,6 +90,10 @@ TOLERANCES = {
     # computed, so these must agree bit for bit. Measured: 0.
     "croppad": (0.0, 0.0),
     "threshold": (0.0, 0.0),   # the step returns its input; the labels are the result (compared exactly below)
+    # Classical segmentation also returns its input untouched -- the labels
+    # carry the result and are compared exactly below, which is what makes
+    # this the strict test of the filters, the thresholds and the seeding.
+    "classic": (0.0, 0.0),
     # Both sides accumulate in float64 but in different orders -- the C++
     # folds (c, t, z) outermost and sums a plane sequentially, numpy sums
     # pairwise over the reduced axes -- so the float32 result may round

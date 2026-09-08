@@ -348,7 +348,10 @@ Max projection, Mean over time · Contrast (percentile window + gamma, live hist
 Flat-field · Bleach correction · Deskew + rotate · Crop / pad · Resample · Merge
 channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Segmentation (a TorchScript / ONNX model run tile-wise by the Python worker, labels by
 watershed or connected components; or a model family — Cellpose, micro-SAM — that
-returns labels itself) · Threshold · Label cleanup. Labels are painted,
+returns labels itself) · Classical segmentation (blob / tube enhancement, white
+top-hat, Gaussian, Otsu / multi-Otsu / percentile / manual / local-mean /
+local-contrast threshold, binary opening, hole filling, watershed on distance or
+h-maxima seeds) · Threshold · Label cleanup. Labels are painted,
 filled, merged, split and deleted in the viewer; every edit, parameter change and
 assistant action is one undo entry.
 

@@ -13,15 +13,18 @@ $$
 
 | Parameter | Explanation |
 |---|---|
+| **Enhance** <br> none · blobs · tubes | What to bring out before the threshold. *Blobs* is a difference of Gaussians, a band-pass that answers to round objects about *Feature σ* across and flattens anything broader, so nuclei survive a textured or uneven background. *Tubes* is Frangi vesselness: the Hessian's eigenvalues at several widths score how tube-like each pixel is, which keeps filaments continuous where an intensity cut breaks them into dashes. |
+| **Feature σ · σ max · Scales** <br> px | Blobs: the radius to respond to. Tubes: the smallest and largest width, and how many widths in between; the score is the best over the range. |
 | **Background radius** <br> px | White top-hat with a box of this radius: structures larger than the box are treated as background and removed. Use about the object size; 0 leaves the background alone. |
 | **Smoothing σ** <br> px | Gaussian blur before the threshold; suppresses noise that would otherwise fragment the mask. |
-| **Threshold** <br> Otsu · Manual · Percentile · Local mean | Otsu picks the cut that best separates two intensity classes; Percentile keeps the brightest fraction; Manual is a fixed value in the (smoothed) intensity units; Local mean compares each pixel with the mean of its window, which follows an uneven background. |
-| **Local window · ratio · offset** <br> local mean | Window side in pixels; foreground where value > ratio × local mean + offset. |
+| **Threshold** <br> Otsu · Multi-Otsu · Manual · Percentile · Local mean · Local contrast | Otsu picks the cut that best separates two intensity classes. *Multi-Otsu* fits three classes and keeps only the brightest, which drops a mid-grey halo the single cut swallows. Percentile keeps the brightest fraction; Manual is a fixed value in the (smoothed) intensity units. *Local mean* compares each pixel with the mean of its window. *Local contrast* puts the cut *k* local standard deviations above that mean, so it follows the background level and the local noise together and does not turn a flat region into speckle. |
+| **Local window · ratio · offset · contrast k** <br> local methods | Window side in pixels. Local mean: foreground where value > ratio × mean + offset. Local contrast: where value > mean + k × SD + offset. |
 | **Opening radius** <br> px | Binary opening (erode then dilate) drops specks and thin bridges narrower than the radius. |
 | **Fill holes** <br> on · off | Background enclosed by an object, per plane, becomes object: hollow nuclei stay one object. |
-| **Instances** <br> watershed · components | The distance watershed seeds on the maxima of the distance transform (at least *Seed distance* apart) and splits touching objects; connected components keeps every blob as one object. |
+| **Instances** <br> watershed · components | The distance watershed splits touching objects; connected components keeps every connected blob as one object. |
+| **Seeds** <br> distance maxima · h-maxima | What the watershed starts from. *Distance maxima* takes every peak of the distance map at least *Seed distance* apart, so a lumpy or elongated object is often cut into pieces. *H-maxima* keeps only the peaks that stand *Seed depth* above their surroundings, so one object stays one object. Raise the depth when an object is split, lower it when two are merged. |
 | **Min. voxels** | Objects smaller than this are dropped. |
 
 ## Note
 
-Start with Otsu, σ 1, opening 1 and the watershed; switch to Local mean when the illumination is uneven, or add a top-hat of about the object radius. For crowded or textured data a learned model (the Segmentation step with Cellpose) separates objects the classical route cannot.
+Start with Otsu, σ 1, opening 1 and the watershed on h-maxima seeds. When the illumination is uneven, switch the threshold to Local contrast or add a top-hat of about the object radius. When objects sit in texture, turn on the blob enhancement at their radius. When one object keeps being split, raise the seed depth. For crowded or low-contrast data a learned model (the Segmentation step with Cellpose) still separates objects the classical route cannot.

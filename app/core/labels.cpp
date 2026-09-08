@@ -1,6 +1,7 @@
 #include "core/labels.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -641,6 +642,118 @@ namespace sirius::app {
         const float far = static_cast<float>(std::max({z, y, x}));
         #pragma omp parallel for schedule(static)
         for (Index i = 0; i < n; ++i) out[i] = std::isinf(out[i]) ? far : std::sqrt(out[i]);
+    }
+
+    // Vincent's hybrid reconstruction: a raster and an anti-raster sweep, then
+    // a queue for the voxels the sweeps left unfinished. Linear in practice,
+    // unlike iterating geodesic dilations to stability.
+    void reconstructByDilation(float* marker, const float* mask, Index z, Index y, Index x) {
+        requireExtent(z, y, x, "reconstructByDilation");
+        const Index plane = y * x, n = z * plane;
+        for (Index i = 0; i < n; ++i) marker[i] = std::min(marker[i], mask[i]);
+        const Index step[3] = {plane, x, 1};
+        auto sweep = [&](bool forward) {
+            for (Index k = 0; k < n; ++k) {
+                const Index i = forward ? k : n - 1 - k;
+                const Index iz = i / plane, iy = (i % plane) / x, ix = i % x;
+                const Index at[3] = {iz, iy, ix};
+                const Index extent[3] = {z, y, x};
+                float v = marker[i];
+                for (int a = 0; a < 3; ++a) {
+                    const Index j = forward ? at[a] - 1 : at[a] + 1;
+                    if (j < 0 || j >= extent[a]) continue;
+                    v = std::max(v, marker[forward ? i - step[a] : i + step[a]]);
+                }
+                marker[i] = std::min(v, mask[i]);
+            }
+        };
+        sweep(true);
+        sweep(false);
+        // queue the voxels whose backward neighbours can still grow
+        std::deque<Index> queue;
+        for (Index i = 0; i < n; ++i) {
+            const Index iz = i / plane, iy = (i % plane) / x, ix = i % x;
+            const Index at[3] = {iz, iy, ix};
+            const Index extent[3] = {z, y, x};
+            for (int a = 0; a < 3; ++a) {
+                if (at[a] + 1 >= extent[a]) continue;
+                const Index j = i + step[a];
+                if (marker[j] < marker[i] && marker[j] < mask[j]) {
+                    queue.push_back(i);
+                    break;
+                }
+            }
+        }
+        while (!queue.empty()) {
+            const Index i = queue.front();
+            queue.pop_front();
+            const Index iz = i / plane, iy = (i % plane) / x, ix = i % x;
+            const Index at[3] = {iz, iy, ix};
+            const Index extent[3] = {z, y, x};
+            for (int a = 0; a < 3; ++a)
+                for (int d = -1; d <= 1; d += 2) {
+                    const Index j2 = at[a] + d;
+                    if (j2 < 0 || j2 >= extent[a]) continue;
+                    const Index j = i + d * step[a];
+                    if (marker[j] < marker[i] && mask[j] != marker[j]) {
+                        marker[j] = std::min(marker[i], mask[j]);
+                        queue.push_back(j);
+                    }
+                }
+        }
+    }
+
+    std::uint32_t hMaximaSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double h,
+                               std::uint32_t* out) {
+        requireExtent(z, y, x, "hMaximaSeeds");
+        const Index plane = y * x, n = z * plane;
+        std::fill(out, out + n, 0u);
+        const float depth = static_cast<float>(std::max(h, 1e-6));
+        // the h-maxima transform: reconstruct (values - h) under values, so
+        // every maximum shallower than h is filled in and only the deep ones
+        // remain as plateaus
+        std::vector<float> g(static_cast<std::size_t>(n));
+        for (Index i = 0; i < n; ++i) g[static_cast<std::size_t>(i)] = mask[i] ? values[i] - depth : 0.0f;
+        std::vector<float> under(static_cast<std::size_t>(n));
+        for (Index i = 0; i < n; ++i) under[static_cast<std::size_t>(i)] = mask[i] ? values[i] : 0.0f;
+        reconstructByDilation(g.data(), under.data(), z, y, x);
+        // regional maxima of g: plateaus of equal value with no higher neighbour
+        const Index step[3] = {plane, x, 1};
+        std::vector<std::uint8_t> seen(static_cast<std::size_t>(n), 0);
+        std::vector<Index> plateau, stack;
+        std::uint32_t count = 0;
+        for (Index start = 0; start < n; ++start) {
+            if (seen[static_cast<std::size_t>(start)] || !mask[start] || !(g[static_cast<std::size_t>(start)] > 0.0f)) continue;
+            const float level = g[static_cast<std::size_t>(start)];
+            plateau.clear();
+            stack.assign(1, start);
+            seen[static_cast<std::size_t>(start)] = 1;
+            bool maximal = true;
+            while (!stack.empty()) {
+                const Index i = stack.back();
+                stack.pop_back();
+                plateau.push_back(i);
+                const Index at[3] = {i / plane, (i % plane) / x, i % x};
+                const Index extent[3] = {z, y, x};
+                for (int a = 0; a < 3; ++a)
+                    for (int d = -1; d <= 1; d += 2) {
+                        const Index j2 = at[a] + d;
+                        if (j2 < 0 || j2 >= extent[a]) continue;
+                        const Index j = i + d * step[a];
+                        if (!mask[j]) continue;
+                        const float gv = g[static_cast<std::size_t>(j)];
+                        if (gv > level) maximal = false;
+                        else if (gv == level && !seen[static_cast<std::size_t>(j)]) {
+                            seen[static_cast<std::size_t>(j)] = 1;
+                            stack.push_back(j);
+                        }
+                    }
+            }
+            if (!maximal) continue;
+            ++count;
+            for (Index i : plateau) out[i] = count;
+        }
+        return count;
     }
 
     std::uint32_t distanceSeeds(const std::uint8_t* mask, Index z, Index y, Index x, double minDistance,

@@ -830,6 +830,136 @@ TEST_CASE("Classical segmentation finds blobs with global and local thresholds",
     }
 }
 
+TEST_CASE("Classical segmentation: enhancement, local thresholds and seeding", "[app][ops][classic]") {
+    const Dims5 dims{1, 1, 7, 48, 48};
+    const DatasetMeta meta = metaFor(dims);
+    const Operation& op = requireOperation("classic");
+    Progress prog;
+
+    SECTION("the local contrast cut follows a background the global one cannot") {
+        // three blobs on a strong ramp: a single global threshold either keeps
+        // the bright end's background or loses the dim end's objects
+        auto data = blobArray(dims, 3, 4.0);
+        for (Index z = 0; z < dims.z; ++z)
+            for (Index y = 0; y < dims.y; ++y)
+                for (Index x = 0; x < dims.x; ++x) data->at(0, 0, z, y, x) += 40.0f * static_cast<float>(y);
+        ParamSet p = op.defaults();
+        p.set("sigma", 0.0);
+        p.set("opening", std::int64_t{0});
+        p.set("min_voxels", std::int64_t{5});
+        p.set("post", std::string("Connected components"));
+        p.set("method", std::string("Local contrast"));
+        p.set("window", std::int64_t{31});
+        p.set("contrast_k", 1.5);
+        const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(r.labels);
+        CHECK(r.note.find("SD") != std::string::npos);
+        // blobArray puts one blob at each third of y, all at the middle of x
+        const Index cx = dims.x / 2, cz = dims.z / 2;
+        const std::uint32_t a = r.labels->at(0, cz, 8, cx);
+        const std::uint32_t b = r.labels->at(0, cz, 24, cx);
+        const std::uint32_t c = r.labels->at(0, cz, 40, cx);
+        CHECK(a != 0);
+        CHECK(b != 0);
+        CHECK(c != 0);
+        CHECK(a != b);
+        CHECK(b != c);
+        CHECK(r.labels->at(0, cz, 8, 2) == 0);    // the ramp itself stays background
+        CHECK(r.labels->at(0, cz, 40, 2) == 0);
+        // one global cut cannot do that: the dim end's blob sits below the
+        // bright end's background
+        ParamSet global = p;
+        global.set("method", std::string("Otsu"));
+        const StepOutput one = op.run(inputOf(data, meta), global, prog.ctx);
+        REQUIRE(one.labels);
+        const bool dimFound = one.labels->at(0, cz, 8, cx) != 0;
+        const bool brightBackground = one.labels->at(0, cz, 40, 2) != 0;
+        CHECK((!dimFound || brightBackground));
+    }
+
+    SECTION("Multi-Otsu keeps only the brightest class") {
+        // background 0, a mid-grey halo and bright cores: the upper of the two
+        // cuts must land above the halo
+        auto data = std::make_shared<Array5>(Array5::zeros(dims));
+        for (Index z = 2; z < 5; ++z)
+            for (Index y = 8; y < 40; ++y)
+                for (Index x = 8; x < 40; ++x) data->at(0, 0, z, y, x) = 400.0f;   // halo
+        for (Index z = 3; z < 4; ++z)
+            for (Index y = 20; y < 26; ++y)
+                for (Index x = 20; x < 26; ++x) data->at(0, 0, z, y, x) = 4000.0f;  // core
+        ParamSet p = op.defaults();
+        p.set("sigma", 0.0);
+        p.set("opening", std::int64_t{0});
+        p.set("min_voxels", std::int64_t{2});
+        p.set("post", std::string("Connected components"));
+        p.set("method", std::string("Multi-Otsu"));
+        const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(r.labels);
+        CHECK(r.labels->stats().size() == 1);
+        CHECK(r.labels->at(0, 3, 22, 22) != 0);   // the core is an object
+        CHECK(r.labels->at(0, 3, 10, 10) == 0);   // the halo is not
+    }
+
+    SECTION("blob enhancement rejects a wide background structure") {
+        // one small blob plus a broad bright plateau: the difference of
+        // Gaussians answers to the blob and flattens the plateau
+        auto data = std::make_shared<Array5>(Array5::zeros(dims));
+        for (Index z = 0; z < dims.z; ++z)
+            for (Index y = 4; y < 44; ++y)
+                for (Index x = 4; x < 24; ++x) data->at(0, 0, z, y, x) = 1500.0f;   // plateau
+        for (Index z = 2; z < 5; ++z)
+            for (Index y = 32; y < 38; ++y)
+                for (Index x = 32; x < 38; ++x) data->at(0, 0, z, y, x) = 3000.0f;  // blob
+        ParamSet p = op.defaults();
+        p.set("sigma", 0.0);
+        p.set("opening", std::int64_t{0});
+        p.set("min_voxels", std::int64_t{2});
+        p.set("post", std::string("Connected components"));
+        p.set("method", std::string("Otsu"));
+        p.set("fill_holes", false);   // the band-pass answers at the edges; filling would close them
+        const StepOutput plain = op.run(inputOf(data, meta), p, prog.ctx);
+        p.set("enhance", std::string("Blobs (DoG)"));
+        p.set("enhance_sigma", 1.0);
+        const StepOutput r = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(r.labels);
+        REQUIRE(plain.labels);
+        CHECK(plain.labels->at(0, 3, 20, 14) != 0);   // without it the plateau is an object
+        CHECK(r.labels->at(0, 3, 35, 35) != 0);       // the blob survives the band-pass
+        CHECK(r.labels->at(0, 3, 20, 14) == 0);       // its flat interior does not
+    }
+
+    SECTION("h-maxima seeding does not split one waisted object") {
+        // a capsule: two spheres overlapping enough to be one object
+        auto data = std::make_shared<Array5>(Array5::zeros(dims));
+        auto sphere = [&](double cy, double cx, double r) {
+            for (Index z = 0; z < dims.z; ++z)
+                for (Index y = 0; y < dims.y; ++y)
+                    for (Index x = 0; x < dims.x; ++x) {
+                        const double d2 = (z - 3.0) * (z - 3.0) + (y - cy) * (y - cy) + (x - cx) * (x - cx);
+                        if (d2 <= r * r) data->at(0, 0, z, y, x) = 3000.0f;
+                    }
+        };
+        sphere(24, 20, 7.0);
+        sphere(24, 27, 7.0);
+        ParamSet p = op.defaults();
+        p.set("sigma", 0.0);
+        p.set("opening", std::int64_t{0});
+        p.set("min_voxels", std::int64_t{5});
+        p.set("method", std::string("Manual"));
+        p.set("value", 1500.0);
+        p.set("post", std::string("Watershed (distance)"));
+        p.set("seeds", std::string("H-maxima"));
+        p.set("seed_depth", 2.5);
+        const StepOutput whole = op.run(inputOf(data, meta), p, prog.ctx);
+        REQUIRE(whole.labels);
+        CHECK(whole.labels->stats().size() == 1);
+        // a shallow depth lets every bump seed again
+        p.set("seed_depth", 0.2);
+        const StepOutput split = op.run(inputOf(data, meta), p, prog.ctx);
+        CHECK(split.labels->stats().size() >= whole.labels->stats().size());
+    }
+}
+
 namespace {
     // A worker that answers hello / model_info / run(torch_segment) with a
     // probability map thresholding the input at 500 (plus a flat boundary

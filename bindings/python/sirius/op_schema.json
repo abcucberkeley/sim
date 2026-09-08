@@ -1601,6 +1601,55 @@
         },
         {
           "advanced": false,
+          "choices": [
+            "None",
+            "Blobs (DoG)",
+            "Tubes (Frangi)"
+          ],
+          "default": "None",
+          "help": "What to bring out before the threshold: round objects of one size, or filaments",
+          "key": "enhance",
+          "label": "Enhance",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
+          "advanced": false,
+          "default": 2.0,
+          "help": "Blobs: the radius they respond to. Tubes: the smallest tube width",
+          "key": "enhance_sigma",
+          "label": "Feature σ",
+          "max": 100.0,
+          "min": 0.3,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": 6.0,
+          "help": "Tubes: the largest width; the response is the best over the range",
+          "key": "enhance_sigma_max",
+          "label": "Feature σ max",
+          "max": 100.0,
+          "min": 0.3,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": 4,
+          "help": "Tubes: how many widths between the two σ",
+          "key": "enhance_scales",
+          "label": "Scales",
+          "max": 16.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
+        },
+        {
+          "advanced": false,
           "default": 0,
           "help": "White top-hat: removes background structures larger than this radius (0 = off)",
           "key": "tophat",
@@ -1627,9 +1676,11 @@
           "advanced": false,
           "choices": [
             "Otsu",
+            "Multi-Otsu",
             "Manual",
             "Percentile",
-            "Local mean"
+            "Local mean",
+            "Local contrast"
           ],
           "default": "Otsu",
           "key": "method",
@@ -1694,6 +1745,17 @@
         },
         {
           "advanced": false,
+          "default": 1.5,
+          "help": "Local contrast: the cut sits k local standard deviations above the local mean, so it follows both the background level and the local noise",
+          "key": "contrast_k",
+          "label": "Contrast k",
+          "max": 10.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
           "default": 1,
           "help": "Binary opening drops specks and necks thinner than this (0 = off)",
           "key": "opening",
@@ -1726,13 +1788,38 @@
           "type": "choice"
         },
         {
+          "advanced": false,
+          "choices": [
+            "Distance maxima",
+            "H-maxima"
+          ],
+          "default": "H-maxima",
+          "help": "What splits touching objects: the peaks of the distance map, or only the peaks that stand clear of their surroundings (fewer false splits)",
+          "key": "seeds",
+          "label": "Seeds",
+          "read_only": false,
+          "type": "choice"
+        },
+        {
           "advanced": true,
           "default": 8.0,
-          "help": "Watershed: minimum distance between the seeds that split touching objects",
+          "help": "Distance maxima: minimum distance between seeds",
           "key": "seed_distance",
           "label": "Seed distance",
           "max": 200.0,
           "min": 1.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 2.0,
+          "help": "H-maxima: how far a peak must stand above its surroundings to be its own object; raise it when one object is split, lower it when two are merged",
+          "key": "seed_depth",
+          "label": "Seed depth",
+          "max": 100.0,
+          "min": 0.1,
           "read_only": false,
           "type": "double",
           "unit": "px"

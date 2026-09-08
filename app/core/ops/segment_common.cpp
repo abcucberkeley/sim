@@ -24,7 +24,11 @@ namespace sirius::app {
             count = std::any_of(mask.begin(), mask.end(), [](std::uint8_t m) { return m != 0; }) ? 1 : 0;
         } else if (options.post.rfind("Watershed", 0) == 0) {
             std::fill(out, out + n, 0u);
-            const std::uint32_t seeds = distanceSeeds(mask.data(), z, y, x, options.seedMinDistance, out);
+            std::vector<float> distance(static_cast<std::size_t>(n));
+            distanceTransform(mask.data(), z, y, x, distance.data());
+            const std::uint32_t seeds = options.seeds == "H-maxima"
+                                            ? hMaximaSeeds(distance.data(), mask.data(), z, y, x, options.seedDepth, out)
+                                            : distanceSeeds(mask.data(), z, y, x, options.seedMinDistance, out);
             if (seeds == 0) {
                 count = connectedComponents(mask.data(), z, y, x, out);
             } else {
@@ -33,8 +37,7 @@ namespace sirius::app {
                     std::copy_n(boundary, n, landscape.data());
                 } else {
                     // classic distance watershed: ridges are far from the object centres
-                    distanceTransform(mask.data(), z, y, x, landscape.data());
-                    for (float& v : landscape) v = -v;
+                    for (Index i = 0; i < n; ++i) landscape[static_cast<std::size_t>(i)] = -distance[static_cast<std::size_t>(i)];
                 }
                 watershed(landscape.data(), mask.data(), z, y, x, out);
                 count = seeds;

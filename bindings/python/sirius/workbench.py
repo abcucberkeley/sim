@@ -1168,7 +1168,8 @@ def _remove_small(labels: np.ndarray, min_voxels: int) -> np.ndarray:
 
 
 def _labels_from_probabilities(fg: np.ndarray, boundary: Optional[np.ndarray], threshold: float, post: str,
-                               min_voxels: int, seed_distance: float) -> np.ndarray:
+                               min_voxels: int, seed_distance: float, seeds: str = "Distance maxima",
+                               seed_depth: float = 2.0) -> np.ndarray:
     """``labelsFromProbabilities``: fg > threshold -> instances by connected
     components, a seeded watershed (on the boundary map, or the negated
     distance transform) or none (one semantic label), then small-object removal."""
@@ -1176,12 +1177,16 @@ def _labels_from_probabilities(fg: np.ndarray, boundary: Optional[np.ndarray], t
     if post.startswith("None"):
         labels = mask.astype(np.uint32)
     elif post.startswith("Watershed"):
-        seeds, n = _distance_seeds(mask, seed_distance)
+        distance = _distance_transform(mask)
+        if seeds == "H-maxima":
+            marks, n = _h_maxima_seeds(distance, mask, seed_depth)
+        else:
+            marks, n = _distance_seeds(mask, seed_distance)
         if n == 0:
             labels = _label_components(mask)
         else:
-            landscape = boundary if boundary is not None else -_distance_transform(mask)
-            labels = _watershed(landscape, mask, seeds)
+            landscape = boundary if boundary is not None else -distance
+            labels = _watershed(landscape, mask, marks)
     else:
         labels = _label_components(mask)
     return _remove_small(labels, min_voxels)
@@ -1242,9 +1247,50 @@ _THRESHOLD = StepSpec(
     translate=_threshold_legacy)
 
 
+def _multi_otsu_upper(values: np.ndarray) -> float:
+    """``multiOtsuThresholds`` (classic.cpp): the upper of two Otsu cuts over a
+    128-bin histogram, which keeps only the brightest of three classes."""
+    v = np.asarray(values, dtype=np.float32).reshape(-1)
+    v = v[~np.isnan(v)]
+    if v.size == 0:
+        return 0.0
+    lo, hi = float(v.min()), float(v.max())
+    if not hi > lo:
+        return lo
+    bins = 128
+    counts, _ = np.histogram(v, bins=bins, range=(lo, hi))
+    w = np.concatenate([[0.0], np.cumsum(counts.astype(np.float64))])
+    m = np.concatenate([[0.0], np.cumsum(np.arange(bins) * counts.astype(np.float64))])
+    total, mean = w[bins], m[bins]
+    if not total > 0.0:
+        return hi
+    best, best_b = -1.0, 2 * bins // 3
+    grand = mean / total
+    for a_ in range(1, bins - 1):
+        w0 = w[a_]
+        if w0 <= 0.0:
+            continue
+        m0 = m[a_] / w0
+        w1 = w[a_ + 1:bins] - w0
+        w2 = total - w[a_ + 1:bins]
+        ok = (w1 > 0.0) & (w2 > 0.0)
+        if not ok.any():
+            continue
+        m1 = np.where(ok, (m[a_ + 1:bins] - m[a_]) / np.where(ok, w1, 1.0), 0.0)
+        m2 = np.where(ok, (mean - m[a_ + 1:bins]) / np.where(ok, w2, 1.0), 0.0)
+        between = w0 * (m0 - grand) ** 2 + w1 * (m1 - grand) ** 2 + w2 * (m2 - grand) ** 2
+        between = np.where(ok, between, -1.0)
+        k = int(np.argmax(between))
+        if between[k] > best:
+            best, best_b = float(between[k]), a_ + 1 + k
+    return lo + (hi - lo) * (best_b + 1) / bins
+
+
 def _global_cut(v: np.ndarray, method: str, params: Dict[str, Any]) -> float:
     if method == "Otsu":
         return _otsu_threshold(v)
+    if method == "Multi-Otsu":
+        return _multi_otsu_upper(v)
     if method == "Percentile":
         return _percentiles(v, 0.0, _float(params, "percentile", 90.0))[1]
     return _float(params, "value", 0.5)
@@ -1290,6 +1336,99 @@ def _local_mean_plane(pl: np.ndarray, r: int) -> np.ndarray:
     return (s / count).astype(np.float32)
 
 
+def _local_stats_plane(pl: np.ndarray, r: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Local mean and standard deviation over a (2r+1)² window clamped to the
+    plane -- ``localStatsPlane`` in classic.cpp."""
+    mean = _local_mean_plane(pl, r)
+    mean_sq = _local_mean_plane(np.asarray(pl, dtype=np.float64) ** 2, r)
+    return mean, np.sqrt(np.maximum(0.0, mean_sq - mean ** 2))
+
+
+def _dog_plane(pl: np.ndarray, sigma: float, ratio: float = 1.6) -> np.ndarray:
+    """``dogPlane``: difference of two Gaussians, clamped at zero -- a band-pass
+    that answers to blobs about `sigma` across."""
+    ndimage = _ndimage()
+    small = ndimage.gaussian_filter(pl.astype(np.float32), sigma=sigma, mode="mirror",
+                                    truncate=math.ceil(3.0 * sigma) / sigma if sigma > 0 else 4.0)
+    big_sigma = sigma * max(1.1, ratio)
+    big = ndimage.gaussian_filter(pl.astype(np.float32), sigma=big_sigma, mode="mirror",
+                                  truncate=math.ceil(3.0 * big_sigma) / big_sigma if big_sigma > 0 else 4.0)
+    return np.maximum(0.0, small - big).astype(np.float32)
+
+
+def _frangi_plane(pl: np.ndarray, sigma_min: float, sigma_max: float, steps: int) -> np.ndarray:
+    """``frangiPlane``: Frangi vesselness in the plane, the best response over
+    `steps` widths between the two sigmas."""
+    ndimage = _ndimage()
+    out = np.zeros(pl.shape, dtype=np.float32)
+    steps = max(1, int(steps))
+    for k in range(steps):
+        sigma = sigma_min if steps == 1 else sigma_min + (sigma_max - sigma_min) * k / (steps - 1)
+        trunc = math.ceil(3.0 * sigma) / sigma if sigma > 0 else 4.0
+        w = ndimage.gaussian_filter(pl.astype(np.float64), sigma=sigma, mode="mirror", truncate=trunc)
+        norm = sigma * sigma
+        # clamped neighbours, exactly as the C++ indexes them: a wrapped shift
+        # would differ along every border
+        yy, xx = np.arange(w.shape[0]), np.arange(w.shape[1])
+        ym, yp = np.maximum(yy - 1, 0), np.minimum(yy + 1, w.shape[0] - 1)
+        xm, xp = np.maximum(xx - 1, 0), np.minimum(xx + 1, w.shape[1] - 1)
+        dxx = norm * (w[:, xp] + w[:, xm] - 2.0 * w)
+        dyy = norm * (w[yp, :] + w[ym, :] - 2.0 * w)
+        dxy = norm * 0.25 * (w[np.ix_(yp, xp)] + w[np.ix_(ym, xm)] - w[np.ix_(yp, xm)] - w[np.ix_(ym, xp)])
+        t = np.sqrt((dxx - dyy) ** 2 + 4.0 * dxy ** 2)
+        l1, l2 = 0.5 * (dxx + dyy + t), 0.5 * (dxx + dyy - t)
+        swap = np.abs(l1) > np.abs(l2)
+        l1, l2 = np.where(swap, l2, l1), np.where(swap, l1, l2)
+        bright = l2 < 0.0
+        rb = np.abs(l1) / np.maximum(np.abs(l2), 1e-12)
+        s_mag = np.sqrt(l1 ** 2 + l2 ** 2)
+        max_s = float(s_mag[bright].max()) if bright.any() else 0.0
+        c2 = 2.0 * max(1e-12, 0.5 * max_s) ** 2
+        v = np.where(bright, np.exp(-rb ** 2 / 0.5) * (1.0 - np.exp(-s_mag ** 2 / c2)), 0.0)
+        out = np.maximum(out, v.astype(np.float32))
+    return out
+
+
+def _h_maxima_seeds(values: np.ndarray, mask: np.ndarray, h: float) -> Tuple[np.ndarray, int]:
+    """``hMaximaSeeds``: the regional maxima of the h-maxima transform, so a
+    peak must stand `h` above its surroundings to seed its own object."""
+    ndimage = _ndimage()
+    mask = np.asarray(mask, dtype=bool)
+    values = np.asarray(values, dtype=np.float32)
+    under = np.where(mask, values, 0.0).astype(np.float32)
+    marker = np.where(mask, values - max(float(h), 1e-6), 0.0).astype(np.float32)
+    g = _reconstruct_by_dilation(marker, under)
+    # Regional maxima of g inside the mask: a whole plateau of equal value is
+    # maximal only when nothing next to it is higher, so non-maximality has to
+    # spread across the plateau. Testing each voxel on its own would keep the
+    # inside of a plateau whose rim touches something higher.
+    structure = ndimage.generate_binary_structure(g.ndim, 1)
+    inside = mask & (g > 0.0)
+    masked = np.where(mask, g, -np.inf)
+    nonmax = inside & (ndimage.grey_dilation(masked, footprint=structure, mode="constant", cval=-np.inf) > g)
+    while True:
+        reach = ndimage.grey_dilation(np.where(nonmax, g, -np.inf), footprint=structure, mode="constant", cval=-np.inf)
+        grown = inside & ~nonmax & (reach == g)
+        if not grown.any():
+            break
+        nonmax |= grown
+    seeds, count = ndimage.label(inside & ~nonmax, structure=structure)
+    return seeds.astype(np.uint32), int(count)
+
+
+def _reconstruct_by_dilation(marker: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """``reconstructByDilation``: geodesic dilation of `marker` under `mask` to
+    stability, 6-connected."""
+    ndimage = _ndimage()
+    structure = ndimage.generate_binary_structure(marker.ndim, 1)
+    out = np.minimum(marker, mask).astype(np.float32)
+    while True:
+        grown = np.minimum(ndimage.grey_dilation(out, footprint=structure, mode="nearest"), mask)
+        if np.array_equal(grown, out):
+            return out
+        out = grown
+
+
 def _filter_plane(pl: np.ndarray, tophat: int, sigma: float) -> np.ndarray:
     """White top-hat with a (2r+1)² box (borders clamped), then a Gaussian
     truncated at ceil(3 sigma) with mirrored borders -- classic.cpp's steps."""
@@ -1317,47 +1456,77 @@ def _clean_plane(m: np.ndarray, opening: int, fill_holes: bool) -> np.ndarray:
 
 _CLASSIC = StepSpec(
     "classic",
-    {"channel": 0, "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
-     "local_ratio": 1.1, "local_offset": 0.0, "opening": 1, "fill_holes": True, "post": "Watershed (distance)",
-     "seed_distance": 8.0, "min_voxels": 20, "class_name": "object"},
-    choices={"method": ("Otsu", "Manual", "Percentile", "Local mean"),
+    {"channel": 0, "enhance": "None", "enhance_sigma": 2.0, "enhance_sigma_max": 6.0, "enhance_scales": 4,
+     "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
+     "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5, "opening": 1, "fill_holes": True,
+     "post": "Watershed (distance)", "seeds": "H-maxima", "seed_distance": 8.0, "seed_depth": 2.0,
+     "min_voxels": 20, "class_name": "object"},
+    choices={"method": ("Otsu", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"),
+             "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)"),
+             "seeds": ("Distance maxima", "H-maxima"),
              "post": ("Watershed (distance)", "Connected components")},
     aliases={"input_channel": "channel", "minVoxels": "min_voxels"})
 
 
 @_step(_CLASSIC)
 def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) -> StepResult:
-    """Classical segmentation (classic.cpp): per plane a white top-hat
-    (tophat radius), Gaussian (sigma), a global (Otsu | Manual | Percentile)
-    or Local mean (window, local_ratio, local_offset) threshold, binary opening
-    and hole filling; then 3D instances (post, seed_distance, min_voxels)."""
+    """Classical segmentation (classic.cpp): per plane an optional enhancement
+    (enhance, enhance_sigma, enhance_sigma_max, enhance_scales), a white top-hat
+    (tophat radius), Gaussian (sigma), a global (Otsu | Multi-Otsu | Manual |
+    Percentile) or local (Local mean: window, local_ratio, local_offset; Local
+    contrast: window, contrast_k) threshold, binary opening and hole filling;
+    then 3D instances (post, seeds, seed_distance, seed_depth, min_voxels)."""
     c = _channel_index(params, "channel", meta, a.shape[0])
+    enhance = _choice(params.get("enhance"), _CLASSIC.choices["enhance"], "None")
+    enhance_sigma = _float(params, "enhance_sigma", 2.0)
+    enhance_sigma_max = _float(params, "enhance_sigma_max", 6.0)
+    enhance_scales = _int(params, "enhance_scales", 4)
     tophat = _int(params, "tophat", 0)
     sigma = _float(params, "sigma", 1.0)
     method = _choice(params.get("method"), _CLASSIC.choices["method"], "Otsu")
     window = max(1, _int(params, "window", 51) // 2)
     ratio, offset = _float(params, "local_ratio", 1.1), _float(params, "local_offset", 0.0)
+    contrast_k = _float(params, "contrast_k", 1.5)
     opening = _int(params, "opening", 1)
     fill_holes = _bool(params, "fill_holes", True)
     post = _choice(params.get("post"), _CLASSIC.choices["post"], "Watershed (distance)")
     min_voxels = _int(params, "min_voxels", 20)
+    seeds = _choice(params.get("seeds"), _CLASSIC.choices["seeds"], "H-maxima")
     seed_distance = _float(params, "seed_distance", 8.0)
+    seed_depth = _float(params, "seed_depth", 2.0)
     labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
     cuts: List[Any] = []
     total = 0
     foreground = 0.0
     for t in range(a.shape[1]):
-        work = np.stack([_filter_plane(a[c, t, z], tophat, sigma) for z in range(a.shape[2])])
-        if method == "Local mean":
-            mask = np.stack([(pl > ratio * _local_mean_plane(pl, window) + offset) for pl in work]).astype(np.uint8)
-            cuts.append(f"local mean × {ratio:g}")
+        planes = []
+        for z in range(a.shape[2]):
+            pl = a[c, t, z]
+            if enhance == "Blobs (DoG)":
+                pl = _dog_plane(pl, enhance_sigma)
+            elif enhance == "Tubes (Frangi)":
+                pl = _frangi_plane(pl, enhance_sigma, max(enhance_sigma, enhance_sigma_max), enhance_scales)
+            planes.append(_filter_plane(pl, tophat, sigma))
+        work = np.stack(planes)
+        if method in ("Local mean", "Local contrast"):
+            by_contrast = method == "Local contrast"
+            rows = []
+            for pl in work:
+                if by_contrast:
+                    mean, sd = _local_stats_plane(pl, window)
+                    rows.append(pl > mean + contrast_k * sd + offset)
+                else:
+                    rows.append(pl > ratio * _local_mean_plane(pl, window) + offset)
+            mask = np.stack(rows).astype(np.uint8)
+            cuts.append(f"local mean + {contrast_k:g} SD" if by_contrast else f"local mean × {ratio:g}")
         else:
             cut = _global_cut(work, method, params)
             mask = (work > cut).astype(np.uint8)
             cuts.append(cut)
         mask = np.stack([_clean_plane(m, opening, fill_holes) for m in mask])
         foreground += float(mask.mean()) / a.shape[1]
-        labels[t] = _labels_from_probabilities(mask.astype(np.float32), None, 0.5, post, min_voxels, seed_distance)
+        labels[t] = _labels_from_probabilities(mask.astype(np.float32), None, 0.5, post, min_voxels, seed_distance,
+                                               seeds, seed_depth)
         total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,

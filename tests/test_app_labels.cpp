@@ -138,6 +138,72 @@ TEST_CASE("watershed splits two touching spheres from distance seeds", "[app][la
     CHECK(labels[static_cast<std::size_t>(m.at(4, 7, 15))] == labels[static_cast<std::size_t>(m.at(4, 7, 17))]);
 }
 
+TEST_CASE("reconstructByDilation grows the marker up to the mask", "[app][labels]") {
+    // one ridge the marker reaches and one it does not: reconstruction fills
+    // the first to the mask's height and leaves the second alone
+    const Index z = 1, y = 1, x = 9;
+    std::vector<float> mask{1.f, 5.f, 1.f, 0.f, 1.f, 7.f, 1.f, 0.f, 1.f};
+    std::vector<float> marker{0.f, 3.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+    reconstructByDilation(marker.data(), mask.data(), z, y, x);
+    CHECK(marker[1] == 3.0f);            // capped by the marker, not the mask
+    CHECK(marker[0] == 1.0f);            // spread sideways, capped by the mask
+    CHECK(marker[2] == 1.0f);
+    CHECK(marker[3] == 0.0f);            // the zero valley blocks it
+    CHECK(marker[5] == 0.0f);            // the far ridge was never seeded
+    // a marker equal to the mask is a fixed point
+    std::vector<float> same = mask;
+    reconstructByDilation(same.data(), mask.data(), z, y, x);
+    CHECK(same == mask);
+}
+
+TEST_CASE("hMaximaSeeds keeps deep peaks and swallows shallow ones", "[app][labels]") {
+    // a ridge with a deep peak (10) and a shallow shoulder (6) on one object
+    const Index z = 1, y = 1, x = 11;
+    const std::vector<float> values{0.f, 4.f, 10.f, 4.f, 5.f, 6.f, 5.f, 2.f, 9.f, 3.f, 0.f};
+    const std::vector<std::uint8_t> mask(static_cast<std::size_t>(x), 1);
+    std::vector<std::uint32_t> out(static_cast<std::size_t>(x));
+
+    // a small depth keeps every local maximum apart
+    const std::uint32_t shallow = hMaximaSeeds(values.data(), mask.data(), z, y, x, 0.5, out.data());
+    CHECK(shallow == 3);
+
+    // deeper than the shoulder stands above its surroundings: it merges away
+    const std::uint32_t deep = hMaximaSeeds(values.data(), mask.data(), z, y, x, 2.0, out.data());
+    CHECK(deep == 2);
+    CHECK(out[2] != 0);                  // the 10 peak survives
+    CHECK(out[8] != 0);                  // so does the 9
+    CHECK(out[5] == 0);                  // the shoulder does not
+
+    // outside the mask nothing is seeded
+    std::vector<std::uint8_t> none(static_cast<std::size_t>(x), 0);
+    CHECK(hMaximaSeeds(values.data(), none.data(), z, y, x, 1.0, out.data()) == 0);
+}
+
+TEST_CASE("h-maxima seeds keep a lumpy object whole where distance maxima split it", "[app][labels]") {
+    // a capsule: two spheres so close they are one object, with a waist too
+    // shallow to be a real boundary
+    const Index z = 9, y = 17, x = 29;
+    const Index n = z * y * x;
+    std::vector<std::uint8_t> mask(static_cast<std::size_t>(n), 0);
+    auto sphere = [&](double cz, double cy, double cx, double r) {
+        for (Index iz = 0; iz < z; ++iz)
+            for (Index iy = 0; iy < y; ++iy)
+                for (Index ix = 0; ix < x; ++ix) {
+                    const double d2 = (iz - cz) * (iz - cz) + (iy - cy) * (iy - cy) + (ix - cx) * (ix - cx);
+                    if (d2 <= r * r) mask[static_cast<std::size_t>((iz * y + iy) * x + ix)] = 1;
+                }
+    };
+    sphere(4, 8, 11, 6.0);
+    sphere(4, 8, 17, 6.0);   // centres 6 apart, radii 6: a barely waisted capsule
+    std::vector<float> dist(static_cast<std::size_t>(n));
+    distanceTransform(mask.data(), z, y, x, dist.data());
+    std::vector<std::uint32_t> seeds(static_cast<std::size_t>(n));
+    const std::uint32_t byDistance = distanceSeeds(mask.data(), z, y, x, 3.0, seeds.data());
+    const std::uint32_t byDepth = hMaximaSeeds(dist.data(), mask.data(), z, y, x, 2.0, seeds.data());
+    CHECK(byDistance >= 2);   // every peak of the distance map becomes a seed
+    CHECK(byDepth == 1);      // the waist is too shallow to be its own object
+}
+
 TEST_CASE("LabelVolume edits produce reversible diffs", "[app][labels]") {
     LabelVolume vol(2, 6, 12, 12);
     CHECK(vol.maxLabel() == 0);

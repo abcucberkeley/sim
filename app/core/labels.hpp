@@ -166,6 +166,19 @@ namespace sirius::app {
     // Euclidean distance transform of mask > 0 (distance to the nearest 0), 3D.
     void distanceTransform(const std::uint8_t* mask, Index z, Index y, Index x, float* out);
 
+    // Morphological reconstruction of `marker` by dilation under `mask`
+    // (marker <= mask elementwise), 6-connected, in place on `marker`.
+    void reconstructByDilation(float* marker, const float* mask, Index z, Index y, Index x);
+
+    // Watershed seeds from the h-maxima of `values` inside mask > 0: the
+    // regional maxima that stand at least `h` above the surrounding
+    // landscape. A lumpy or elongated object whose distance map has several
+    // shallow bumps yields one seed instead of one per bump, which is the
+    // usual cause of over-segmentation. Returns the seed count; `out` gets
+    // 1..n at the seed voxels and 0 elsewhere.
+    std::uint32_t hMaximaSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double h,
+                               std::uint32_t* out);
+
     // Drop components smaller than minVoxels, relabel 1..n densely.
     std::uint32_t removeSmall(std::uint32_t* labels, Index n, Index minVoxels);
 

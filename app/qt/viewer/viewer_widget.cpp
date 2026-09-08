@@ -205,7 +205,7 @@ namespace sirius::app {
         std::set<std::tuple<const StepOutput*, Index, Index>> failedVolumes;
         int displayIndex = -1;
         QImage xyImg, xzImg, yzImg, mipImg, cmpLeftImg, cmpRightImg;
-        int xyFactor = 1, mipFactor = 1, cmpFactor = 1;
+        int xyFactor = 1, mipFactor = 1, cmpFactor = 1, cmpLeftFactor = 1;
         // Rendered voxel regions of the XY-like panes: the visible part plus
         // a margin. Panning out of them, or a factor change, re-renders.
         QRect xyRegion, cmpRegion, cmpLeftRegion;
@@ -1266,11 +1266,18 @@ namespace sirius::app {
             w.oy = ez <= xz->height() ? (xz->height() - ez) / 2.0 : xz->height() / 2.0 - (cz + 0.5) * w.zy;
             xz->setView(w);
         }
+        mip->setGrid(nx(), ny());   // as for xy: fitView needs the grid, not last frame's content
         mip->setView(mip->fitView(1.0, 1.0));
         {
             // Both compare panes show the same physical field: the raw pane
             // scales its (coarser or finer) voxels by the voxel-size ratio so
             // a 64-pixel raw frame overlays a 128-pixel reconstruction.
+            // Both panes need their grid before fitView: until content first
+            // arrives (or after the shape changes) cols/rows are stale and
+            // fitView falls back to 1 px per voxel, which laid the compare
+            // panes out at the wrong scale entirely.
+            cmpRight->setGrid(nx(), ny());
+            if (rawModel.valid()) cmpLeft->setGrid(rawModel.dims().x, rawModel.dims().y);
             const SlicePane::View f = cmpRight->fitView(1.0, 1.0);
             SlicePane::View w;
             w.zx = w.zy = f.zx * s.zoom;
@@ -1297,12 +1304,23 @@ namespace sirius::app {
             cmpFactor = cmpWant;
             dirty.cmp = true;
         }
+        // The raw pane has its own scale: after a step that changes the voxel
+        // size (SIM halves it) a raw voxel covers twice the screen, so it needs
+        // half the sub-sampling. Sharing the reconstruction's factor rendered
+        // it at half the resolution it deserved and magnified the result.
+        const int cmpLeftWant = std::max(1, static_cast<int>(std::floor(1.0 / std::max(cmpLeft->view().zx, 1e-6))));
+        if (cmpLeftWant != cmpLeftFactor) {
+            cmpLeftFactor = cmpLeftWant;
+            dirty.cmp = true;
+        }
         const int mipWant = std::max(1, static_cast<int>(std::floor(1.0 / std::max(mip->view().zx, 1e-6))));
         if (mipWant != mipFactor) {
             mipFactor = mipWant;
             dirty.mip = true;
         }
         xy->setSmooth(v.zx * xyFactor * xy->devicePixelRatioF() < 1.0);
+        cmpRight->setSmooth(cmpRight->view().zx * cmpFactor * cmpRight->devicePixelRatioF() < 1.0);
+        cmpLeft->setSmooth(cmpLeft->view().zx * cmpLeftFactor * cmpLeft->devicePixelRatioF() < 1.0);
         // the view moved out of what was rendered (pan / zoom / resize): render again
         if (!dirty.xy && xy->hasContent() && !xyRegion.isEmpty() && !xyRegion.contains(visibleVoxels(xy, nx(), ny()))) {
             dirty.xy = true;
@@ -1452,9 +1470,12 @@ namespace sirius::app {
                 if (rawModel.valid()) {
                     const Index rt = std::clamp<Index>(compareT(), 0, rawModel.dims().t - 1);
                     const Index rz = std::clamp<Index>(compareZ(), 0, rawModel.dims().z - 1);
-                    cmpLeftRegion = renderRegion(cmpLeft, cmpFactor, rawModel.dims().x, rawModel.dims().y);
-                    rawModel.renderXY(rt, rz, s, cmpFactor, cmpLeftImg, cmpLeftRegion);
-                    cmpLeft->setContent(cmpLeftImg, cmpFactor, rawModel.dims().x, rawModel.dims().y, cmpLeftRegion.topLeft());
+                    cmpLeftRegion = renderRegion(cmpLeft, cmpLeftFactor, rawModel.dims().x, rawModel.dims().y);
+                    rawModel.renderXY(rt, rz, s, cmpLeftFactor, cmpLeftImg, cmpLeftRegion);
+                    cmpLeft->setContent(cmpLeftImg, cmpLeftFactor, rawModel.dims().x, rawModel.dims().y, cmpLeftRegion.topLeft());
+                    if (trace)
+                        qInfo("view cmp raw %dx%d f%d (zx %.3f) · step f%d (zx %.3f)", cmpLeftImg.width(), cmpLeftImg.height(),
+                              cmpLeftFactor, cmpLeft->view().zx, cmpFactor, cmpRight->view().zx);
                 } else {
                     cmpLeft->clearContent();
                 }
