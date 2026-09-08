@@ -166,7 +166,20 @@ namespace sirius::app {
                  }
                  wb_.setStepParams(i, p, "Step " + Step::number(i) + " · " + changes);
                  actions_.push_back({ActionRecord::Kind::Param, "Step " + Step::number(i) + " · " + changes, "undo", {}, "set_params"});
-                 return stepJson(i);
+                 json out = stepJson(i);
+                 // A parameter the step's own settings ignore is stored and
+                 // will be read again when they change back, but it does
+                 // nothing now and the panel does not even show it. Saying so
+                 // is the difference between "set" and "had any effect".
+                 json ignored = json::array();
+                 for (auto it = a["params"].begin(); it != a["params"].end(); ++it)
+                     for (const ParamSpec& sp : s.op().info().params)
+                         if (sp.key == it.key() && !sp.visibleFor(p)) ignored.push_back(sp.key);
+                 if (!ignored.empty())
+                     out["ignored"] = {{"keys", ignored},
+                                       {"why", "stored, but the step's current settings do not read these; they apply again "
+                                               "when the settings that gate them change back"}};
+                 return out;
              }});
         add({"set_cache", "Cache policy of a step's output: memory, disk or recompute.",
              obj({{"step", stepParam()}, {"policy", {{"type", "string"}, {"enum", {"memory", "disk", "recompute"}}}}}, {"step", "policy"}),

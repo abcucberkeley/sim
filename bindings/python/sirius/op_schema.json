@@ -192,7 +192,16 @@
           "key": "params_file",
           "label": "Parameter file",
           "read_only": false,
-          "type": "path"
+          "type": "path",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": false,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -202,7 +211,16 @@
           "max": 16.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -212,7 +230,16 @@
           "max": 32.0,
           "min": 2.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -223,7 +250,16 @@
           "max": 1.0,
           "min": 1e-05,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -237,7 +273,16 @@
           "key": "apodization",
           "label": "Apodization",
           "read_only": false,
-          "type": "choice"
+          "type": "choice",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -256,7 +301,16 @@
           "max": 2.0,
           "min": 0.1,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -266,7 +320,16 @@
           "max": 2.0,
           "min": 1.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -277,7 +340,16 @@
           "min": 300.0,
           "read_only": false,
           "type": "double",
-          "unit": "nm"
+          "unit": "nm",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -288,7 +360,16 @@
           "min": 0.01,
           "read_only": false,
           "type": "double",
-          "unit": "µm"
+          "unit": "µm",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -298,7 +379,16 @@
           "label": "Pattern angles",
           "read_only": false,
           "type": "double_list",
-          "unit": "°"
+          "unit": "°",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": false,
+              "values": [
+                "Manual"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -310,7 +400,16 @@
           "min": -180.0,
           "read_only": false,
           "type": "double",
-          "unit": "°"
+          "unit": "°",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": false,
+              "values": [
+                "Estimate"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -319,7 +418,16 @@
           "key": "suppress_zero_order",
           "label": "Suppress zero-order",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -327,7 +435,16 @@
           "key": "bleach_correction",
           "label": "Bleach correction across phases",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -338,7 +455,16 @@
           "max": 4.0,
           "min": 1.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -348,7 +474,16 @@
           "max": 4.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -359,7 +494,16 @@
           "max": 8.0,
           "min": 0.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -381,7 +525,16 @@
           "max": 1.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -391,7 +544,16 @@
           "max": 1000000.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -404,7 +566,16 @@
           "key": "apodize_input",
           "label": "Input apodization",
           "read_only": false,
-          "type": "choice"
+          "type": "choice",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -415,7 +586,16 @@
           "min": 0.0,
           "read_only": false,
           "type": "int",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -426,7 +606,16 @@
           "min": 0.0,
           "read_only": false,
           "type": "int",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -434,7 +623,16 @@
           "key": "suppress_singularities",
           "label": "Suppress singularities",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -442,7 +640,16 @@
           "key": "no_kz0",
           "label": "Skip kz = 0 plane",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -450,7 +657,16 @@
           "key": "filter_overlaps",
           "label": "Filter overlaps",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -460,7 +676,16 @@
           "max": 4.0,
           "min": 0.5,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -468,7 +693,16 @@
           "key": "equalizez",
           "label": "Equalize z",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "mode",
+              "negate": true,
+              "values": [
+                "From file"
+              ]
+            }
+          ]
         }
       ],
       "plugin": false,
@@ -1613,7 +1847,16 @@
           "max": 200.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "denoise",
+              "negate": false,
+              "values": [
+                "Anisotropic diffusion"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1624,7 +1867,16 @@
           "max": 1.0,
           "min": 0.001,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "denoise",
+              "negate": false,
+              "values": [
+                "Anisotropic diffusion"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1651,7 +1903,16 @@
           "min": 0.3,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "enhance",
+              "negate": true,
+              "values": [
+                "None"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1663,7 +1924,17 @@
           "min": 0.3,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "enhance",
+              "negate": false,
+              "values": [
+                "Tubes (Frangi)",
+                "Neurites (Meijering)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1674,7 +1945,17 @@
           "max": 16.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "enhance",
+              "negate": false,
+              "values": [
+                "Tubes (Frangi)",
+                "Neurites (Meijering)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1743,7 +2024,16 @@
           "max": 1000000000.0,
           "min": -1000000000.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Manual"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1754,7 +2044,16 @@
           "min": 0.0,
           "read_only": false,
           "type": "double",
-          "unit": "%"
+          "unit": "%",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Percentile"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1766,7 +2065,17 @@
           "min": 3.0,
           "read_only": false,
           "type": "int",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Local mean",
+                "Local contrast"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1777,7 +2086,16 @@
           "max": 10.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Local mean"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1787,7 +2105,17 @@
           "max": 1000000000.0,
           "min": -1000000000.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Local mean",
+                "Local contrast"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1798,7 +2126,16 @@
           "max": 10.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Local contrast"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1818,7 +2155,16 @@
           "max": 1.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "hysteresis",
+              "negate": false,
+              "values": [
+                "on"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1841,7 +2187,16 @@
           "max": 500.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "refine",
+              "negate": true,
+              "values": [
+                "None"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1852,7 +2207,16 @@
           "max": 5.0,
           "min": 0.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "refine",
+              "negate": true,
+              "values": [
+                "None"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1893,7 +2257,16 @@
           "max": 1000000000.0,
           "min": 0.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "fill_holes_3d",
+              "negate": false,
+              "values": [
+                "on"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1921,7 +2294,17 @@
           "key": "seeds",
           "label": "Seeds",
           "read_only": false,
-          "type": "choice"
+          "type": "choice",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1933,7 +2316,24 @@
           "min": 1.0,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            },
+            {
+              "key": "seeds",
+              "negate": false,
+              "values": [
+                "Distance maxima"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1945,7 +2345,24 @@
           "min": 0.1,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            },
+            {
+              "key": "seeds",
+              "negate": false,
+              "values": [
+                "H-maxima"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -1957,7 +2374,24 @@
           "min": 0.5,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            },
+            {
+              "key": "seeds",
+              "negate": false,
+              "values": [
+                "Blob centres (LoG)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1969,7 +2403,24 @@
           "min": 0.5,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            },
+            {
+              "key": "seeds",
+              "negate": false,
+              "values": [
+                "Blob centres (LoG)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -1980,7 +2431,24 @@
           "max": 24.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "post",
+              "negate": false,
+              "values": [
+                "Watershed (distance)",
+                "Watershed (gradient)"
+              ]
+            },
+            {
+              "key": "seeds",
+              "negate": false,
+              "values": [
+                "Blob centres (LoG)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2107,7 +2575,18 @@
           "max": 1000000000.0,
           "min": -1000000000.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Random walker",
+                "Active contour (geodesic)",
+                "Watershed (compact)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2119,7 +2598,17 @@
           "min": 0.1,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Random walker",
+                "Watershed (compact)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2130,7 +2619,16 @@
           "max": 10000.0,
           "min": 1.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Random walker"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2140,7 +2638,16 @@
           "max": 1.0,
           "min": 1e-08,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Random walker"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2151,7 +2658,16 @@
           "max": 2000.0,
           "min": 1.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2161,7 +2677,16 @@
           "max": 5.0,
           "min": 0.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2172,7 +2697,16 @@
           "max": 3.0,
           "min": -3.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2183,7 +2717,16 @@
           "max": 10000.0,
           "min": 1.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2195,7 +2738,17 @@
           "min": 0.0,
           "read_only": false,
           "type": "double",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)",
+                "Superpixels (Felzenszwalb)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2205,7 +2758,16 @@
           "max": 1.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Active contour (geodesic)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2216,7 +2778,16 @@
           "max": 1000000.0,
           "min": 2.0,
           "read_only": false,
-          "type": "int"
+          "type": "int",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Superpixels (SLIC)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2227,7 +2798,17 @@
           "max": 10000.0,
           "min": 0.0001,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Superpixels (SLIC)",
+                "Watershed (compact)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2238,7 +2819,16 @@
           "max": 100000.0,
           "min": 0.1,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Superpixels (Felzenszwalb)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2250,7 +2840,16 @@
           "min": 1.0,
           "read_only": false,
           "type": "int",
-          "unit": "px"
+          "unit": "px",
+          "visible_when": [
+            {
+              "key": "method",
+              "negate": false,
+              "values": [
+                "Superpixels (Felzenszwalb)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2373,7 +2972,16 @@
           "max": 1.0,
           "min": 0.0,
           "read_only": false,
-          "type": "double"
+          "type": "double",
+          "visible_when": [
+            {
+              "key": "tracker",
+              "negate": false,
+              "values": [
+                "Built-in (assignment)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2385,7 +2993,16 @@
           "min": 0.0,
           "read_only": false,
           "type": "int",
-          "unit": "frames"
+          "unit": "frames",
+          "visible_when": [
+            {
+              "key": "tracker",
+              "negate": false,
+              "values": [
+                "Built-in (assignment)"
+              ]
+            }
+          ]
         },
         {
           "advanced": false,
@@ -2406,7 +3023,16 @@
           "key": "relabel",
           "label": "Relabel by track",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "tracker",
+              "negate": false,
+              "values": [
+                "Built-in (assignment)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2415,7 +3041,16 @@
           "key": "config",
           "label": "btrack config",
           "read_only": false,
-          "type": "string"
+          "type": "string",
+          "visible_when": [
+            {
+              "key": "tracker",
+              "negate": false,
+              "values": [
+                "btrack (Bayesian)"
+              ]
+            }
+          ]
         },
         {
           "advanced": true,
@@ -2424,7 +3059,16 @@
           "key": "optimise",
           "label": "Reconstruct lineages",
           "read_only": false,
-          "type": "bool"
+          "type": "bool",
+          "visible_when": [
+            {
+              "key": "tracker",
+              "negate": false,
+              "values": [
+                "btrack (Bayesian)"
+              ]
+            }
+          ]
         }
       ],
       "plugin": false,

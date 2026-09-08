@@ -230,6 +230,14 @@ namespace sirius::app {
                 if (std::isfinite(s.max)) p["max"] = s.max;
                 if (!s.unit.empty()) p["unit"] = s.unit;
                 if (!s.help.empty()) p["help"] = s.help;
+                // when the step reads this at all: a caller that knows the
+                // rules can avoid setting something the settings ignore
+                if (!s.visibility.empty()) {
+                    nlohmann::json rules = nlohmann::json::array();
+                    for (const ParamSpec::Visibility& v : s.visibility)
+                        rules.push_back({{"key", v.key}, {"values", v.values}, {"negate", v.negate}});
+                    p["visible_when"] = std::move(rules);
+                }
                 params.push_back(std::move(p));
             }
             ops.push_back({

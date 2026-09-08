@@ -424,14 +424,29 @@ namespace sirius::app {
             return;
         }
         const std::filesystem::path manifestPath = dir / DatasetManifest::kFileName;
+        // A file's own pages become z; the files become t. That is right for a
+        // time series and wrong for a stack saved a plane per file, and the two
+        // look identical from the names, so say which reading is about to be
+        // taken when the files are single planes.
+        QString caution;
+        try {
+            const DatasetMeta first = probeDataset((dir / manifest.files.front().path).string());
+            if (first.dims.z <= 1 && first.dims.t <= 1)
+                caution = QStringLiteral(" Each file holds a single plane, so this gives %1 time points of one plane. "
+                                         "If these are instead the planes of one stack, this is not the reading you want "
+                                         "-- there is no folder layout for that; open the stack as a single file.")
+                              .arg(manifest.files.size());
+        } catch (const std::exception&) {
+            // unreadable first file: the open below will say so properly
+        }
         QMessageBox box(this);
         box.setIcon(QMessageBox::Question);
         box.setWindowTitle(QStringLiteral("Open as one stack"));
         box.setText(QStringLiteral("Read the %1 files as one stack, one time point each?").arg(manifest.files.size()));
-        box.setInformativeText(QStringLiteral("In name order, %1 first and %2 last. A %3 is written beside the files so the "
+        box.setInformativeText(QStringLiteral("In name order, %1 first and %2 last.%3 A %4 is written beside the files so the "
                                               "folder opens directly from then on; edit it, or use Folder…, for channels, "
                                               "tiles or another order.")
-                                   .arg(fromStd(manifest.files.front().path), fromStd(manifest.files.back().path),
+                                   .arg(fromStd(manifest.files.front().path), fromStd(manifest.files.back().path), caution,
                                         QLatin1String(DatasetManifest::kFileName)));
         QPushButton* go = box.addButton(QStringLiteral("Open"), QMessageBox::AcceptRole);
         box.addButton(QMessageBox::Cancel);

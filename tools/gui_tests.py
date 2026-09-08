@@ -138,7 +138,14 @@ def test_every_view_mode_renders(app: Path, tmp: Path) -> None:
         )
         state = only(tool_results(out), "get_state")
         check(state["view"]["mode"].lower() == mode, f"view is {state['view']['mode']}, asked for {mode}")
-        image_is_not_blank(shot)
+        # Qt's offscreen platform has no OpenGL widgets, so the 3D pane may be
+        # a notice saying so rather than a rendering. Switching to it and
+        # drawing the window without crashing is what this can honestly check;
+        # the slice views are painted by QPainter and always have content.
+        if mode == "3d":
+            check(shot.is_file() and shot.stat().st_size > 5000, f"{shot} missing or suspiciously small")
+        else:
+            image_is_not_blank(shot)
 
 
 def test_compare_shows_raw_beside_the_result(app: Path, tmp: Path) -> None:
