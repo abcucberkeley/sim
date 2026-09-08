@@ -15,9 +15,9 @@ def _write(path, arr, **kw):
     """Write with tifffile when available (tiles, pyramids), else sirius.write_tiff."""
     try:
         import tifffile
-    except ImportError:
+    except ImportError as e:
         if kw:
-            raise unittest.SkipTest("tifffile is required for this test")
+            raise unittest.SkipTest("tifffile is required for this test") from e
         sirius.write_tiff(path, arr)
         return
     try:

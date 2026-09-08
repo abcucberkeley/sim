@@ -1791,10 +1791,11 @@
           "advanced": false,
           "choices": [
             "Distance maxima",
-            "H-maxima"
+            "H-maxima",
+            "Blob centres (LoG)"
           ],
           "default": "H-maxima",
-          "help": "What splits touching objects: the peaks of the distance map, or only the peaks that stand clear of their surroundings (fewer false splits)",
+          "help": "What splits touching objects. The peaks of the distance map; only the peaks that stand clear of their surroundings (fewer false splits); or the centres of the blobs the image itself shows, found over a range of sizes, which is the one that copes with objects of different sizes",
           "key": "seeds",
           "label": "Seeds",
           "read_only": false,
@@ -1823,6 +1824,41 @@
           "read_only": false,
           "type": "double",
           "unit": "px"
+        },
+        {
+          "advanced": false,
+          "default": 4.0,
+          "help": "Blob centres: the smallest object radius to look for, in x / y pixels",
+          "key": "blob_radius",
+          "label": "Object radius",
+          "max": 500.0,
+          "min": 0.5,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": 12.0,
+          "help": "Blob centres: the largest radius; the detector answers to every size in between",
+          "key": "blob_radius_max",
+          "label": "Object radius max",
+          "max": 500.0,
+          "min": 0.5,
+          "read_only": false,
+          "type": "double",
+          "unit": "px"
+        },
+        {
+          "advanced": true,
+          "default": 5,
+          "help": "Blob centres: how many sizes are tried between the two radii",
+          "key": "blob_scales",
+          "label": "Blob scales",
+          "max": 24.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int"
         },
         {
           "advanced": false,
@@ -1899,6 +1935,73 @@
           "min": 1.0,
           "read_only": false,
           "type": "double"
+        }
+      ],
+      "plugin": false,
+      "produces_labels": true,
+      "remote_capable": false
+    },
+    {
+      "group": "Segment",
+      "kind": "track",
+      "name": "Track objects",
+      "needs_labels": true,
+      "params": [
+        {
+          "advanced": false,
+          "default": 10.0,
+          "help": "How far an object may move between frames; the gate that keeps distant objects apart",
+          "key": "max_distance",
+          "label": "Max. step",
+          "max": 100000.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double",
+          "unit": "µm"
+        },
+        {
+          "advanced": false,
+          "default": 0.5,
+          "help": "0 matches on centroid distance alone, 1 on shared voxels alone; in between mixes them",
+          "key": "overlap_weight",
+          "label": "Overlap weight",
+          "max": 1.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "double"
+        },
+        {
+          "advanced": false,
+          "default": 1,
+          "help": "Frames an object may be missed for and still continue the same track (0 = never)",
+          "key": "max_gap",
+          "label": "Close gaps",
+          "max": 100.0,
+          "min": 0.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "frames"
+        },
+        {
+          "advanced": false,
+          "default": 2,
+          "help": "Tracks seen in fewer frames than this are dropped",
+          "key": "min_length",
+          "label": "Min. track length",
+          "max": 1000000.0,
+          "min": 1.0,
+          "read_only": false,
+          "type": "int",
+          "unit": "frames"
+        },
+        {
+          "advanced": false,
+          "default": true,
+          "help": "Give every object of a track the track's id, so one object keeps one colour over time",
+          "key": "relabel",
+          "label": "Relabel by track",
+          "read_only": false,
+          "type": "bool"
         }
       ],
       "plugin": false,

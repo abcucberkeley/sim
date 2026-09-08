@@ -179,6 +179,23 @@ namespace sirius::app {
     std::uint32_t hMaximaSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double h,
                                std::uint32_t* out);
 
+    // Separable 3D Gaussian with reflected borders, truncated at three sigma,
+    // in place on `v` (z, y, x); `tmp` is scratch the caller can reuse.
+    void gaussianVolume(std::vector<float>& v, Index z, Index y, Index x, double sx, double sy, double sz,
+                        std::vector<float>& tmp);
+
+    // Watershed seeds from a 3D scale-space blob detector: the scale-normalised
+    // Laplacian of Gaussian is evaluated at `scales` widths between sigmaMin
+    // and sigmaMax (voxels in x and y, divided by `zAspect` in z so the width
+    // is the same physical size along every axis), and its strongest response
+    // over the scales peaks once at the centre of each round object whatever
+    // its size. That is what the distance map cannot do: it seeds by shape, so
+    // objects of different sizes need different settings. Peaks are accepted
+    // strongest first and suppress others within the width that found them.
+    // Returns the seed count; `out` gets 1..n at the seed voxels.
+    std::uint32_t logBlobSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double zAspect,
+                               double sigmaMin, double sigmaMax, int scales, std::uint32_t* out);
+
     // Drop components smaller than minVoxels, relabel 1..n densely.
     std::uint32_t removeSmall(std::uint32_t* labels, Index n, Index minVoxels);
 

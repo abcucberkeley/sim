@@ -1169,7 +1169,7 @@ def _remove_small(labels: np.ndarray, min_voxels: int) -> np.ndarray:
 
 def _labels_from_probabilities(fg: np.ndarray, boundary: Optional[np.ndarray], threshold: float, post: str,
                                min_voxels: int, seed_distance: float, seeds: str = "Distance maxima",
-                               seed_depth: float = 2.0) -> np.ndarray:
+                               seed_depth: float = 2.0, external: Optional[np.ndarray] = None) -> np.ndarray:
     """``labelsFromProbabilities``: fg > threshold -> instances by connected
     components, a seeded watershed (on the boundary map, or the negated
     distance transform) or none (one semantic label), then small-object removal."""
@@ -1178,7 +1178,10 @@ def _labels_from_probabilities(fg: np.ndarray, boundary: Optional[np.ndarray], t
         labels = mask.astype(np.uint32)
     elif post.startswith("Watershed"):
         distance = _distance_transform(mask)
-        if seeds == "H-maxima":
+        if external is not None:
+            marks = np.where(mask, external, 0).astype(np.uint32)
+            n = int(marks.max())
+        elif seeds == "H-maxima":
             marks, n = _h_maxima_seeds(distance, mask, seed_depth)
         else:
             marks, n = _distance_seeds(mask, seed_distance)
@@ -1356,6 +1359,142 @@ def _dog_plane(pl: np.ndarray, sigma: float, ratio: float = 1.6) -> np.ndarray:
     return np.maximum(0.0, small - big).astype(np.float32)
 
 
+def _gaussian_volume(v: np.ndarray, sx: float, sy: float, sz: float) -> np.ndarray:
+    """``gaussianVolume``: separable 3D Gaussian, mirrored borders, truncated
+    at three sigma -- the same taps the application uses."""
+    ndimage = _ndimage()
+    out = np.asarray(v, dtype=np.float32)
+    for axis, sigma in ((2, sx), (1, sy), (0, sz)):
+        if sigma <= 1e-6 or out.shape[axis] < 2:
+            continue
+        out = ndimage.gaussian_filter1d(out, sigma=sigma, axis=axis, mode="mirror",
+                                        truncate=math.ceil(3.0 * sigma) / sigma).astype(np.float32)
+    return out
+
+
+def _symmetric_eigenvalues(a11, a12, a13, a22, a23, a33):
+    """``symmetricEigenvalues``: the analytic (trigonometric) eigenvalues of a
+    symmetric 3x3, smallest absolute value first."""
+    p1 = a12 ** 2 + a13 ** 2 + a23 ** 2
+    q = (a11 + a22 + a33) / 3.0
+    p2 = (a11 - q) ** 2 + (a22 - q) ** 2 + (a33 - q) ** 2 + 2.0 * p1
+    p = np.sqrt(np.maximum(1e-30, p2 / 6.0))
+    b11, b22, b33 = (a11 - q) / p, (a22 - q) / p, (a33 - q) / p
+    b12, b13, b23 = a12 / p, a13 / p, a23 / p
+    det = b11 * (b22 * b33 - b23 * b23) - b12 * (b12 * b33 - b23 * b13) + b13 * (b12 * b23 - b22 * b13)
+    phi = np.arccos(np.clip(det / 2.0, -1.0, 1.0)) / 3.0
+    e1 = q + 2.0 * p * np.cos(phi)
+    e3 = q + 2.0 * p * np.cos(phi + 2.0 * math.pi / 3.0)
+    e2 = 3.0 * q - e1 - e3
+    diag = p1 <= 1e-30
+    e1 = np.where(diag, a11, e1)
+    e2 = np.where(diag, a22, e2)
+    e3 = np.where(diag, a33, e3)
+    stack = np.stack([e1, e2, e3], axis=0)
+    order = np.argsort(np.abs(stack), axis=0, kind="stable")
+    return tuple(np.take_along_axis(stack, order[k:k + 1], axis=0)[0] for k in range(3))
+
+
+def _frangi_volume(vol: np.ndarray, z_aspect: float, sigma_min: float, sigma_max: float, scales: int) -> np.ndarray:
+    """``frangiVolume``: Frangi vesselness in 3D, the best response over
+    `scales` widths -- filaments whatever direction they run in."""
+    z, y, x = vol.shape
+    out = np.zeros(vol.shape, dtype=np.float32)
+    scales = max(1, int(scales))
+    sigma_min = max(0.3, sigma_min)
+    sigma_max = max(sigma_min, sigma_max)
+    z_aspect = max(1e-6, z_aspect)
+    zi, yi, xi = (np.clip(np.arange(n) + d, 0, n - 1) for n, d in ((z, 0), (y, 0), (x, 0)))
+    zp, zm = np.clip(np.arange(z) + 1, 0, z - 1), np.clip(np.arange(z) - 1, 0, z - 1)
+    yp, ym = np.clip(np.arange(y) + 1, 0, y - 1), np.clip(np.arange(y) - 1, 0, y - 1)
+    xp, xm = np.clip(np.arange(x) + 1, 0, x - 1), np.clip(np.arange(x) - 1, 0, x - 1)
+    for k in range(scales):
+        sigma = sigma_min if scales == 1 else sigma_min * (sigma_max / sigma_min) ** (k / (scales - 1))
+        w = _gaussian_volume(vol, sigma, sigma, sigma / z_aspect).astype(np.float64)
+        norm = sigma * sigma
+        c = w
+        dxx = norm * (w[:, :, xp] + w[:, :, xm] - 2.0 * c)
+        dyy = norm * (w[:, yp, :] + w[:, ym, :] - 2.0 * c)
+        dzz = norm * (w[zp, :, :] + w[zm, :, :] - 2.0 * c) if z > 1 else np.zeros_like(w)
+        dxy = norm * 0.25 * (w[:, yp][:, :, xp] + w[:, ym][:, :, xm] - w[:, yp][:, :, xm] - w[:, ym][:, :, xp])
+        if z > 1:
+            dxz = norm * 0.25 * (w[zp][:, :, xp] + w[zm][:, :, xm] - w[zp][:, :, xm] - w[zm][:, :, xp])
+            dyz = norm * 0.25 * (w[zp][:, yp, :] + w[zm][:, ym, :] - w[zp][:, ym, :] - w[zm][:, yp, :])
+        else:
+            dxz = np.zeros_like(w)
+            dyz = np.zeros_like(w)
+        l1, l2, l3 = _symmetric_eigenvalues(dxx, dxy, dxz, dyy, dyz, dzz)
+        bright = (l2 < 0.0) & (l3 < 0.0)
+        ra = np.abs(l2) / np.maximum(np.abs(l3), 1e-12)
+        rb = np.abs(l1) / np.maximum(np.sqrt(np.abs(l2 * l3)), 1e-12)
+        s_mag = np.sqrt(l1 ** 2 + l2 ** 2 + l3 ** 2)
+        max_s = float(s_mag[bright].max()) if bright.any() else 0.0
+        c2 = 2.0 * max(1e-12, 0.5 * max_s) ** 2
+        v = np.where(bright, (1.0 - np.exp(-ra ** 2 / 0.5)) * np.exp(-rb ** 2 / 0.5), 0.0).astype(np.float32)
+        v = np.where(v > 0.0, (v * (1.0 - np.exp(-s_mag ** 2 / c2))).astype(np.float32), 0.0).astype(np.float32)
+        out = np.maximum(out, v)
+    return out
+
+
+def _log_blob_seeds(values: np.ndarray, mask: np.ndarray, z_aspect: float, sigma_min: float, sigma_max: float,
+                    scales: int) -> Tuple[np.ndarray, int]:
+    """``logBlobSeeds``: the strongest scale-normalised Laplacian-of-Gaussian
+    response over a range of widths peaks once per round object whatever its
+    size; peaks are taken strongest first and suppress their own radius."""
+    ndimage = _ndimage()
+    z, y, x = values.shape
+    mask = np.asarray(mask, dtype=bool)
+    scales = max(1, int(scales))
+    sigma_min = max(0.3, sigma_min)
+    sigma_max = max(sigma_min, sigma_max)
+    z_aspect = max(1e-6, z_aspect)
+    best = np.zeros(values.shape, dtype=np.float32)
+    best_scale = np.zeros(values.shape, dtype=np.float32)
+    zp, zm = np.clip(np.arange(z) + 1, 0, z - 1), np.clip(np.arange(z) - 1, 0, z - 1)
+    yp, ym = np.clip(np.arange(y) + 1, 0, y - 1), np.clip(np.arange(y) - 1, 0, y - 1)
+    xp, xm = np.clip(np.arange(x) + 1, 0, x - 1), np.clip(np.arange(x) - 1, 0, x - 1)
+    for k in range(scales):
+        sigma = sigma_min if scales == 1 else sigma_min * (sigma_max / sigma_min) ** (k / (scales - 1))
+        blur = _gaussian_volume(values, sigma, sigma, sigma / z_aspect)
+        # float32 through the Laplacian, as the C++ does: computing the taps in
+        # float64 reorders equal-looking peaks and renumbers the seeds
+        two = np.float32(2.0)
+        lx = (blur[:, :, xp] + blur[:, :, xm] - two * blur).astype(np.float32)
+        ly = (blur[:, yp, :] + blur[:, ym, :] - two * blur).astype(np.float32)
+        lz = ((blur[zp, :, :] + blur[zm, :, :] - two * blur).astype(np.float32) if z > 1
+              else np.zeros_like(blur, dtype=np.float32))
+        total = (lx + ly + lz).astype(np.float32)
+        response = (-(sigma * sigma) * total.astype(np.float64)).astype(np.float32)
+        response = np.where(mask, response, 0.0).astype(np.float32)
+        take = response > best
+        best = np.where(take, response, best).astype(np.float32)
+        best_scale = np.where(take, np.float32(sigma), best_scale).astype(np.float32)
+    # peaks: no stronger response anywhere in the 26-neighbourhood
+    peak = ndimage.maximum_filter(best, size=3, mode="nearest")
+    candidates = np.flatnonzero(mask.reshape(-1) & (best.reshape(-1) > 0.0) & (best.reshape(-1) >= peak.reshape(-1)))
+    seeds = np.zeros(values.shape, dtype=np.uint32)
+    if candidates.size == 0:
+        return seeds, 0
+    order = np.argsort(-best.reshape(-1)[candidates], kind="stable")
+    candidates = candidates[order]
+    coords = np.stack(np.unravel_index(candidates, values.shape), axis=1).astype(np.float64)
+    coords[:, 0] *= z_aspect
+    radii = np.maximum(1.0, math.sqrt(3.0) * best_scale.reshape(-1)[candidates].astype(np.float64))
+    flat = seeds.reshape(-1)
+    accepted: List[Tuple[np.ndarray, float]] = []
+    for k in range(candidates.size):
+        r2 = radii[k] ** 2
+        if any(float(((coords[k] - c) ** 2).sum()) < max(r2, ar2) for c, ar2 in accepted):
+            continue
+        accepted.append((coords[k], r2))
+        flat[candidates[k]] = 1
+    # numbered by position, as the C++ does: the response decides which peaks
+    # survive, but two near-tied peaks must not renumber the result
+    taken = np.flatnonzero(flat)
+    flat[taken] = np.arange(1, taken.size + 1, dtype=np.uint32)
+    return seeds, int(taken.size)
+
+
 def _frangi_plane(pl: np.ndarray, sigma_min: float, sigma_max: float, steps: int) -> np.ndarray:
     """``frangiPlane``: Frangi vesselness in the plane, the best response over
     `steps` widths between the two sigmas."""
@@ -1460,10 +1599,10 @@ _CLASSIC = StepSpec(
      "tophat": 0, "sigma": 1.0, "method": "Otsu", "value": 0.5, "percentile": 90.0, "window": 51,
      "local_ratio": 1.1, "local_offset": 0.0, "contrast_k": 1.5, "opening": 1, "fill_holes": True,
      "post": "Watershed (distance)", "seeds": "H-maxima", "seed_distance": 8.0, "seed_depth": 2.0,
-     "min_voxels": 20, "class_name": "object"},
+     "blob_radius": 4.0, "blob_radius_max": 12.0, "blob_scales": 5, "min_voxels": 20, "class_name": "object"},
     choices={"method": ("Otsu", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"),
              "enhance": ("None", "Blobs (DoG)", "Tubes (Frangi)"),
-             "seeds": ("Distance maxima", "H-maxima"),
+             "seeds": ("Distance maxima", "H-maxima", "Blob centres (LoG)"),
              "post": ("Watershed (distance)", "Connected components")},
     aliases={"input_channel": "channel", "minVoxels": "min_voxels"})
 
@@ -1494,18 +1633,26 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
     seeds = _choice(params.get("seeds"), _CLASSIC.choices["seeds"], "H-maxima")
     seed_distance = _float(params, "seed_distance", 8.0)
     seed_depth = _float(params, "seed_depth", 2.0)
+    blob_sigma = max(0.3, _float(params, "blob_radius", 4.0) / math.sqrt(3.0))
+    blob_sigma_max = max(blob_sigma, _float(params, "blob_radius_max", 12.0) / math.sqrt(3.0))
+    blob_scales = _int(params, "blob_scales", 5)
+    voxel = _voxel_um(meta)
+    z_aspect = max(1e-6, voxel[2] / voxel[0]) if voxel[0] > 0 else 1.0
     labels = np.zeros((a.shape[1],) + a.shape[2:], dtype=np.uint32)
     cuts: List[Any] = []
     total = 0
     foreground = 0.0
     for t in range(a.shape[1]):
+        volume = a[c, t]
+        if enhance == "Tubes (Frangi)":
+            # tubes are a 3D filter: a filament running through z is invisible
+            # to a plane-by-plane one
+            volume = _frangi_volume(volume, z_aspect, enhance_sigma, max(enhance_sigma, enhance_sigma_max), enhance_scales)
         planes = []
         for z in range(a.shape[2]):
-            pl = a[c, t, z]
+            pl = volume[z]
             if enhance == "Blobs (DoG)":
                 pl = _dog_plane(pl, enhance_sigma)
-            elif enhance == "Tubes (Frangi)":
-                pl = _frangi_plane(pl, enhance_sigma, max(enhance_sigma, enhance_sigma_max), enhance_scales)
             planes.append(_filter_plane(pl, tophat, sigma))
         work = np.stack(planes)
         if method in ("Local mean", "Local contrast"):
@@ -1525,12 +1672,178 @@ def step_classic(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any]) ->
             cuts.append(cut)
         mask = np.stack([_clean_plane(m, opening, fill_holes) for m in mask])
         foreground += float(mask.mean()) / a.shape[1]
+        external = None
+        if seeds == "Blob centres (LoG)" and post.startswith("Watershed"):
+            external, _ = _log_blob_seeds(work, mask.astype(bool), z_aspect, blob_sigma, blob_sigma_max, blob_scales)
         labels[t] = _labels_from_probabilities(mask.astype(np.float32), None, 0.5, post, min_voxels, seed_distance,
-                                               seeds, seed_depth)
+                                               seeds, seed_depth, external)
         total += int(labels[t].max())
     return StepResult(a, dict(meta), labels=labels,
                       info={"thresholds": cuts, "method": method, "channel": c, "labels": total,
                             "foreground_fraction": foreground, "class_name": _str(params, "class_name", "object")})
+
+
+_TRACK = StepSpec(
+    "track",
+    {"max_distance": 10.0, "overlap_weight": 0.5, "max_gap": 1, "min_length": 2, "relabel": True},
+    needs_labels=True)
+
+
+def _track_objects(vol: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``objectsOfFrame``: the labels present in one frame, their centroids
+    (z, y, x in voxels) and their voxel counts, in ascending label order."""
+    ids = np.unique(vol)
+    ids = ids[ids > 0]
+    if ids.size == 0:
+        return ids.astype(np.uint32), np.zeros((0, 3)), np.zeros(0, dtype=np.int64)
+    ndimage = _ndimage()
+    centres = np.asarray(ndimage.center_of_mass(np.ones_like(vol, dtype=np.float32), labels=vol, index=ids), dtype=np.float64)
+    counts = np.asarray(ndimage.sum_labels(np.ones_like(vol, dtype=np.float32), labels=vol, index=ids), dtype=np.int64)
+    return ids.astype(np.uint32), centres.reshape(-1, 3), counts
+
+
+def _track_overlap(a_vol: np.ndarray, b_vol: np.ndarray, a_ids: np.ndarray, b_ids: np.ndarray) -> np.ndarray:
+    """``overlapBetween``: voxels shared by each (label of t, label of t+1)."""
+    counts = np.zeros((a_ids.size, b_ids.size), dtype=np.int64)
+    both = (a_vol > 0) & (b_vol > 0)
+    if not both.any():
+        return counts
+    rows = np.searchsorted(a_ids, a_vol[both])
+    cols = np.searchsorted(b_ids, b_vol[both])
+    np.add.at(counts, (rows, cols), 1)
+    return counts
+
+
+def _solve_assignment(cost: np.ndarray) -> List[int]:
+    """``solveAssignment``: minimum-cost matching, with np.inf forbidding a
+    pair. Returns one column per row, or -1 where the row stays unmatched."""
+    rows, cols = cost.shape
+    out = [-1] * rows
+    if rows == 0 or cols == 0:
+        return out
+    try:
+        from scipy.optimize import linear_sum_assignment  # type: ignore
+    except ImportError as e:
+        raise NotAvailable("tracking needs 'scipy' (pip install scipy)") from e
+    big = 1e12
+    padded = np.where(np.isfinite(cost), cost, big)
+    padded = np.minimum(padded, big)
+    r, c = linear_sum_assignment(padded)
+    for i, j in zip(r.tolist(), c.tolist()):
+        if np.isfinite(cost[i, j]) and cost[i, j] < big:
+            out[i] = j
+    return out
+
+
+@_step(_TRACK)
+def step_track(a: np.ndarray, params: Dict[str, Any], meta: Dict[str, Any],
+               labels: Optional[np.ndarray] = None) -> StepResult:
+    """Track objects (track.cpp) over the labels of a segmentation step
+    upstream: frame-to-frame optimal assignment on centroid distance
+    (max_distance, in micrometres) mixed with shared voxels (overlap_weight),
+    then gap closing (max_gap) and min_length; relabel gives every object of a
+    track the track's id. The intensities pass through."""
+    if labels is None or not labels.size:
+        raise ValueError("Track objects needs labels: add a segmentation step before it")
+    max_distance = max(1e-9, _float(params, "max_distance", 10.0))
+    weight = min(1.0, max(0.0, _float(params, "overlap_weight", 0.5)))
+    max_gap = _int(params, "max_gap", 1)
+    min_length = max(1, _int(params, "min_length", 2))
+    relabel = _bool(params, "relabel", True)
+    voxel = _voxel_um(meta)
+    scale = np.array([voxel[2], voxel[1], voxel[0]], dtype=np.float64)   # centroid is (z, y, x)
+
+    frames = int(labels.shape[0])
+    ids: List[np.ndarray] = []
+    centres: List[np.ndarray] = []
+    counts: List[np.ndarray] = []
+    for t in range(frames):
+        i, c, n = _track_objects(labels[t])
+        ids.append(i)
+        centres.append(c)
+        counts.append(n)
+
+    track_of: List[np.ndarray] = [np.full(i.size, -1, dtype=np.int64) for i in ids]
+    tracks: List[List[Tuple[int, int]]] = []   # (frame, label)
+    links = 0
+
+    def start(t: int, k: int) -> int:
+        tracks.append([(t, int(ids[t][k]))])
+        track_of[t][k] = len(tracks) - 1
+        return len(tracks) - 1
+
+    for t in range(frames - 1):
+        if ids[t].size == 0 or ids[t + 1].size == 0:
+            continue
+        delta = (centres[t][:, None, :] - centres[t + 1][None, :, :]) * scale
+        dist = np.sqrt((delta ** 2).sum(axis=2))
+        cost = np.where(dist > max_distance, np.inf, dist / max_distance)
+        if weight > 0.0:
+            shared = _track_overlap(labels[t], labels[t + 1], ids[t], ids[t + 1]).astype(np.float64)
+            denom = counts[t][:, None] + counts[t + 1][None, :] - shared
+            iou = np.where(denom > 0, shared / np.where(denom > 0, denom, 1.0), 0.0)
+            cost = np.where(np.isfinite(cost), (1.0 - weight) * cost + weight * (1.0 - iou), np.inf)
+        match = _solve_assignment(cost)
+        for i in range(ids[t].size):
+            if track_of[t][i] < 0:
+                start(t, i)
+            j = match[i]
+            if j < 0:
+                continue
+            track_of[t + 1][j] = track_of[t][i]
+            tracks[int(track_of[t][i])].append((t + 1, int(ids[t + 1][j])))
+            links += 1
+    for t in range(frames):
+        for i in range(ids[t].size):
+            if track_of[t][i] < 0:
+                start(t, i)
+
+    gaps = 0
+    if max_gap > 0 and len(tracks) > 1:
+        def centre_of(track: int, end: bool) -> np.ndarray:
+            t, label = tracks[track][-1] if end else tracks[track][0]
+            k = int(np.searchsorted(ids[t], label))
+            return centres[t][k]
+
+        live = [k for k in range(len(tracks)) if tracks[k]]
+        cost = np.full((len(live), len(live)), np.inf)
+        for r, frm in enumerate(live):
+            for c, to in enumerate(live):
+                if frm == to:
+                    continue
+                gap = tracks[to][0][0] - tracks[frm][-1][0]
+                if gap < 1 or gap > max_gap + 1:
+                    continue
+                d = float(np.sqrt((((centre_of(frm, True) - centre_of(to, False)) * scale) ** 2).sum()))
+                if d > max_distance * gap:
+                    continue
+                cost[r, c] = d / max_distance + 0.25 * (gap - 1)
+        match = _solve_assignment(cost)
+        merged = set()
+        for r, c in enumerate(match):
+            if c < 0:
+                continue
+            frm, to = live[r], live[c]
+            if frm in merged or to in merged or not tracks[to] or not tracks[frm]:
+                continue
+            if tracks[to][0][0] <= tracks[frm][-1][0]:
+                continue
+            tracks[frm].extend(tracks[to])
+            tracks[to] = []
+            merged.add(to)
+            gaps += 1
+
+    kept = [sorted(t) for t in tracks if len(t) >= min_length]
+    kept.sort(key=lambda t: (t[0][0], t[0][1]))
+    out = np.zeros_like(labels, dtype=np.uint32)
+    for n, track in enumerate(kept, start=1):
+        for t, label in track:
+            out[t][labels[t] == label] = n if relabel else label
+    lengths = [len(t) for t in kept]
+    return StepResult(a, dict(meta), labels=out,
+                      info={"tracks": len(kept), "links": links, "gaps_closed": gaps,
+                            "mean_length": float(np.mean(lengths)) if lengths else 0.0,
+                            "longest": int(max(lengths)) if lengths else 0})
 
 
 _CLEANUP = StepSpec(

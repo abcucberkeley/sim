@@ -7,9 +7,9 @@ import tempfile
 import unittest
 
 import numpy as np
+from _helpers import silenced_stderr
 
 import sirius
-from _helpers import silenced_stderr
 
 
 def _random_complex(shape, *, seed: int = 0) -> np.ndarray:
@@ -283,20 +283,20 @@ class TestFFTValidation(unittest.TestCase):
 
     def test_wrong_size_input_raises(self):
         f = sirius.FFT([8], 1, sirius.PlanRigor.Estimate)
-        with self.assertRaises(Exception):
+        with self.assertRaises((ValueError, RuntimeError, TypeError)):
             f.fft(np.zeros(7, dtype=np.complex128))
 
     def test_wrong_size_output_raises(self):
         f = sirius.FFT([8], 1, sirius.PlanRigor.Estimate)
         x = np.zeros(8, dtype=np.complex128)
         out_too_small = np.empty(7, dtype=np.complex128)
-        with self.assertRaises(Exception):
+        with self.assertRaises((ValueError, RuntimeError, TypeError)):
             f.fft(x, out_too_small)
 
     def test_batched_size_validated(self):
         # howmany=2, dims=[4]: total must be 8. A single 4-vector should fail.
         f = sirius.FFT([4], 2, sirius.PlanRigor.Estimate)
-        with self.assertRaises(Exception):
+        with self.assertRaises((ValueError, RuntimeError, TypeError)):
             f.fft(np.zeros(4, dtype=np.complex128))
 
 

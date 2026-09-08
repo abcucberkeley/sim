@@ -532,7 +532,12 @@ namespace sirius::app {
         sl->setContentsMargins(0, 4, 0, 4);
         sl->setSpacing(2);
         sl->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-        static const struct { Icon icon; const char* name; const char* tip; int key; } toolDefs[] = {
+        static const struct {
+            Icon icon;
+            const char* name;
+            const char* tip;
+            int key;
+        } toolDefs[] = {
             {Icon::Navigate, "Navigate", "Navigate — drag to pan, wheel to zoom, double-click to fit", Qt::Key_V},
             {Icon::Probe, "Probe", "Probe — click to place the crosshair and read values", Qt::Key_P},
             {Icon::Measure, "Measure", "Measure distance / angle", Qt::Key_M},
@@ -607,7 +612,8 @@ namespace sirius::app {
 
         // chrome wiring
         QObject::connect(modeSeg, &SegmentedControl::changed, q, [this](int i) {
-            wb.setViewMode(i == 0 ? ViewMode::Ortho : i == 1 ? ViewMode::Volume : ViewMode::Compare);
+            wb.setViewMode(i == 0 ? ViewMode::Ortho : i == 1 ? ViewMode::Volume
+                                                             : ViewMode::Compare);
         });
         QObject::connect(labelsCheck, &QAbstractButton::clicked, q, [this] { wb.toggleLabels(); });
         QObject::connect(soloCheck, &QAbstractButton::clicked, q, [this] { wb.toggleSoloLabel(); });
@@ -675,8 +681,8 @@ namespace sirius::app {
         // bottom, then the panes, then the dims strip. The channel swatches
         // are rebuilt with the output, so refreshSwatches() re-links them.
         QWidget* chain[] = {modeSeg, labelsCheck, soloCheck, crossCheck, boxCheck, autoBtn, resetBtn,
-                            tools[0],  tools[1],  tools[2],  tools[3],   tools[4], zin,     zout,
-                            zfit,      xy,        yz,        xz,         mip,      dims};
+                            tools[0], tools[1], tools[2], tools[3], tools[4], zin, zout,
+                            zfit, xy, yz, xz, mip, dims};
         for (std::size_t i = 0; i + 1 < sizeof chain / sizeof chain[0]; ++i) QWidget::setTabOrder(chain[i], chain[i + 1]);
     }
 
@@ -974,8 +980,7 @@ namespace sirius::app {
         std::vector<std::pair<QString, QColor>> items;
         if (model.valid()) {
             if (m.rgb) {
-                items = {{QStringLiteral("R"), QColor(255, 80, 80)}, {QStringLiteral("G"), QColor(80, 255, 80)},
-                         {QStringLiteral("B"), QColor(110, 110, 255)}};
+                items = {{QStringLiteral("R"), QColor(255, 80, 80)}, {QStringLiteral("G"), QColor(80, 255, 80)}, {QStringLiteral("B"), QColor(110, 110, 255)}};
             } else {
                 for (Index c = 0; c < m.dims.c; ++c) {
                     if (static_cast<std::size_t>(c) < m.channels.size()) {
@@ -1034,8 +1039,10 @@ namespace sirius::app {
 
     void ViewerWidget::Impl::refreshChrome() {
         const ViewState& s = vs();
-        modeSeg->setCurrentIndex(s.mode == ViewMode::Ortho ? 0 : s.mode == ViewMode::Volume ? 1 : 2);
-        stack->setCurrentWidget(s.mode == ViewMode::Ortho ? orthoPage : s.mode == ViewMode::Volume ? volumePage : comparePage);
+        modeSeg->setCurrentIndex(s.mode == ViewMode::Ortho ? 0 : s.mode == ViewMode::Volume ? 1
+                                                                                            : 2);
+        stack->setCurrentWidget(s.mode == ViewMode::Ortho ? orthoPage : s.mode == ViewMode::Volume ? volumePage
+                                                                                                   : comparePage);
 
         // "Viewing 05 Contrast rgb z48 y4096 x4096"
         const int viewed = wb.viewedIndex();
@@ -1356,7 +1363,11 @@ namespace sirius::app {
         cmpRight->setScaleBar(dx);
         mip->setScaleBar(dx);
         const QString zt = QStringLiteral("z %1 / %2  t %3 / %4  %5 %")
-                               .arg(cz).arg(nz() - 1).arg(curT()).arg(nt() - 1).arg(std::lround(st.zoom * 100.0));
+                               .arg(cz)
+                               .arg(nz() - 1)
+                               .arg(curT())
+                               .arg(nt() - 1)
+                               .arg(std::lround(st.zoom * 100.0));
         xy->setTitle(QStringLiteral("XY  ") + zt);
         yz->setTitle(QStringLiteral("YZ"));
         xz->setTitle(QStringLiteral("XZ"));
@@ -1364,7 +1375,10 @@ namespace sirius::app {
         const QString rawZt = st.syncZT
                                   ? zt
                                   : QStringLiteral("z %1 / %2  t %3 / %4  unsynced")
-                                        .arg(compareZ()).arg(nz() - 1).arg(compareT()).arg(nt() - 1);
+                                        .arg(compareZ())
+                                        .arg(nz() - 1)
+                                        .arg(compareT())
+                                        .arg(nt() - 1);
         cmpLeft->setTitle(QStringLiteral("01 Load · raw  ") + rawZt);
         const int viewed = wb.viewedIndex();
         const QString name = viewed >= 0 && viewed < wb.pipeline().size()
@@ -1549,7 +1563,8 @@ namespace sirius::app {
         if (L && t < L->t()) {
             const std::uint32_t only = s.soloLabel ? s.selectedLabel : 0u;
             const quint64 lkey = (static_cast<quint64>(reinterpret_cast<std::uintptr_t>(L)) ^ (static_cast<quint64>(t + 1) << 40) ^
-                                  (labelsVersion << 8) ^ (static_cast<quint64>(only) << 20)) | 1;
+                                  (labelsVersion << 8) ^ (static_cast<quint64>(only) << 20)) |
+                                 1;
             volume->setLabels(lkey, L->volume(t), L->z(), L->y(), L->x(), static_cast<float>(s.labelOpacity), only);
         } else {
             volume->clearLabels();

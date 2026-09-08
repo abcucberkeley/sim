@@ -32,11 +32,10 @@ in a way an older peer cannot understand.
 
 from __future__ import annotations
 
+import json
 import socket
 import struct
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-
-import json
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 

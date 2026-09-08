@@ -6,17 +6,31 @@ namespace sirius::app {
         return {
             &makeLoadOperation,
             // Reconstruct
-            &makeSimOperation, &makeDeconvolveOperation, &makeVolumeOperation,
+            &makeSimOperation,
+            &makeDeconvolveOperation,
+            &makeVolumeOperation,
             // Reduce
-            &makeEinsumOperation, &makeMaxProjectionOperation, &makeMeanOverTimeOperation,
+            &makeEinsumOperation,
+            &makeMaxProjectionOperation,
+            &makeMeanOverTimeOperation,
             // Intensity
-            &makeContrastOperation, &makeFlatFieldOperation, &makeBleachOperation,
+            &makeContrastOperation,
+            &makeFlatFieldOperation,
+            &makeBleachOperation,
             // Geometry
-            &makeDeskewOperation, &makeCropPadOperation, &makeResampleOperation,
+            &makeDeskewOperation,
+            &makeCropPadOperation,
+            &makeResampleOperation,
             // Combine
-            &makeMergeOperation, &makeStitchOperation, &makeRegisterOperation,
+            &makeMergeOperation,
+            &makeStitchOperation,
+            &makeRegisterOperation,
             // Segment
-            &makeTorchSegmentationOperation, &makeThresholdOperation, &makeClassicalSegmentationOperation, &makeLabelCleanupOperation,
+            &makeTorchSegmentationOperation,
+            &makeThresholdOperation,
+            &makeClassicalSegmentationOperation,
+            &makeLabelCleanupOperation,
+            &makeTrackOperation,
         };
     }
 

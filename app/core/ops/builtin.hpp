@@ -44,6 +44,7 @@ namespace sirius::app {
     std::unique_ptr<Operation> makeThresholdOperation();
     std::unique_ptr<Operation> makeClassicalSegmentationOperation();
     std::unique_ptr<Operation> makeLabelCleanupOperation();
+    std::unique_ptr<Operation> makeTrackOperation();
 
     // Shared helpers for operation implementations (ops/common.cpp).
     // Runs `fn(c, t, progress)` for every (c, t) volume, reporting progress
@@ -109,6 +110,10 @@ namespace sirius::app {
         // their surroundings, which does not split a lumpy object).
         std::string seeds = "Distance maxima";
         double seedDepth = 2.0;
+        // Seeds the caller worked out itself (blob centres, say). When set the
+        // watershed starts from these instead of computing its own.
+        const std::uint32_t* externalSeeds = nullptr;
+        std::uint32_t externalSeedCount = 0;
         LabelFlagRules flags;
         std::string className = "object";
     };

@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import sirius
 
+import sirius
 
 DATA = Path(__file__).resolve().parents[2] / "tests" / "data"
 

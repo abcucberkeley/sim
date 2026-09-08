@@ -350,8 +350,9 @@ channels (RGB) · Stitch tiles and Register (the masked-NCC code above) · Segme
 watershed or connected components; or a model family — Cellpose, micro-SAM — that
 returns labels itself) · Classical segmentation (blob / tube enhancement, white
 top-hat, Gaussian, Otsu / multi-Otsu / percentile / manual / local-mean /
-local-contrast threshold, binary opening, hole filling, watershed on distance or
-h-maxima seeds) · Threshold · Label cleanup. Labels are painted,
+local-contrast threshold, binary opening, hole filling, watershed on distance,
+h-maxima or scale-space blob-centre seeds) · Track objects (frame-to-frame optimal
+assignment on distance and overlap, gap closing) · Threshold · Label cleanup. Labels are painted,
 filled, merged, split and deleted in the viewer; every edit, parameter change and
 assistant action is one undo entry.
 

@@ -139,7 +139,7 @@ TEST_CASE("the built-in operations are registered with complete metadata", "[app
     std::size_t builtins = 0;
     for (const Operation* op : allOperations())
         if (op->kind().rfind("test_", 0) != 0 && !op->info().plugin) ++builtins;   // nor plugins the worker tests load
-    CHECK(builtins == 20);
+    CHECK(builtins == 21);
 
     SECTION("menu groups follow the design's order and exclude Load") {
         const auto groups = operationGroups();
@@ -979,13 +979,10 @@ namespace {
             const std::string method = h.value("method", "");
             nlohmann::json reply = {{"id", h.value("id", 0)}, {"type", "result"}};
             if (method == "hello") {
-                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion},
-                                   {"methods", {"run:torch_segment", "model_info"}},
-                                   {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
+                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion}, {"methods", {"run:torch_segment", "model_info"}}, {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "model_info") {
-                reply["result"] = {{"format", "TorchScript"}, {"input_shape", {1, 1, "Z", "Y", "X"}},
-                                   {"input_dtype", "float32"}, {"output_shape", {1, 2, "Z", "Y", "X"}}, {"size_bytes", 41 * 1024 * 1024}};
+                reply["result"] = {{"format", "TorchScript"}, {"input_shape", {1, 1, "Z", "Y", "X"}}, {"input_dtype", "float32"}, {"output_shape", {1, 2, "Z", "Y", "X"}}, {"size_bytes", 41 * 1024 * 1024}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "run") {
                 REQUIRE(msg->tensors.size() == 1);
@@ -1085,14 +1082,11 @@ namespace {
             const std::string method = h.value("method", "");
             nlohmann::json reply = {{"id", h.value("id", 0)}, {"type", "result"}};
             if (method == "hello") {
-                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion},
-                                   {"methods", {"run:torch_segment", "model_info", "hub_search"}},
-                                   {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
+                reply["result"] = {{"version", "test"}, {"protocol_version", rpc::kProtocolVersion}, {"methods", {"run:torch_segment", "model_info", "hub_search"}}, {"cuda", false}, {"device", "cpu · fake"}, {"hostname", "fake"}, {"python", "3"}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "model_info") {
                 const std::string spec = h["params"].value("spec", "");
-                reply["result"] = {{"format", "cellpose"}, {"model", "cyto3"}, {"available", spec.find("nuclei") == std::string::npos},
-                                   {"install_hint", "pip install cellpose"}, {"returns", "labels"}};
+                reply["result"] = {{"format", "cellpose"}, {"model", "cyto3"}, {"available", spec.find("nuclei") == std::string::npos}, {"install_hint", "pip install cellpose"}, {"returns", "labels"}};
                 transport->send(rpc::encodeFrame(reply, {}));
             } else if (method == "run") {
                 REQUIRE(msg->tensors.size() == 1);
@@ -1165,10 +1159,8 @@ TEST_CASE("Segmentation accepts hub and family model specs without a local file"
     // family info from the worker: availability and the install hint
     CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}}) == "cellpose cyto3 · returns labels");
     // an installed package reports its version and whether the weights are on disk
-    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "default"}, {"available", true}, {"version", "4.2.1"},
-                             {"weights_cached", false}}) == "cellpose 4.2.1 default · returns labels · weights download on first run");
-    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}, {"version", "4.2.1"},
-                             {"weights_cached", true}, {"warning", "cellpose 4.2.1 has no model 'cyto3'"}}) ==
+    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "default"}, {"available", true}, {"version", "4.2.1"}, {"weights_cached", false}}) == "cellpose 4.2.1 default · returns labels · weights download on first run");
+    CHECK(torchModelSummary({{"format", "cellpose"}, {"model", "cyto3"}, {"available", true}, {"version", "4.2.1"}, {"weights_cached", true}, {"warning", "cellpose 4.2.1 has no model 'cyto3'"}}) ==
           "cellpose 4.2.1 cyto3 · returns labels · weights cached · cellpose 4.2.1 has no model 'cyto3'");
     CHECK(torchModelSummary({{"format", "micro-sam"}, {"model", "vit_b_lm"}, {"available", false}, {"install_hint", "pip install micro-sam"}}) ==
           "micro-sam vit_b_lm · not installed (Hub… installs it: pip install micro-sam)");

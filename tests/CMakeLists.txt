@@ -54,6 +54,7 @@ if(SIRIUS_ENABLE_APP)
     target_sources(sirius_tests PRIVATE
         test_app_core.cpp
         test_app_labels.cpp
+        test_app_tracking.cpp
         test_app_pipeline.cpp
         test_app_ops.cpp
         test_app_io.cpp

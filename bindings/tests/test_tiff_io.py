@@ -13,10 +13,9 @@ import tempfile
 import unittest
 
 import numpy as np
-
-import sirius
 from _helpers import silenced_stderr
 
+import sirius
 
 # Every scalar dtype with a registered write_tiff overload.
 SUPPORTED_DTYPES = [

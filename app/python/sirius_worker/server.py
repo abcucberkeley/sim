@@ -130,7 +130,7 @@ class WorkerServer:
             while not self._stop.is_set():
                 try:
                     conn, addr = self._listener.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     break
@@ -311,7 +311,8 @@ class WorkerServer:
                     repo = str(params.get("repo", ""))
                     filename = str(params.get("file") or params.get("filename") or "")
                     self._start_job(rid, f"hub_download {repo}", send,
-                                    lambda progress, cancel: self._download(repo, filename, progress, cancel))
+                                    lambda progress, cancel, repo=repo, filename=filename:
+                                        self._download(repo, filename, progress, cancel))
                 elif method == "install":
                     family = str(params.get("family", ""))
                     dry_run = bool(params.get("dry_run", False))
@@ -321,13 +322,14 @@ class WorkerServer:
                     log.warning("privileged request: install '%s'%s, from %s (allow_install=%s)", family,
                                 " (dry run)" if dry_run else "", peer, model_hub.ALLOW_INSTALL)
                     self._start_job(rid, f"install {family}", send,
-                                    lambda progress, cancel: (model_hub.install(
+                                    lambda progress, cancel, family=family, dry_run=dry_run: (model_hub.install(
                                         family, progress, cancelled=cancel.is_set, dry_run=dry_run), None))
                 elif method == "model_prepare":
                     model_hub.set_hub_token(str(params.get("token", "") or ""))
                     spec = str(params.get("spec", ""))
                     self._start_job(rid, f"model_prepare {spec}", send,
-                                    lambda progress, cancel: (model_hub.prepare(spec, progress, cancelled=cancel.is_set), None))
+                                    lambda progress, cancel, spec=spec:
+                                        (model_hub.prepare(spec, progress, cancelled=cancel.is_set), None))
                 elif method == "models_list":
                     reply(rid, {"cache": str(model_hub.cache_dir()), "models": model_hub.list_cached_models()})
                 elif method in ("list_plugins", "reload_plugins"):

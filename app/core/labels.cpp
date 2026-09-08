@@ -86,7 +86,10 @@ namespace sirius::app {
                         (2.0 * static_cast<double>(q - p));
                     if (s > z[static_cast<std::size_t>(k)]) break;
                     --k;
-                    if (k < 0) { s = -std::numeric_limits<double>::infinity(); break; }
+                    if (k < 0) {
+                        s = -std::numeric_limits<double>::infinity();
+                        break;
+                    }
                 }
                 ++k;
                 v[static_cast<std::size_t>(k)] = q;
@@ -177,9 +180,12 @@ namespace sirius::app {
                     Acc& a = acc[id];
                     ++a.voxels;
                     if (prow) a.prob += prow[x];
-                    a.z0 = std::min(a.z0, z); a.z1 = std::max(a.z1, z);
-                    a.y0 = std::min(a.y0, y); a.y1 = std::max(a.y1, y);
-                    a.x0 = std::min(a.x0, x); a.x1 = std::max(a.x1, x);
+                    a.z0 = std::min(a.z0, z);
+                    a.z1 = std::max(a.z1, z);
+                    a.y0 = std::min(a.y0, y);
+                    a.y1 = std::max(a.y1, y);
+                    a.x0 = std::min(a.x0, x);
+                    a.x1 = std::max(a.x1, x);
                 }
             }
 
@@ -223,9 +229,12 @@ namespace sirius::app {
             const Index i = diff.indices[k];
             if (i < 0 || i >= n) throw std::out_of_range("LabelVolume::updateStats: index outside the volume");
             const Index z = i / plane, y = (i / x_) % y_, x = i % x_;
-            box[0] = std::min(box[0], z); box[1] = std::max(box[1], z);
-            box[2] = std::min(box[2], y); box[3] = std::max(box[3], y);
-            box[4] = std::min(box[4], x); box[5] = std::max(box[5], x);
+            box[0] = std::min(box[0], z);
+            box[1] = std::max(box[1], z);
+            box[2] = std::min(box[2], y);
+            box[3] = std::max(box[3], y);
+            box[4] = std::min(box[4], x);
+            box[5] = std::max(box[5], x);
             if (diff.before[k]) touched.push_back(diff.before[k]);
             if (diff.after[k]) touched.push_back(diff.after[k]);
         }
@@ -236,9 +245,12 @@ namespace sirius::app {
             LabelStats* known = mutableStatsOf(id);
             Index z0 = box[0], z1 = box[1], y0 = box[2], y1 = box[3], x0 = box[4], x1 = box[5];
             if (known) {
-                z0 = std::min(z0, known->bbox[0]); z1 = std::max(z1, known->bbox[1] - 1);
-                y0 = std::min(y0, known->bbox[2]); y1 = std::max(y1, known->bbox[3] - 1);
-                x0 = std::min(x0, known->bbox[4]); x1 = std::max(x1, known->bbox[5] - 1);
+                z0 = std::min(z0, known->bbox[0]);
+                z1 = std::max(z1, known->bbox[1] - 1);
+                y0 = std::min(y0, known->bbox[2]);
+                y1 = std::max(y1, known->bbox[3] - 1);
+                x0 = std::min(x0, known->bbox[4]);
+                x1 = std::max(x1, known->bbox[5] - 1);
             }
             Index count = 0;
             Index bz0 = z_, bz1 = -1, by0 = y_, by1 = -1, bx0 = x_, bx1 = -1;
@@ -248,9 +260,12 @@ namespace sirius::app {
                     for (Index x = x0; x <= x1; ++x) {
                         if (row[x] != id) continue;
                         ++count;
-                        bz0 = std::min(bz0, z); bz1 = std::max(bz1, z);
-                        by0 = std::min(by0, y); by1 = std::max(by1, y);
-                        bx0 = std::min(bx0, x); bx1 = std::max(bx1, x);
+                        bz0 = std::min(bz0, z);
+                        bz1 = std::max(bz1, z);
+                        by0 = std::min(by0, y);
+                        by1 = std::max(by1, y);
+                        bx0 = std::min(bx0, x);
+                        bx1 = std::max(bx1, x);
                     }
                 }
             if (count == 0) {
@@ -448,9 +463,12 @@ namespace sirius::app {
                 const std::uint32_t* row = v + (z * y_ + y) * x_;
                 for (Index x = 0; x < x_; ++x)
                     if (row[x] == id) {
-                        z0 = std::min(z0, z); z1 = std::max(z1, z);
-                        y0 = std::min(y0, y); y1 = std::max(y1, y);
-                        x0 = std::min(x0, x); x1 = std::max(x1, x);
+                        z0 = std::min(z0, z);
+                        z1 = std::max(z1, z);
+                        y0 = std::min(y0, y);
+                        y1 = std::max(y1, y);
+                        x0 = std::min(x0, x);
+                        x1 = std::max(x1, x);
                     }
             }
         if (z1 < 0) return diff;
@@ -555,8 +573,14 @@ namespace sirius::app {
                     const std::uint32_t ny = iy > 0 ? out[i - x] : 0;
                     const std::uint32_t nx = ix > 0 ? out[i - 1] : 0;
                     if (nx) label = nx;
-                    if (ny) { if (label) uf.unite(label, ny); else label = ny; }
-                    if (nz) { if (label) uf.unite(label, nz); else label = nz; }
+                    if (ny) {
+                        if (label) uf.unite(label, ny);
+                        else label = ny;
+                    }
+                    if (nz) {
+                        if (label) uf.unite(label, nz);
+                        else label = nz;
+                    }
                     if (!label) label = uf.make();
                     out[i] = label;
                 }
@@ -613,24 +637,24 @@ namespace sirius::app {
         const Index plane = y * x, n = z * plane;
         for (Index i = 0; i < n; ++i) out[i] = mask[i] ? kInf : 0.0f;
         // separable exact squared EDT: one 1D pass per axis, each in place
-        #pragma omp parallel
+#pragma omp parallel
         {
             std::vector<Index> v;
             std::vector<double> zz, g;
-            #pragma omp for collapse(2) schedule(static)
+#pragma omp for collapse(2) schedule(static)
             for (Index iz = 0; iz < z; ++iz)
                 for (Index iy = 0; iy < y; ++iy) {
                     float* line = out + (iz * y + iy) * x;
                     edt1d(line, x, 1, line, v, zz, g);
                 }
-            #pragma omp for collapse(2) schedule(static)
+#pragma omp for collapse(2) schedule(static)
             for (Index iz = 0; iz < z; ++iz)
                 for (Index ix = 0; ix < x; ++ix) {
                     float* line = out + iz * plane + ix;
                     edt1d(line, y, x, line, v, zz, g);
                 }
             if (z > 1) {
-                #pragma omp for collapse(2) schedule(static)
+#pragma omp for collapse(2) schedule(static)
                 for (Index iy = 0; iy < y; ++iy)
                     for (Index ix = 0; ix < x; ++ix) {
                         float* line = out + iy * x + ix;
@@ -640,7 +664,7 @@ namespace sirius::app {
         }
         // no background anywhere: every voxel is as far as the volume is wide
         const float far = static_cast<float>(std::max({z, y, x}));
-        #pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static)
         for (Index i = 0; i < n; ++i) out[i] = std::isinf(out[i]) ? far : std::sqrt(out[i]);
     }
 
@@ -756,6 +780,130 @@ namespace sirius::app {
         return count;
     }
 
+    void gaussianVolume(std::vector<float>& v, Index z, Index y, Index x, double sx, double sy, double sz,
+                        std::vector<float>& tmp) {
+        const Index plane = y * x, n = z * plane;
+        tmp.resize(static_cast<std::size_t>(n));
+        auto axis = [&](double sigma, Index stride, Index count, Index outer) {
+            if (sigma <= 1e-6 || count < 2) return;
+            const Index r = std::max<Index>(1, static_cast<Index>(std::ceil(3.0 * sigma)));
+            std::vector<float> k(static_cast<std::size_t>(2 * r + 1));
+            double sum = 0.0;
+            for (Index i = -r; i <= r; ++i) {
+                k[static_cast<std::size_t>(i + r)] = static_cast<float>(std::exp(-0.5 * (i * i) / (sigma * sigma)));
+                sum += k[static_cast<std::size_t>(i + r)];
+            }
+            for (float& e : k) e = static_cast<float>(e / sum);
+            std::copy_n(v.data(), n, tmp.data());
+            for (Index o = 0; o < outer; ++o) {
+                // `o` walks every line along this axis; base is its first element
+                const Index base = stride == 1 ? o * count : (stride == x ? (o / x) * plane + (o % x) : o);
+                for (Index c = 0; c < count; ++c) {
+                    float acc = 0.0f;
+                    for (Index i = -r; i <= r; ++i) {
+                        Index j = c + i;
+                        if (j < 0) j = -j;
+                        if (j >= count) j = 2 * count - j - 2;
+                        j = std::clamp<Index>(j, 0, count - 1);
+                        acc += tmp[static_cast<std::size_t>(base + j * stride)] * k[static_cast<std::size_t>(i + r)];
+                    }
+                    v[static_cast<std::size_t>(base + c * stride)] = acc;
+                }
+            }
+        };
+        axis(sx, 1, x, z * y);           // rows
+        axis(sy, x, y, z * x);           // columns
+        axis(sz, plane, z, plane);       // planes
+    }
+
+    std::uint32_t logBlobSeeds(const float* values, const std::uint8_t* mask, Index z, Index y, Index x, double zAspect,
+                               double sigmaMin, double sigmaMax, int scales, std::uint32_t* out) {
+        requireExtent(z, y, x, "logBlobSeeds");
+        const Index plane = y * x, n = z * plane;
+        std::fill(out, out + n, 0u);
+        scales = std::max(1, scales);
+        sigmaMin = std::max(0.3, sigmaMin);
+        sigmaMax = std::max(sigmaMin, sigmaMax);
+        zAspect = std::max(1e-6, zAspect);
+
+        std::vector<float> best(static_cast<std::size_t>(n), 0.0f), bestScale(static_cast<std::size_t>(n), 0.0f);
+        std::vector<float> blur(static_cast<std::size_t>(n)), tmp;
+        for (int k = 0; k < scales; ++k) {
+            const double sigma = scales == 1 ? sigmaMin
+                                             : sigmaMin * std::pow(sigmaMax / sigmaMin, static_cast<double>(k) / (scales - 1));
+            std::copy_n(values, n, blur.data());
+            gaussianVolume(blur, z, y, x, sigma, sigma, sigma / zAspect, tmp);
+            const double norm = sigma * sigma;
+            for (Index iz = 0; iz < z; ++iz)
+                for (Index iy = 0; iy < y; ++iy)
+                    for (Index ix = 0; ix < x; ++ix) {
+                        const Index i = (iz * y + iy) * x + ix;
+                        if (!mask[i]) continue;
+                        const float c = blur[static_cast<std::size_t>(i)];
+                        auto tap = [&](Index j) { return blur[static_cast<std::size_t>(j)]; };
+                        const float lx = tap(ix > 0 ? i - 1 : i) + tap(ix + 1 < x ? i + 1 : i) - 2.0f * c;
+                        const float ly = tap(iy > 0 ? i - x : i) + tap(iy + 1 < y ? i + x : i) - 2.0f * c;
+                        const float lz = z > 1 ? tap(iz > 0 ? i - plane : i) + tap(iz + 1 < z ? i + plane : i) - 2.0f * c : 0.0f;
+                        // bright blob: the Laplacian dips, so negate it
+                        const float response = static_cast<float>(-norm * (lx + ly + lz));
+                        if (response > best[static_cast<std::size_t>(i)]) {
+                            best[static_cast<std::size_t>(i)] = response;
+                            bestScale[static_cast<std::size_t>(i)] = static_cast<float>(sigma);
+                        }
+                    }
+        }
+        // peaks of the response, strongest first, each suppressing its own width
+        std::vector<Index> candidates;
+        for (Index iz = 0; iz < z; ++iz)
+            for (Index iy = 0; iy < y; ++iy)
+                for (Index ix = 0; ix < x; ++ix) {
+                    const Index i = (iz * y + iy) * x + ix;
+                    if (!mask[i] || !(best[static_cast<std::size_t>(i)] > 0.0f)) continue;
+                    bool maximal = true;
+                    for (Index dz = -1; dz <= 1 && maximal; ++dz)
+                        for (Index dy = -1; dy <= 1 && maximal; ++dy)
+                            for (Index dx = -1; dx <= 1; ++dx) {
+                                const Index jz = iz + dz, jy = iy + dy, jx = ix + dx;
+                                if (jz < 0 || jz >= z || jy < 0 || jy >= y || jx < 0 || jx >= x) continue;
+                                if (best[static_cast<std::size_t>((jz * y + jy) * x + jx)] > best[static_cast<std::size_t>(i)]) {
+                                    maximal = false;
+                                    break;
+                                }
+                            }
+                    if (maximal) candidates.push_back(i);
+                }
+        std::stable_sort(candidates.begin(), candidates.end(), [&](Index a, Index b) {
+            return best[static_cast<std::size_t>(a)] > best[static_cast<std::size_t>(b)];
+        });
+        std::vector<std::array<double, 4>> accepted;   // z, y, x, radius^2
+        std::uint32_t count = 0;
+        for (Index i : candidates) {
+            const double iz = static_cast<double>(i / plane), iy = static_cast<double>((i % plane) / x),
+                         ix = static_cast<double>(i % x);
+            // the scale that answered corresponds to an object of radius sigma * sqrt(3),
+            // and that is the distance over which this peak owns the image
+            const double radius = std::max(1.0, std::sqrt(3.0) * static_cast<double>(bestScale[static_cast<std::size_t>(i)]));
+            bool keep = true;
+            for (const auto& a : accepted) {
+                const double dz = (iz - a[0]) * zAspect, dy = iy - a[1], dx = ix - a[2];
+                if (dz * dz + dy * dy + dx * dx < std::max(radius * radius, a[3])) {
+                    keep = false;
+                    break;
+                }
+            }
+            if (!keep) continue;
+            accepted.push_back({iz, iy, ix, radius * radius});
+            out[i] = 1u;   // accepted; numbered below
+        }
+        // Number the seeds by position, not by how strong the response was.
+        // The strength decides which peaks survive, but it can be all but tied
+        // between two of them, and then the ids would depend on the last bit
+        // of a Gaussian -- which differs between implementations and machines.
+        for (Index i = 0; i < n; ++i)
+            if (out[i]) out[i] = ++count;
+        return count;
+    }
+
     std::uint32_t distanceSeeds(const std::uint8_t* mask, Index z, Index y, Index x, double minDistance,
                                 std::uint32_t* out) {
         requireExtent(z, y, x, "distanceSeeds");
@@ -778,7 +926,10 @@ namespace sirius::app {
                             for (Index dx = -1; dx <= 1; ++dx) {
                                 const Index jz = iz + dz, jy = iy + dy, jx = ix + dx;
                                 if (jz < 0 || jz >= z || jy < 0 || jy >= y || jx < 0 || jx >= x) continue;
-                                if (dist[static_cast<std::size_t>((jz * y + jy) * x + jx)] > d) { maximal = false; break; }
+                                if (dist[static_cast<std::size_t>((jz * y + jy) * x + jx)] > d) {
+                                    maximal = false;
+                                    break;
+                                }
                             }
                     if (maximal) candidates.push_back(i);
                 }
@@ -793,7 +944,10 @@ namespace sirius::app {
             bool ok = true;
             for (const Voxel& a : accepted) {
                 const double dz = static_cast<double>(a.z - c.z), dy = static_cast<double>(a.y - c.y), dx = static_cast<double>(a.x - c.x);
-                if (dz * dz + dy * dy + dx * dx < minD2) { ok = false; break; }
+                if (dz * dz + dy * dy + dx * dx < minD2) {
+                    ok = false;
+                    break;
+                }
             }
             if (!ok) continue;
             accepted.push_back(c);

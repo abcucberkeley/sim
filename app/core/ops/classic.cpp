@@ -238,45 +238,85 @@ namespace sirius::app {
             for (Index i = 0; i < n; ++i) dst[i] = std::max(0.0f, a[static_cast<std::size_t>(i)] - b[static_cast<std::size_t>(i)]);
         }
 
-        // Frangi vesselness in the plane: the Hessian's eigenvalues at several
-        // scales say how tube-like each pixel is, which finds filaments that a
-        // threshold on intensity alone breaks into dashes.
-        void frangiPlane(const float* src, float* dst, Index y, Index x, double sigmaMin, double sigmaMax, int steps,
-                         std::vector<float>& work, std::vector<float>& tmp) {
-            const Index n = y * x;
+        // Eigenvalues of a symmetric 3x3, smallest absolute first. The
+        // analytic (trigonometric) solution: no iteration, no library.
+        std::array<double, 3> symmetricEigenvalues(double a11, double a12, double a13, double a22, double a23, double a33) {
+            const double p1 = a12 * a12 + a13 * a13 + a23 * a23;
+            std::array<double, 3> e{};
+            if (p1 <= 1e-30) {
+                e = {a11, a22, a33};
+            } else {
+                const double q = (a11 + a22 + a33) / 3.0;
+                const double p2 = (a11 - q) * (a11 - q) + (a22 - q) * (a22 - q) + (a33 - q) * (a33 - q) + 2.0 * p1;
+                const double p = std::sqrt(std::max(1e-30, p2 / 6.0));
+                const double b11 = (a11 - q) / p, b22 = (a22 - q) / p, b33 = (a33 - q) / p;
+                const double b12 = a12 / p, b13 = a13 / p, b23 = a23 / p;
+                const double det = b11 * (b22 * b33 - b23 * b23) - b12 * (b12 * b33 - b23 * b13) + b13 * (b12 * b23 - b22 * b13);
+                const double r = std::clamp(det / 2.0, -1.0, 1.0);
+                const double phi = std::acos(r) / 3.0;
+                const double e1 = q + 2.0 * p * std::cos(phi);
+                const double e3 = q + 2.0 * p * std::cos(phi + 2.0 * M_PI / 3.0);
+                e = {e1, 3.0 * q - e1 - e3, e3};
+            }
+            std::sort(e.begin(), e.end(), [](double a, double b) { return std::abs(a) < std::abs(b); });
+            return e;
+        }
+
+        // Frangi vesselness in 3D: at each width the Hessian's eigenvalues say
+        // whether the neighbourhood looks like a tube (one small eigenvalue
+        // along the axis, two large negative ones across it), a sheet or a
+        // blob. Filaments that run through z -- microtubules, actin, vessels --
+        // are found whatever their direction, which a plane-by-plane filter
+        // cannot do: it only sees the slice through them.
+        void frangiVolume(const float* src, float* dst, Index z, Index y, Index x, double zAspect, double sigmaMin,
+                          double sigmaMax, int scales, std::vector<float>& work, std::vector<float>& tmp) {
+            const Index plane = y * x, n = z * plane;
             std::fill(dst, dst + n, 0.0f);
-            steps = std::max(1, steps);
-            for (int k = 0; k < steps; ++k) {
-                const double sigma = steps == 1 ? sigmaMin
-                                                : sigmaMin + (sigmaMax - sigmaMin) * static_cast<double>(k) / (steps - 1);
+            scales = std::max(1, scales);
+            sigmaMin = std::max(0.3, sigmaMin);
+            sigmaMax = std::max(sigmaMin, sigmaMax);
+            zAspect = std::max(1e-6, zAspect);
+            std::vector<float> vesselness(static_cast<std::size_t>(n));
+            std::vector<double> sVals(static_cast<std::size_t>(n));
+            for (int k = 0; k < scales; ++k) {
+                const double sigma = scales == 1 ? sigmaMin
+                                                 : sigmaMin * std::pow(sigmaMax / sigmaMin, static_cast<double>(k) / (scales - 1));
                 work.assign(src, src + n);
-                gaussianPlane(work.data(), y, x, sigma, tmp);
-                const double norm = sigma * sigma;   // scale normalisation
-                // second derivatives, then the eigenvalues of [[xx, xy], [xy, yy]]
+                gaussianVolume(work, z, y, x, sigma, sigma, sigma / zAspect, tmp);
+                const double norm = sigma * sigma;
+                std::fill(vesselness.begin(), vesselness.end(), 0.0f);
+                std::fill(sVals.begin(), sVals.end(), 0.0);
                 double maxS = 0.0;
-                std::vector<float> vesselness(static_cast<std::size_t>(n), 0.0f);
-                std::vector<double> sVals(static_cast<std::size_t>(n), 0.0);
-                for (Index yy = 0; yy < y; ++yy)
-                    for (Index xx = 0; xx < x; ++xx) {
-                        const Index i = yy * x + xx;
-                        const Index xm = std::max<Index>(0, xx - 1), xp = std::min(x - 1, xx + 1);
-                        const Index ym = std::max<Index>(0, yy - 1), yp = std::min(y - 1, yy + 1);
-                        const double c = work[static_cast<std::size_t>(i)];
-                        const double dxx = work[static_cast<std::size_t>(yy * x + xp)] + work[static_cast<std::size_t>(yy * x + xm)] - 2.0 * c;
-                        const double dyy = work[static_cast<std::size_t>(yp * x + xx)] + work[static_cast<std::size_t>(ym * x + xx)] - 2.0 * c;
-                        const double dxy = 0.25 * (work[static_cast<std::size_t>(yp * x + xp)] + work[static_cast<std::size_t>(ym * x + xm)] -
-                                                   work[static_cast<std::size_t>(yp * x + xm)] - work[static_cast<std::size_t>(ym * x + xp)]);
-                        const double a = norm * dxx, b = norm * dyy, cxy = norm * dxy;
-                        const double t = std::sqrt((a - b) * (a - b) + 4.0 * cxy * cxy);
-                        double l1 = 0.5 * (a + b + t), l2 = 0.5 * (a + b - t);
-                        if (std::abs(l1) > std::abs(l2)) std::swap(l1, l2);   // |l1| <= |l2|
-                        if (l2 >= 0.0) continue;                              // dark ridge: not a bright tube
-                        const double rb = std::abs(l1) / std::max(std::abs(l2), 1e-12);
-                        const double sMag = std::sqrt(l1 * l1 + l2 * l2);
-                        sVals[static_cast<std::size_t>(i)] = sMag;
-                        maxS = std::max(maxS, sMag);
-                        vesselness[static_cast<std::size_t>(i)] = static_cast<float>(std::exp(-rb * rb / 0.5));
-                    }
+                for (Index iz = 0; iz < z; ++iz)
+                    for (Index iy = 0; iy < y; ++iy)
+                        for (Index ix = 0; ix < x; ++ix) {
+                            const Index i = (iz * y + iy) * x + ix;
+                            auto at = [&](Index jz, Index jy, Index jx) {
+                                jz = std::clamp<Index>(jz, 0, z - 1);
+                                jy = std::clamp<Index>(jy, 0, y - 1);
+                                jx = std::clamp<Index>(jx, 0, x - 1);
+                                return static_cast<double>(work[static_cast<std::size_t>((jz * y + jy) * x + jx)]);
+                            };
+                            const double c = at(iz, iy, ix);
+                            const double dxx = norm * (at(iz, iy, ix + 1) + at(iz, iy, ix - 1) - 2.0 * c);
+                            const double dyy = norm * (at(iz, iy + 1, ix) + at(iz, iy - 1, ix) - 2.0 * c);
+                            const double dzz = z > 1 ? norm * (at(iz + 1, iy, ix) + at(iz - 1, iy, ix) - 2.0 * c) : 0.0;
+                            const double dxy = norm * 0.25 * (at(iz, iy + 1, ix + 1) + at(iz, iy - 1, ix - 1) - at(iz, iy + 1, ix - 1) - at(iz, iy - 1, ix + 1));
+                            const double dxz = z > 1 ? norm * 0.25 * (at(iz + 1, iy, ix + 1) + at(iz - 1, iy, ix - 1) - at(iz + 1, iy, ix - 1) - at(iz - 1, iy, ix + 1))
+                                                     : 0.0;
+                            const double dyz = z > 1 ? norm * 0.25 * (at(iz + 1, iy + 1, ix) + at(iz - 1, iy - 1, ix) - at(iz + 1, iy - 1, ix) - at(iz - 1, iy + 1, ix))
+                                                     : 0.0;
+                            const std::array<double, 3> e = symmetricEigenvalues(dxx, dxy, dxz, dyy, dyz, dzz);
+                            const double l1 = e[0], l2 = e[1], l3 = e[2];
+                            if (l2 >= 0.0 || l3 >= 0.0) continue;   // a bright tube bends down across its axis
+                            const double ra = std::abs(l2) / std::max(std::abs(l3), 1e-12);
+                            const double rb = std::abs(l1) / std::max(std::sqrt(std::abs(l2 * l3)), 1e-12);
+                            const double sMag = std::sqrt(l1 * l1 + l2 * l2 + l3 * l3);
+                            sVals[static_cast<std::size_t>(i)] = sMag;
+                            maxS = std::max(maxS, sMag);
+                            vesselness[static_cast<std::size_t>(i)] =
+                                static_cast<float>((1.0 - std::exp(-ra * ra / 0.5)) * std::exp(-rb * rb / 0.5));
+                        }
                 const double c2 = 2.0 * std::max(1e-12, 0.5 * maxS) * std::max(1e-12, 0.5 * maxS);
                 for (Index i = 0; i < n; ++i) {
                     if (vesselness[static_cast<std::size_t>(i)] <= 0.0f) continue;
@@ -303,39 +343,33 @@ namespace sirius::app {
                     channelParam("channel", "Channel", 0),
                     choiceParam("enhance", "Enhance", {"None", "Blobs (DoG)", "Tubes (Frangi)"}, "None")
                         .withHelp("What to bring out before the threshold: round objects of one size, or filaments"),
-                    doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px")
-                        .withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
-                    doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px")
-                        .withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced(),
-                    intParam("enhance_scales", "Scales", 4).range(1, 16)
-                        .withHelp("Tubes: how many widths between the two σ").asAdvanced(),
-                    intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px")
-                        .withHelp("White top-hat: removes background structures larger than this radius (0 = off)"),
-                    doubleParam("sigma", "Smoothing σ", 1.0).range(0.0, 50.0, 0.5, 1).withUnit("px")
-                        .withHelp("Gaussian blur before the threshold (0 = none)"),
+                    doubleParam("enhance_sigma", "Feature σ", 2.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Blobs: the radius they respond to. Tubes: the smallest tube width"),
+                    doubleParam("enhance_sigma_max", "Feature σ max", 6.0).range(0.3, 100.0, 0.5, 1).withUnit("px").withHelp("Tubes: the largest width; the response is the best over the range").asAdvanced(),
+                    intParam("enhance_scales", "Scales", 4).range(1, 16).withHelp("Tubes: how many widths between the two σ").asAdvanced(),
+                    intParam("tophat", "Background radius", 0).range(0, 2000).withUnit("px").withHelp("White top-hat: removes background structures larger than this radius (0 = off)"),
+                    doubleParam("sigma", "Smoothing σ", 1.0).range(0.0, 50.0, 0.5, 1).withUnit("px").withHelp("Gaussian blur before the threshold (0 = none)"),
                     choiceParam("method", "Threshold", {"Otsu", "Multi-Otsu", "Manual", "Percentile", "Local mean", "Local contrast"}, "Otsu"),
                     doubleParam("value", "Value", 0.5).range(-1e9, 1e9, 0.01, 4).withHelp("Manual threshold"),
                     doubleParam("percentile", "Percentile", 90.0).range(0.0, 100.0, 0.5, 1).withUnit("%"),
-                    intParam("window", "Local window", 51).range(3, 4001).withUnit("px")
-                        .withHelp("Local mean: side of the neighbourhood the mean is taken over"),
-                    doubleParam("local_ratio", "Local ratio", 1.1).range(0.0, 10.0, 0.05, 2)
-                        .withHelp("Local mean: foreground where value > ratio × local mean + offset"),
+                    intParam("window", "Local window", 51).range(3, 4001).withUnit("px").withHelp("Local mean: side of the neighbourhood the mean is taken over"),
+                    doubleParam("local_ratio", "Local ratio", 1.1).range(0.0, 10.0, 0.05, 2).withHelp("Local mean: foreground where value > ratio × local mean + offset"),
                     doubleParam("local_offset", "Local offset", 0.0).range(-1e9, 1e9, 0.01, 4).asAdvanced(),
-                    doubleParam("contrast_k", "Contrast k", 1.5).range(0.0, 10.0, 0.1, 2)
-                        .withHelp("Local contrast: the cut sits k local standard deviations above the local mean, so it "
-                                  "follows both the background level and the local noise"),
-                    intParam("opening", "Opening radius", 1).range(0, 100).withUnit("px")
-                        .withHelp("Binary opening drops specks and necks thinner than this (0 = off)"),
+                    doubleParam("contrast_k", "Contrast k", 1.5).range(0.0, 10.0, 0.1, 2).withHelp("Local contrast: the cut sits k local standard deviations above the local mean, so it "
+                                                                                                   "follows both the background level and the local noise"),
+                    intParam("opening", "Opening radius", 1).range(0, 100).withUnit("px").withHelp("Binary opening drops specks and necks thinner than this (0 = off)"),
                     boolParam("fill_holes", "Fill holes", true).withHelp("Enclosed background inside an object becomes object, per plane"),
                     choiceParam("post", "Instances", {"Watershed (distance)", "Connected components"}, "Watershed (distance)"),
-                    choiceParam("seeds", "Seeds", {"Distance maxima", "H-maxima"}, "H-maxima")
-                        .withHelp("What splits touching objects: the peaks of the distance map, or only the peaks that "
-                                  "stand clear of their surroundings (fewer false splits)"),
-                    doubleParam("seed_distance", "Seed distance", 8.0).range(1.0, 200.0, 0.5, 1).withUnit("px")
-                        .withHelp("Distance maxima: minimum distance between seeds").asAdvanced(),
-                    doubleParam("seed_depth", "Seed depth", 2.0).range(0.1, 100.0, 0.5, 1).withUnit("px")
-                        .withHelp("H-maxima: how far a peak must stand above its surroundings to be its own object; "
-                                  "raise it when one object is split, lower it when two are merged"),
+                    choiceParam("seeds", "Seeds", {"Distance maxima", "H-maxima", "Blob centres (LoG)"}, "H-maxima")
+                        .withHelp("What splits touching objects. The peaks of the distance map; only the peaks that stand "
+                                  "clear of their surroundings (fewer false splits); or the centres of the blobs the image "
+                                  "itself shows, found over a range of sizes, which is the one that copes with objects of "
+                                  "different sizes"),
+                    doubleParam("seed_distance", "Seed distance", 8.0).range(1.0, 200.0, 0.5, 1).withUnit("px").withHelp("Distance maxima: minimum distance between seeds").asAdvanced(),
+                    doubleParam("seed_depth", "Seed depth", 2.0).range(0.1, 100.0, 0.5, 1).withUnit("px").withHelp("H-maxima: how far a peak must stand above its surroundings to be its own object; "
+                                                                                                                   "raise it when one object is split, lower it when two are merged"),
+                    doubleParam("blob_radius", "Object radius", 4.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the smallest object radius to look for, in x / y pixels"),
+                    doubleParam("blob_radius_max", "Object radius max", 12.0).range(0.5, 500.0, 0.5, 1).withUnit("px").withHelp("Blob centres: the largest radius; the detector answers to every size in between").asAdvanced(),
+                    intParam("blob_scales", "Blob scales", 5).range(1, 24).withHelp("Blob centres: how many sizes are tried between the two radii").asAdvanced(),
                     intParam("min_voxels", "Min. voxels", 20).range(0, 1000000000),
                     stringParam("class_name", "Class", "object").asAdvanced(),
                 };
@@ -363,8 +397,10 @@ namespace sirius::app {
                                     sigma > 0 ? "σ " + formatNumber(sigma, 1) : "",
                                     cut,
                                     p.getString("post", "Watershed (distance)").rfind("Watershed", 0) != 0 ? "components"
-                                    : p.getString("seeds", "H-maxima") == "H-maxima"                       ? "watershed h"
-                                                                                                          : "watershed d"});
+                                    : p.getString("seeds", "H-maxima") == "Blob centres (LoG)"
+                                        ? "watershed blobs r " + formatNumber(p.getDouble("blob_radius", 4.0), 1)
+                                    : p.getString("seeds", "H-maxima") == "H-maxima" ? "watershed h"
+                                                                                     : "watershed d"});
             }
 
             StepOutput run(const StepInput& input, const ParamSet& p, const StepContext& ctx) const override {
@@ -394,12 +430,20 @@ namespace sirius::app {
 
                 LabelPostOptions post;
                 post.post = p.getString("post", "Watershed (distance)").rfind("Watershed", 0) == 0 ? "Watershed (distance)"
-                                                                                                     : "Connected components";
+                                                                                                   : "Connected components";
                 post.threshold = 0.5;
                 post.minVoxels = p.getInt("min_voxels", 20);
                 post.seedMinDistance = p.getDouble("seed_distance", 8.0);
                 post.seeds = p.getString("seeds", "H-maxima");
                 post.seedDepth = p.getDouble("seed_depth", 2.0);
+                const bool blobSeeds = post.seeds == "Blob centres (LoG)" && post.post.rfind("Watershed", 0) == 0;
+                // the LoG answers strongest at sigma ~ r / sqrt(3) for a ball of radius r
+                const double blobSigma = std::max(0.3, p.getDouble("blob_radius", 4.0) / std::sqrt(3.0));
+                const double blobSigmaMax = std::max(blobSigma, p.getDouble("blob_radius_max", 12.0) / std::sqrt(3.0));
+                const int blobScales = static_cast<int>(p.getInt("blob_scales", 5));
+                const double zAspect = meta.voxelUm[0] > 0.0 ? std::max(1e-6, meta.voxelUm[2] / meta.voxelUm[0]) : 1.0;
+                const double zAspectOfMeta = zAspect;
+                std::vector<std::uint32_t> seedVolume;
                 post.className = p.getString("class_name", "object");
 
                 std::vector<float> work(static_cast<std::size_t>(n)), tmp, scratch, localMean, localStd, enhA, enhB;
@@ -415,17 +459,21 @@ namespace sirius::app {
                     const double base = 0.1 + 0.9 * static_cast<double>(t) / d.t, span = 0.9 / d.t;
                     const BufferView<const float> vol = out.array->volume(channel, t);
                     std::copy_n(vol.data(), n, work.data());
-                    // 1. enhance the feature, flatten and smooth, per plane
+                    // 1. enhance the feature, flatten and smooth. Tubes are a 3D
+                    // filter over the whole volume; blobs and the rest per plane.
+                    if (enhance == "Tubes (Frangi)") {
+                        ctx.report(base + span * 0.1, "vesselness");
+                        enhA.resize(static_cast<std::size_t>(n));
+                        frangiVolume(work.data(), enhA.data(), d.z, d.y, d.x, zAspectOfMeta, enhanceSigma,
+                                     std::max(enhanceSigma, enhanceSigmaMax), enhanceScales, scratch, tmp);
+                        std::copy_n(enhA.data(), n, work.data());
+                    }
                     for (Index z = 0; z < d.z; ++z) {
                         ctx.throwIfCancelled();
                         float* pl = work.data() + z * plane;
-                        if (enhance != "None") {
+                        if (enhance == "Blobs (DoG)") {
                             enhA.resize(static_cast<std::size_t>(plane));
-                            if (enhance == "Blobs (DoG)")
-                                dogPlane(pl, enhA.data(), d.y, d.x, enhanceSigma, 1.6, scratch, enhB, tmp);
-                            else
-                                frangiPlane(pl, enhA.data(), d.y, d.x, enhanceSigma, std::max(enhanceSigma, enhanceSigmaMax),
-                                            enhanceScales, scratch, tmp);
+                            dogPlane(pl, enhA.data(), d.y, d.x, enhanceSigma, 1.6, scratch, enhB, tmp);
                             std::copy_n(enhA.data(), plane, pl);
                         }
                         topHatPlane(pl, d.y, d.x, tophat, scratch, tmp);
@@ -486,8 +534,18 @@ namespace sirius::app {
                         on += mask[static_cast<std::size_t>(i)];
                     }
                     foregroundFraction += static_cast<double>(on) / static_cast<double>(std::max<Index>(1, n)) / d.t;
-                    ctx.report(base + span * 0.6, "instances");
-                    // 4. instances
+                    // 4. seeds from the image itself, when asked for
+                    post.externalSeeds = nullptr;
+                    if (blobSeeds) {
+                        ctx.report(base + span * 0.6, "blob centres");
+                        seedVolume.assign(static_cast<std::size_t>(n), 0u);
+                        post.externalSeedCount = logBlobSeeds(work.data(), mask.data(), d.z, d.y, d.x, zAspect, blobSigma,
+                                                              blobSigmaMax, blobScales, seedVolume.data());
+                        post.externalSeeds = seedVolume.data();
+                    }
+                    ctx.throwIfCancelled();
+                    ctx.report(base + span * 0.8, "instances");
+                    // 5. instances
                     total += labelsFromProbabilities(fg.data(), nullptr, d.z, d.y, d.x, post, *labels, t);
                 }
                 for (LabelStats& s : labels->stats()) s.confidence = 1.0;   // intensities, not probabilities

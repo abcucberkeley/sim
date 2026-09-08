@@ -233,7 +233,7 @@ def run_plugin(plugin: Plugin, data: np.ndarray, params: Dict[str, Any], meta: D
         cancelled=lambda: bool(cancelled()) if cancelled else False,
         labels=labels,
         meta=meta,
-        log=lambda *a: print("[plugin %s]" % plugin.kind, *a, file=sys.stderr),
+        log=lambda *a: print(f"[plugin {plugin.kind}]", *a, file=sys.stderr),
     )
     # defaults for parameters the caller left out
     full = {p["key"]: p["default"] for p in plugin.spec.get("params", [])}

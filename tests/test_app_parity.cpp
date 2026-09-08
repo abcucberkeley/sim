@@ -134,9 +134,7 @@ namespace {
         {"threshold_percentile", "threshold", {{"channel", 0}, {"method", "Percentile"}, {"percentile", 92.0}, {"post", "Connected components"}, {"min_voxels", 0}}},
         // classical segmentation: one case per branch that has its own maths,
         // so the Python mirror cannot drift from the C++ on any of them
-        {"classic_otsu_hmax", "classic",
-         {{"channel", 0}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1}, {"post", "Watershed (distance)"},
-          {"seeds", "H-maxima"}, {"seed_depth", 1.5}, {"min_voxels", 4}}},
+        {"classic_otsu_hmax", "classic", {{"channel", 0}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1}, {"post", "Watershed (distance)"}, {"seeds", "H-maxima"}, {"seed_depth", 1.5}, {"min_voxels", 4}}},
         // No "Distance maxima" case: with those seeds this fixture puts two
         // seeds equidistant from the ridge between them, and the two floods
         // break that tie differently -- the application's priority queue and
@@ -145,25 +143,19 @@ namespace {
         // border moves. Matching it would mean reimplementing the C++ queue
         // order in the mirror. The h-maxima case below covers the same
         // watershed code with seeds that are not tied.
-        {"classic_multi_otsu", "classic",
-         {{"channel", 1}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false},
-          {"post", "Connected components"}, {"min_voxels", 2}}},
-        {"classic_local_contrast", "classic",
-         {{"channel", 0}, {"method", "Local contrast"}, {"window", 11}, {"contrast_k", 1.2}, {"sigma", 0.0},
-          {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
-        {"classic_local_mean", "classic",
-         {{"channel", 0}, {"method", "Local mean"}, {"window", 11}, {"local_ratio", 1.15}, {"sigma", 0.0},
-          {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
-        {"classic_blobs", "classic",
-         {{"channel", 0}, {"enhance", "Blobs (DoG)"}, {"enhance_sigma", 1.5}, {"method", "Otsu"}, {"sigma", 0.0},
-          {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
-        {"classic_tubes", "classic",
-         {{"channel", 0}, {"enhance", "Tubes (Frangi)"}, {"enhance_sigma", 1.0}, {"enhance_sigma_max", 3.0},
-          {"enhance_scales", 3}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false},
-          {"post", "Connected components"}, {"min_voxels", 2}}},
-        {"classic_tophat", "classic",
-         {{"channel", 0}, {"tophat", 4}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1},
-          {"post", "Connected components"}, {"min_voxels", 4}}},
+        {"classic_multi_otsu", "classic", {{"channel", 1}, {"method", "Multi-Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_local_contrast", "classic", {{"channel", 0}, {"method", "Local contrast"}, {"window", 11}, {"contrast_k", 1.2}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_local_mean", "classic", {{"channel", 0}, {"method", "Local mean"}, {"window", 11}, {"local_ratio", 1.15}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_blobs", "classic", {{"channel", 0}, {"enhance", "Blobs (DoG)"}, {"enhance_sigma", 1.5}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        // No "Blob centres (LoG)" case either. Inside a smooth blob the
+        // scale-normalised response is a broad, nearly flat cap, so which
+        // voxel of it wins the peak comes down to the last bits of a Gaussian
+        // -- and the two Gaussians (this one and scipy's) do not agree there.
+        // A seed one voxel over moves the boundary the flood then draws. The
+        // property that matters, one seed per object whatever its size, is
+        // asserted directly in tests/test_app_tracking.cpp.
+        {"classic_tubes", "classic", {{"channel", 0}, {"enhance", "Tubes (Frangi)"}, {"enhance_sigma", 1.0}, {"enhance_sigma_max", 3.0}, {"enhance_scales", 3}, {"method", "Otsu"}, {"sigma", 0.0}, {"opening", 0}, {"fill_holes", false}, {"post", "Connected components"}, {"min_voxels", 2}}},
+        {"classic_tophat", "classic", {{"channel", 0}, {"tophat", 4}, {"method", "Otsu"}, {"sigma", 1.0}, {"opening", 1}, {"post", "Connected components"}, {"min_voxels", 4}}},
     };
 
     ParamSet paramsOf(const json& j) {
@@ -212,9 +204,7 @@ TEST_CASE("parity fixtures for the Python mirror of the operations", "[.parity][
         const StepOutput out = op->run(in, params, ctx);
         REQUIRE(out.array);
 
-        json entry{{"name", c.name}, {"kind", c.kind}, {"params", params.toJson()}, {"dims", dimsJson(out.meta.dims)},
-                   {"voxel_um", json::array({out.meta.voxelUm[0], out.meta.voxelUm[1], out.meta.voxelUm[2]})},
-                   {"labels", false}};
+        json entry{{"name", c.name}, {"kind", c.kind}, {"params", params.toJson()}, {"dims", dimsJson(out.meta.dims)}, {"voxel_um", json::array({out.meta.voxelUm[0], out.meta.voxelUm[1], out.meta.voxelUm[2]})}, {"labels", false}};
         writeFloats(dir / (std::string(c.name) + ".f32"), out.array->data(),
                     static_cast<std::size_t>(out.array->numel()));
         if (out.labels && !out.labels->empty()) {

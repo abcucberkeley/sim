@@ -26,9 +26,20 @@ namespace sirius::app {
             std::fill(out, out + n, 0u);
             std::vector<float> distance(static_cast<std::size_t>(n));
             distanceTransform(mask.data(), z, y, x, distance.data());
-            const std::uint32_t seeds = options.seeds == "H-maxima"
-                                            ? hMaximaSeeds(distance.data(), mask.data(), z, y, x, options.seedDepth, out)
-                                            : distanceSeeds(mask.data(), z, y, x, options.seedMinDistance, out);
+            std::uint32_t seeds = 0;
+            if (options.externalSeeds) {
+                // seeds the caller found in the image itself; keep only the
+                // ones the mask actually covers
+                seeds = 0;
+                for (Index i = 0; i < n; ++i) {
+                    out[i] = mask[static_cast<std::size_t>(i)] ? options.externalSeeds[i] : 0u;
+                    seeds = std::max(seeds, out[i]);
+                }
+            } else if (options.seeds == "H-maxima") {
+                seeds = hMaximaSeeds(distance.data(), mask.data(), z, y, x, options.seedDepth, out);
+            } else {
+                seeds = distanceSeeds(mask.data(), z, y, x, options.seedMinDistance, out);
+            }
             if (seeds == 0) {
                 count = connectedComponents(mask.data(), z, y, x, out);
             } else {
