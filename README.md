@@ -380,7 +380,12 @@ registering on one channel and time point and applying that layout to every othe
 
 **Segmentation models**: Segment ▸ Download model… (or Hub… next to the model field)
 opens on the model families — Cellpose and micro-SAM, which return instance labels
-directly and fetch their weights from the authors, no account needed. A family whose
+directly and fetch their weights from the authors, no account needed. Both are object
+models, for compact things: cells, nuclei, organelles. Filaments, vessels and networks
+are not what they are trained on, and on a dense filament network they return
+cell-shaped pieces that ignore the filaments; use Classical segmentation with the Tubes
+enhancement there, which traces the structure (`app/help/seg.md` gives the measurement
+on the bundled SIM reconstruction). A family whose
 package is missing on the worker is installed after a confirmation (`pip install
 cellpose`; `conda install -c conda-forge micro_sam` in a conda environment), with the
 installer's output streamed into the dialog, and the weights can be fetched right away.

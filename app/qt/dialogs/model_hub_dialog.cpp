@@ -262,7 +262,7 @@ namespace sirius::app {
                                auto* idItem = cell(gated ? id + QStringLiteral("  (gated)") : id, id);
                                idItem->setData(Qt::UserRole + 1, gated);
                                idItem->setToolTip(gated ? id + QStringLiteral("\nGated: accept the terms on huggingface.co while signed in, "
-                                                                            "then add your access token (Token…)")
+                                                                              "then add your access token (Token…)")
                                                         : id);
                                if (gated) idItem->setForeground(theme::kAccent);
                                results->setItem(row, 0, idItem);
@@ -308,7 +308,8 @@ namespace sirius::app {
                                    : QStringLiteral("This repository has no TorchScript / ONNX file; SIRIUS cannot run its weights directly.");
                 if (repoGated)
                     note += QStringLiteral(" Gated repository: accept its terms at https://huggingface.co/%1 while signed in, then add "
-                                           "your access token with Token….").arg(id);
+                                           "your access token with Token….")
+                                .arg(id);
                 fileNote->setText(note);
             });
         }
@@ -359,8 +360,7 @@ namespace sirius::app {
             progress->setValue(0);
             client->cancel = false;
             const QString id = repo;
-            callWorker(QStringLiteral("Downloading ") + file, {{"repo", toStd(id)}, {"file", toStd(file)}}, "hub_download",
-                       [this, id, file](const nlohmann::json& r) {
+            callWorker(QStringLiteral("Downloading ") + file, {{"repo", toStd(id)}, {"file", toStd(file)}}, "hub_download", [this, id, file](const nlohmann::json& r) {
                            const QString path = fromStd(r.value("path", std::string()));
                            download->setEnabled(true);
                            progress->setValue(1000);
@@ -369,9 +369,7 @@ namespace sirius::app {
                                useFile->setEnabled(true);
                            }
                            cacheListed = false;   // the Local tab lists it on its next visit
-                           setStatus(QStringLiteral("Downloaded %1 (%2) to %3").arg(file, bytesText(r.value("bytes", -1LL)), path), false);
-                       },
-                       true);
+                           setStatus(QStringLiteral("Downloaded %1 (%2) to %3").arg(file, bytesText(r.value("bytes", -1LL)), path), false); }, true);
         }
 
         void checkFamilies() {
@@ -484,8 +482,7 @@ namespace sirius::app {
             client->cancel = false;
             progress->setValue(0);
             showLog(QString());
-            callWorker(QStringLiteral("Installing ") + card.package, {{"family", toStd(card.family)}}, "install",
-                       [this, index](const nlohmann::json& r) {
+            callWorker(QStringLiteral("Installing ") + card.package, {{"family", toStd(card.family)}}, "install", [this, index](const nlohmann::json& r) {
                            for (FamilyCard& c : cards) c.use->setEnabled(true);
                            FamilyCard& c = cards[index];
                            const bool ok = r.value("ok", false) && r.value("available", false);
@@ -505,9 +502,7 @@ namespace sirius::app {
                                       [this, index](const nlohmann::json& info) {
                                           applyFamilyInfo(index, info);
                                           if (cards[index].available) useFamily(index);
-                                      });
-                       },
-                       true);
+                                      }); }, true);
         }
 
         void runPrepare(std::size_t index, const QString& spec) {
@@ -515,15 +510,12 @@ namespace sirius::app {
             client->cancel = false;
             progress->setValue(0);
             showLog(QString());
-            callWorker(QStringLiteral("Fetching the weights of ") + spec, {{"spec", toStd(spec)}}, "model_prepare",
-                       [this, index, spec](const nlohmann::json& r) {
+            callWorker(QStringLiteral("Fetching the weights of ") + spec, {{"spec", toStd(spec)}}, "model_prepare", [this, index, spec](const nlohmann::json& r) {
                            for (FamilyCard& c : cards) c.use->setEnabled(true);
                            cards[index].weightsCached = 1;
                            refreshFamilyStatus(index);
                            setStatus(QStringLiteral("Weights ready: %1").arg(fromStd(r.value("path", std::string()))), false);
-                           choose(spec);
-                       },
-                       true);
+                           choose(spec); }, true);
         }
 
         void listCache() {
@@ -578,7 +570,10 @@ namespace sirius::app {
             QStringLiteral("Packages that segment cells and nuclei out of the box and return instance labels directly (no "
                            "threshold or watershed step). A missing package is installed into the worker's Python on request; "
                            "the weights come from the model's authors, no Hugging Face account needed. Any model name can "
-                           "also be typed into the step's Model field as cellpose:<model> / microsam:<type>."),
+                           "also be typed into the step's Model field as cellpose:<model> / microsam:<type>.\n\n"
+                           "These are object models. For filaments, vessels or a network -- anything long and thin rather than "
+                           "compact -- use Classical segmentation with the Tubes enhancement instead: it traces the structure, "
+                           "where a cell model carves the field into cell-shaped pieces."),
             11, theme::kNeutral600, -1, fam);
         famNote->setWordWrap(true);
         fl->addWidget(famNote);
@@ -594,13 +589,13 @@ namespace sirius::app {
             const char* models[6];
         };
         const CardSpec specs[] = {
-            {"cellpose", "Cellpose", "cellpose", "cellpose:default",
-             "Generalist cell and nucleus segmentation, 2D and 3D, any modality. Cellpose 4 ships one built-in model "
-             "(cellpose:default); Cellpose 3 offers cyto3, nuclei and more. Recommended first choice for fluorescence.",
+            {"cellpose", "Cellpose", "cellpose", "cellpose:default", "Whole cells and nuclei: compact, roughly convex objects, 2D and 3D, any modality. Cellpose 4 ships one "
+                                                                     "built-in model (cellpose:default); Cellpose 3 offers cyto3, nuclei and more. Trained on cells, so on a "
+                                                                     "filament network it returns cell-shaped pieces instead of filaments.",
              {"default", nullptr}},
-            {"microsam", "micro-SAM", "micro_sam", "microsam:vit_b_lm",
-             "Segment Anything fine-tuned for microscopy with automatic instance segmentation: vit_b_lm / vit_l_lm for "
-             "light microscopy, vit_b_em_organelles for electron microscopy. The generalist for unusual specimens.",
+            {"microsam", "micro-SAM", "micro_sam", "microsam:vit_b_lm", "Segment Anything fine-tuned for microscopy: vit_b_lm / vit_l_lm for light microscopy, "
+                                                                        "vit_b_em_organelles for electron microscopy. A generalist for objects an ordinary cell model misses, "
+                                                                        "but still an object segmenter: it does not trace filaments either.",
              {"vit_b_lm", "vit_l_lm", "vit_t_lm", "vit_b_em_organelles", "vit_l_em_organelles", nullptr}},
         };
         int i = 0;

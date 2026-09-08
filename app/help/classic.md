@@ -28,4 +28,6 @@ $$
 
 ## Note
 
-Start with Otsu, σ 1, opening 1 and the watershed on h-maxima seeds. When the objects vary in size, switch the seeds to blob centres and give their radius range. When the illumination is uneven, switch the threshold to Local contrast or add a top-hat of about the object radius. When objects sit in texture, turn on the blob enhancement at their radius. When one object keeps being split, raise the seed depth. For crowded or low-contrast data a learned model (the Segmentation step with Cellpose) still separates objects the classical route cannot.
+Start with Otsu, σ 1, opening 1 and the watershed on h-maxima seeds. When the objects vary in size, switch the seeds to blob centres and give their radius range.
+
+For filaments rather than compact objects the recipe is different, and these defaults are wrong for it: turn on *Tubes*, set the widths to the filament thickness (σ 0.8 – 2.0 over three scales suits the bundled SIM reconstruction), leave the smoothing and the opening off, and take *Connected components* — a distance watershed has nothing to split there. A plain intensity threshold on that data returns one object: the whole cell. When the illumination is uneven, switch the threshold to Local contrast or add a top-hat of about the object radius. When objects sit in texture, turn on the blob enhancement at their radius. When one object keeps being split, raise the seed depth. For crowded or low-contrast data a learned model (the Segmentation step with Cellpose) still separates objects the classical route cannot.

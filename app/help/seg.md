@@ -22,7 +22,13 @@ $$
 
 ## Choosing a model
 
-For nuclei and cells in fluorescence, Cellpose (`cellpose:default`) is the safest first choice: trained on microscopy, 2D and 3D, no prompts; Cellpose 4 ships one built-in model (about 1.2 GB, fetched from the authors on first use, no account needed), Cellpose 3 offers `cyto3`, `nuclei` and more. micro-SAM adapts the Segment Anything models to light and electron microscopy (`vit_b_lm`, `vit_b_em_organelles`) and is the better generalist when the specimen is unusual. A family whose package is missing on the worker's host is installed from the hub dialog after a confirmation (`pip install cellpose`; `conda install -c conda-forge micro_sam` in a conda environment). Plain SAM checkpoints on Hugging Face are in the transformers format, expect prompts and are not run directly; SAM 3 there is also gated, so it needs an accepted licence and an access token (Hub… ▸ Token…, or Preferences).
+Match the model to the shape of the structure.
+
+**Compact objects — cells, nuclei, organelles.** Cellpose (`cellpose:default`) is the first thing to try: trained on microscopy, 2D and 3D, no prompts. Cellpose 4 ships one built-in model (about 1.2 GB, fetched from the authors on first use, no account needed); Cellpose 3 offers `cyto3`, `nuclei` and more. micro-SAM (`vit_b_lm`, `vit_b_em_organelles`) is the generalist for specimens an ordinary cell model misses.
+
+**Filaments, vessels, networks.** Neither is the right tool, and the failure is not subtle. Both are instance segmenters trained on cells: given a dense filament network they carve the field into cell-shaped pieces whose boundaries have nothing to do with the filaments. On the bundled SIM reconstruction (`examples/sim_bundled.sirius.toml`, a filament network in a round cell) Cellpose returns about seventy polygonal tiles covering nearly a fifth of the volume, none following a filament. Use the Classical segmentation step with the *Tubes* enhancement instead: it scores how tube-like each voxel is and traces the structure. On the same data, σ 0.8 – 2.0 over three scales with an Otsu cut and connected components gives about seventy-five filament segments over three per cent of the volume, lying along the filaments.
+
+A family whose package is missing on the worker's host is installed from the hub dialog after a confirmation (`pip install cellpose`; `conda install -c conda-forge micro_sam` in a conda environment). Plain SAM checkpoints on Hugging Face are in the transformers format, expect prompts and are not run directly; SAM 3 there is also gated, so it needs an accepted licence and an access token (Hub… ▸ Token…, or Preferences).
 
 ## Note
 
