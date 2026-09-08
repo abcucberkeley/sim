@@ -929,6 +929,31 @@ namespace sirius::app {
             return out;
         }
 
+        // Offered above the fields by any operation that has them. Choosing
+        // one writes its values into the step -- an ordinary undoable
+        // parameter change -- and the control returns to its caption, because
+        // what a step holds afterwards is a set of values and not a mode.
+        void buildPresets(const Step& step, const OpInfo& info, QVBoxLayout* into) {
+            if (info.presets.empty()) return;
+            auto* combo = new QComboBox(body);
+            combo->addItem(QStringLiteral("Start from…"));
+            for (const ParamPreset& preset : info.presets) {
+                combo->addItem(fromStd(preset.name), fromStd(preset.name));
+                combo->setItemData(combo->count() - 1, fromStd(preset.summary), Qt::ToolTipRole);
+            }
+            combo->setToolTip(QStringLiteral("Fill the fields below for a kind of structure; every one stays editable"));
+            const int index = builtFor;
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), panel, [this, combo, index](int row) {
+                if (updating || row <= 0) return;
+                const QString name = combo->itemData(row).toString();
+                QSignalBlocker block(combo);
+                combo->setCurrentIndex(0);
+                bridge.wb().applyPreset(index, toStd(name));
+            });
+            into->addWidget(field(QStringLiteral("Preset"), combo, body));
+            (void)step;
+        }
+
         void rebuild() {
             updaters.clear();
             QWidget* old = scroll->takeWidget();
@@ -951,6 +976,7 @@ namespace sirius::app {
             const OpInfo& info = st->op().info();
             builtVisibility = visibilitySignature(info, st->params);
             const DatasetMeta input = wb.inputMetaOf(builtFor);
+            buildPresets(*st, info, bodyLayout);
             if (st->kind == "load") buildLoad(*st, info, bodyLayout);
             else if (st->kind == "einsum") buildEinsum(*st, info, input, bodyLayout);
             else if (st->kind == "sim") buildSim(*st, info, input, bodyLayout);

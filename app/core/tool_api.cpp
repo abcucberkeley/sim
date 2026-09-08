@@ -64,7 +64,12 @@ namespace sirius::app {
                      json params = json::array();
                      for (const ParamSpec& s : op->info().params)
                          params.push_back({{"key", s.key}, {"label", s.label}, {"default", toJson(s.defaultValue)}, {"schema", schemaOf(s)}});
-                     out.push_back({{"kind", op->kind()}, {"name", op->info().name}, {"group", op->info().group}, {"params", params}});
+                     json presets = json::array();
+                     for (const ParamPreset& preset : op->info().presets)
+                         presets.push_back({{"name", preset.name}, {"summary", preset.summary}});
+                     json entry = {{"kind", op->kind()}, {"name", op->info().name}, {"group", op->info().group}, {"params", params}};
+                     if (!presets.empty()) entry["presets"] = std::move(presets);
+                     out.push_back(std::move(entry));
                  }
                  return out;
              }});
@@ -180,6 +185,23 @@ namespace sirius::app {
                                        {"why", "stored, but the step's current settings do not read these; they apply again "
                                                "when the settings that gate them change back"}};
                  return out;
+             }});
+        add({"apply_preset",
+             "Fill a step's parameters from one of its operation's presets: a starting point for a kind of structure "
+             "(list_operations gives the names). It is an ordinary undoable parameter change, so everything stays editable.",
+             obj({{"step", stepParam()}, {"preset", {{"type", "string"}}}}, {"step", "preset"}),
+             [this](const json& a) {
+                 const int i = resolveStep(a);
+                 const std::string name = a.value("preset", std::string());
+                 const Step& s = wb_.pipeline().at(i);
+                 if (!wb_.applyPreset(i, name)) {
+                     std::string known;
+                     for (const ParamPreset& p : s.op().info().presets) known += (known.empty() ? "" : ", ") + p.name;
+                     throw std::invalid_argument(known.empty() ? s.kind + " has no presets"
+                                                               : "no preset '" + name + "' for " + s.kind + "; it has " + known);
+                 }
+                 actions_.push_back({ActionRecord::Kind::Param, "Step " + Step::number(i) + " · preset " + name, "undo", {}, "apply_preset"});
+                 return stepJson(i);
              }});
         add({"set_cache", "Cache policy of a step's output: memory, disk or recompute.",
              obj({{"step", stepParam()}, {"policy", {{"type", "string"}, {"enum", {"memory", "disk", "recompute"}}}}}, {"step", "policy"}),

@@ -9,6 +9,22 @@ $$
 M = \left[\, G_\sigma * \big(I - (I \circ B_r)\big) > \tau \,\right],\qquad L = \text{watershed}\big(-d(M)\big)
 $$
 
+## Presets
+
+Almost every setting below follows from what is being segmented, so the step offers a starting point per structure. Choosing one writes its values into the fields — an ordinary undoable change — and every field stays editable afterwards; a preset is not a mode, and the step remembers values, not which preset they came from.
+
+| Preset | For |
+|---|---|
+| **Nuclei** | Round, roughly convex objects that touch. Otsu, opening, hole filling, and a distance watershed on peaks that stand clear of their surroundings. |
+| **Cells (touching)** | Objects pressed flat against each other, where there is a visible boundary but no waist. Median denoise, a rolling-ball background, and the gradient watershed. |
+| **Puncta** | Small round spots of more than one size. A difference of Gaussians, then blob centres over a radius range, which finds objects of different sizes without retuning. |
+| **Filaments** | Long thin structures traced whole. Frangi tubes over three widths, connected components, and hysteresis so a filament that fades stays one object. |
+| **Filament network** | A mesh with crossings. Meijering, which answers at a junction where Frangi treats it as blob-like and cuts the network apart. |
+| **Centrelines** | The network again, thinned to the line down the middle of each filament: what a length is measured on, and a useful training label. |
+| **Faint or noisy** | Weak signal on a busy background. Anisotropic diffusion, a rolling-ball background, the Triangle cut, hysteresis and an active contour to finish the boundary. |
+
+On the bundled pipeline the filament presets return 54 objects (Filaments) and 23 (Filament network); the object presets are for other data and return one or two objects there, which is what a preset chosen for the wrong structure looks like.
+
 ## Parameters
 
 | Parameter | Explanation |
@@ -42,4 +58,4 @@ $$
 
 Start with Otsu, σ 1, opening 1 and the watershed on h-maxima seeds. When the objects vary in size, switch the seeds to blob centres and give their radius range.
 
-For filaments rather than compact objects the recipe is different, and these defaults are wrong for it: turn on *Tubes*, set the widths to the filament thickness (σ 0.8 – 2.0 over three scales suits the bundled SIM reconstruction), leave the smoothing and the opening off, and take *Connected components* — a distance watershed has nothing to split there. Add *Hysteresis* there too: it is what keeps a fading filament in one piece. On the bundled SIM reconstruction that recipe with a plain Otsu cut returns 44 fragments covering 3.3 % of the field; with hysteresis at 0.5 the same settings return 19 longer filaments covering 7.2 %, and *Triangle* in place of Otsu returns 11 covering 14 %. Swapping *Tubes* for *Neurites* returns 9 objects at 14.3 %, because the junctions Frangi cuts stay connected; *Neurites* with *Yen* is the middle ground at 19 objects and 7.9 %. Lower cuts join more, so check that the network has not become one object. A plain intensity threshold on that data returns one object: the whole cell. When the illumination is uneven, switch the threshold to Local contrast or add a top-hat of about the object radius. When objects sit in texture, turn on the blob enhancement at their radius. When one object keeps being split, raise the seed depth. When two objects touch flat, with a boundary but no waist, switch the instances to the gradient watershed. When the mask is nearly right but its edge is not, turn on the active contour. When the labels are training data and precision matters more than recall, add the shape filters. For crowded or low-contrast data a learned model (the Segmentation step with Cellpose) still separates objects the classical route cannot.
+For filaments rather than compact objects the recipe is different, and these defaults are wrong for it: turn on *Tubes*, set the widths to the filament thickness (σ 0.8 – 2.0 over three scales suits the bundled SIM reconstruction), leave the smoothing and the opening off, and take *Connected components* — a distance watershed has nothing to split there. Add *Hysteresis* there too: it is what keeps a fading filament in one piece. Measured on the bundled pipeline (`examples/sim_bundled.sirius.toml` with a Classical step appended, so the input is the volume reconstruction): that recipe with a plain Otsu cut returns 58 fragments covering 2.8 % of the field; with hysteresis at 0.5, 54 longer filaments covering 5.1 %; with *Triangle* in place of Otsu, 12 covering 10.5 %. Swapping *Tubes* for *Neurites* returns 23 objects at 14.6 %, because the junctions Frangi cuts stay connected. Lower cuts join more, so check that the network has not become one object. A plain intensity threshold on that data returns one object: the whole cell. When the illumination is uneven, switch the threshold to Local contrast or add a top-hat of about the object radius. When objects sit in texture, turn on the blob enhancement at their radius. When one object keeps being split, raise the seed depth. When two objects touch flat, with a boundary but no waist, switch the instances to the gradient watershed. When the mask is nearly right but its edge is not, turn on the active contour. When the labels are training data and precision matters more than recall, add the shape filters. For crowded or low-contrast data a learned model (the Segmentation step with Cellpose) still separates objects the classical route cannot.

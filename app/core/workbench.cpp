@@ -613,6 +613,20 @@ namespace sirius::app {
         notify(&Observer::outputsChanged);
     }
 
+    bool Workbench::applyPreset(int index, const std::string& presetName) {
+        if (index < 0 || index >= pipeline_.size()) return false;
+        const Step& step = pipeline_.at(index);
+        const ParamPreset* preset = nullptr;
+        for (const ParamPreset& p : step.op().info().presets)
+            if (p.name == presetName) preset = &p;
+        if (preset == nullptr) return false;
+        ParamSet params = step.params;
+        for (const auto& [key, value] : preset->values) params.set(key, value);
+        // the values are coerced against the specs the way any edit is
+        setStepParams(index, params, "Step " + Step::number(index) + " · preset " + preset->name);
+        return true;
+    }
+
     void Workbench::setStepParams(int index, const ParamSet& params, const std::string& label,
                                   const std::string& mergeKey) {
         if (index < 0 || index >= pipeline_.size()) return;

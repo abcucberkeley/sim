@@ -263,6 +263,32 @@ def test_menu_actions_reach_the_view(app: Path, tmp: Path) -> None:
     check(view.get("physical_z") is False, "Physical z scaling did not turn off")
 
 
+def test_a_preset_fills_the_fields(app: Path, tmp: Path) -> None:
+    # a preset is values, not a mode: the step holds what it wrote and the
+    # change is undoable like any other
+    out = run(
+        app,
+        [
+            "--dataset",
+            str(RAW),
+            "--tool",
+            '{"name":"add_step","args":{"kind":"classic"}}',
+            "--tool",
+            '{"name":"apply_preset","args":{"step":3,"preset":"Filament network"}}',
+            "--tool",
+            '{"name":"get_step","args":{"step":3}}',
+            "--settle",
+            "600",
+            "--quit-after",
+            "6000",
+        ],
+    )
+    params = only(tool_results(out), "get_step")["params"]
+    check(params["enhance"] == "Neurites (Meijering)", f"enhance is {params['enhance']}")
+    check(params["post"] == "Connected components", f"post is {params['post']}")
+    check(abs(float(params["enhance_sigma"]) - 0.8) < 1e-9, f"sigma is {params['enhance_sigma']}")
+
+
 SCENARIOS = [
     test_ortho_view_shows_the_dataset,
     test_every_view_mode_renders,
@@ -271,6 +297,7 @@ SCENARIOS = [
     test_the_wheel_zooms,
     test_a_dropped_file_opens,
     test_menu_actions_reach_the_view,
+    test_a_preset_fills_the_fields,
 ]
 
 

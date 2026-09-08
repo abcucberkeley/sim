@@ -1472,3 +1472,37 @@ TEST_CASE("A rewritten file is not served from the cache", "[app][executor]") {
         CHECK_FALSE(ex.fingerprint(p, 1).empty());   // still a fingerprint, just without a file in it
     }
 }
+
+TEST_CASE("Applying a preset is an ordinary undoable parameter change", "[app][workbench][params]") {
+    registerTestOps();
+    Scratch scratch;
+    Workbench wb(scratch.dir);
+    wb.setDataset(syntheticSource(1, 1, 4, 8, 8));
+    wb.setBackend(Backend::Cpu);
+    wb.addStep("classic");
+    const int step = wb.pipeline().size() - 1;
+
+    const std::string before = wb.pipeline().at(step).params.getString("enhance");
+    CHECK(wb.applyPreset(step, "Filaments"));
+    CHECK(wb.pipeline().at(step).params.getString("enhance") == "Tubes (Frangi)");
+    CHECK(wb.pipeline().at(step).params.getBool("hysteresis"));
+    CHECK(wb.pipeline().at(step).params.getString("post") == "Connected components");
+
+    SECTION("it can be undone, and the values were only values") {
+        REQUIRE(wb.history().canUndo());
+        wb.undo();
+        CHECK(wb.pipeline().at(step).params.getString("enhance") == before);
+    }
+    SECTION("a second preset overwrites the first") {
+        CHECK(wb.applyPreset(step, "Nuclei"));
+        CHECK(wb.pipeline().at(step).params.getString("enhance") == "None");
+        CHECK_FALSE(wb.pipeline().at(step).params.getBool("hysteresis"));
+        CHECK(wb.pipeline().at(step).params.getString("post") == "Watershed (distance)");
+    }
+    SECTION("an unknown preset changes nothing") {
+        const ParamSet held = wb.pipeline().at(step).params;
+        CHECK_FALSE(wb.applyPreset(step, "Nothing like it"));
+        CHECK(wb.pipeline().at(step).params == held);
+        CHECK_FALSE(wb.applyPreset(-1, "Filaments"));
+    }
+}

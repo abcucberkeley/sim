@@ -32,13 +32,27 @@ namespace sirius::app {
     class ArraySource;
     class RemoteWorker;
 
-    enum class Backend { Cuda, Cpu, Hpc };
+    enum class Backend { Cuda,
+                         Cpu,
+                         Hpc };
     const char* toString(Backend b) noexcept;   // "CUDA" "CPU" "HPC"
     std::optional<Backend> backendFromString(const std::string& s) noexcept;
 
-    enum class CachePolicy { Memory, Disk, Recompute };
+    enum class CachePolicy { Memory,
+                             Disk,
+                             Recompute };
     const char* toString(CachePolicy c) noexcept;   // "memory" "disk" "recompute"
     std::optional<CachePolicy> cachePolicyFromString(const std::string& s) noexcept;
+
+    // A named set of parameter values for one operation: a starting point for
+    // a kind of structure, not a mode. Applying one writes the values into the
+    // step and nothing else, so it is an ordinary undoable parameter change
+    // and everything stays editable afterwards.
+    struct ParamPreset {
+        std::string name;            // "Filaments"
+        std::string summary;         // what it is for, one line
+        std::vector<std::pair<std::string, ParamValue>> values;
+    };
 
     struct OpInfo {
         std::string kind;                 // "sim"
@@ -61,6 +75,8 @@ namespace sirius::app {
         bool plugin = false;              // a user operation served by the Python worker
         std::string source;               // plugin file
         std::string helpPage;             // markdown file stem under app/help (defaults to kind)
+        // Starting points offered by the panel and the apply_preset tool.
+        std::vector<ParamPreset> presets;
     };
 
     struct Validation {

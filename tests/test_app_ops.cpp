@@ -1449,3 +1449,41 @@ TEST_CASE("The operations hide the fields their mode ignores", "[app][ops][param
         CHECK(shown(sk, slic).count("compactness") == 1);   // shared with the compact watershed
     }
 }
+
+TEST_CASE("Every preset names real parameters and leaves the step runnable", "[app][ops][params]") {
+    registerBuiltinOperations();
+    int withPresets = 0;
+    for (const Operation* op : allOperations()) {
+        const std::string kind = op->kind();
+        if (op->info().presets.empty()) continue;
+        ++withPresets;
+        std::set<std::string> names;
+        for (const ParamPreset& preset : op->info().presets) {
+            INFO(kind << " preset " << preset.name);
+            CHECK_FALSE(preset.name.empty());
+            CHECK_FALSE(preset.summary.empty());
+            CHECK(names.insert(preset.name).second);   // one entry per name
+            CHECK_FALSE(preset.values.empty());
+            // a preset that names a parameter the operation does not have would
+            // silently do nothing
+            ParamSet p = op->defaults();
+            for (const auto& [key, value] : preset.values) {
+                bool known = false;
+                for (const ParamSpec& s : op->info().params)
+                    if (s.key == key) known = true;
+                CHECK(known);
+                p.set(key, value);
+            }
+            // and survive coercion unchanged: a value the spec would clamp or
+            // reject is a preset that does not do what it says
+            p.coerce(op->info().params);
+            for (const auto& [key, value] : preset.values) {
+                INFO("after coercion: " << key);
+                const ParamValue* got = p.find(key);
+                REQUIRE(got != nullptr);
+                CHECK(toDisplayString(*got) == toDisplayString(value));
+            }
+        }
+    }
+    CHECK(withPresets >= 1);
+}

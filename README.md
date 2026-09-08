@@ -393,6 +393,14 @@ voxel in `sirius.workbench`. This step is for when the classical recipe has
 actually failed — the random walker in particular holds a boundary too weak or
 too broken for a threshold.
 
+**Presets**: the Classical step offers a starting point per structure — Nuclei, Cells
+(touching), Puncta, Filaments, Filament network, Centrelines, Faint or noisy — since
+almost every setting follows from what is being segmented. Choosing one writes its
+values into the fields, an ordinary undoable change, and everything stays editable; a
+preset is not a mode, and the step remembers values rather than which preset they came
+from. `apply_preset` does the same from the assistant or a script, and
+`list_operations` names them.
+
 **Session recording**: File ▸ Record session… writes what you do to a JSON-lines
 file, one event per line, flushed as it goes so a recording survives a crash. The
 header carries the dataset and the pipeline; then come `dataset`, `step_added`,

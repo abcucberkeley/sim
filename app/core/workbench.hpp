@@ -259,6 +259,11 @@ namespace sirius::app {
         bool moveStep(int index, int delta);
         StepId duplicateStep(int index);
         void setStepEnabled(int index, bool on);
+        // Write a named preset of the step's operation into it: an ordinary
+        // undoable parameter change, so everything stays editable afterwards.
+        // Returns false when the step or the preset does not exist.
+        bool applyPreset(int index, const std::string& presetName);
+
         void setStepParams(int index, const ParamSet& params, const std::string& label = {},
                            const std::string& mergeKey = {});
         void setStepParam(int index, const std::string& key, const ParamValue& value, const std::string& mergeKey = {});
